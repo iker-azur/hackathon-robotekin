@@ -1,0 +1,169 @@
+# Vocabulary for the command-model dataset.
+#
+# generate_dataset.py builds every training sentence from these lists, and
+# command_model.py uses the colour, number and position words to turn the
+# words the model finds ("rojas", "bi", "ezkerreko") into values (red, 2, left).
+#
+# Lists under `train:` are used for training. Lists under `test_only:` never
+# appear in training: they build test_unseen.jsonl, which measures whether the
+# model generalises to words it has never seen.
+#
+# Edit this file at the hackathon when you know the real objects and places,
+# then run generate_dataset.py and train.py again.
+
+# --- closed sets: the model finds the word, the code maps it --------------------
+
+colors:
+  # canonical: {es: [masc sg, fem sg, masc pl, fem pl], en: [...], eu: {...}}
+  # Basque forms: bare (after numbers), sg (with article), pl, in (inside),
+  # to (towards), of (genitive, "on top of the red table").
+  red:
+    es: [rojo, roja, rojos, rojas]
+    en: [red]
+    eu: {bare: gorri, sg: gorria, pl: gorriak, in: gorrian, to: gorrira, of: gorriaren}
+  green:
+    es: [verde, verde, verdes, verdes]
+    en: [green]
+    eu: {bare: berde, sg: berdea, pl: berdeak, in: berdean, to: berdera, of: berdearen}
+  blue:
+    es: [azul, azul, azules, azules]
+    en: [blue]
+    eu: {bare: urdin, sg: urdina, pl: urdinak, in: urdinean, to: urdinera, of: urdinaren}
+  yellow:
+    es: [amarillo, amarilla, amarillos, amarillas]
+    en: [yellow]
+    eu: {bare: hori, sg: horia, pl: horiak, in: horian, to: horira, of: horiaren}
+  orange:
+    es: [naranja, naranja, naranjas, naranjas]
+    en: [orange]
+    eu: {bare: laranja, sg: laranja, pl: laranjak, in: laranjan, to: laranjara, of: laranjaren}
+  white:
+    es: [blanco, blanca, blancos, blancas]
+    en: [white]
+    eu: {bare: zuri, sg: zuria, pl: zuriak, in: zurian, to: zurira, of: zuriaren}
+  black:
+    es: [negro, negra, negros, negras]
+    en: [black]
+    eu: {bare: beltz, sg: beltza, pl: beltzak, in: beltzean, to: beltzera, of: beltzaren}
+  purple:
+    es: [morado, morada, morados, moradas]
+    en: [purple]
+    eu: {bare: more, sg: morea, pl: moreak, in: morean, to: morera, of: morearen}
+  pink:
+    es: [rosa, rosa, rosas, rosas]
+    en: [pink]
+    eu: {bare: arrosa, sg: arrosa, pl: arrosak, in: arrosan, to: arrosara, of: arrosaren}
+
+numbers:
+  # value: words per language. "all" means every matching object.
+  1: {es: [un, una, uno], en: [a, an, one], eu: [bat]}
+  2: {es: [dos], en: [two], eu: [bi]}
+  3: {es: [tres], en: [three], eu: [hiru]}
+  4: {es: [cuatro], en: [four], eu: [lau]}
+  5: {es: [cinco], en: [five], eu: [bost]}
+  all: {es: [todas, todos, todo], en: [all, every], eu: [guztiak, denak, dena]}
+
+positions:
+  # which one of several: "la bola de la izquierda", "the nearest cube", "ezkerreko bola"
+  left: {es: [izquierda], en: [left], eu: [ezkerreko]}
+  right: {es: [derecha], en: [right], eu: [eskuineko]}
+  front: {es: [delante], en: [front], eu: [aurreko]}
+  back: {es: [detrás, fondo], en: [back], eu: [atzeko]}
+  nearest: {es: [cercana, cercano], en: [nearest, closest], eu: [hurbilen]}
+  farthest: {es: [lejana, lejano], en: [farthest], eu: [urrunen]}
+
+# --- open sets: the model learns the pattern, so unseen words should still work --
+
+objects:
+  # kind: ball / cube / any (generic word) / other (any named thing)
+  # es: [singular, plural, f|m]   en: [singular, plural]   eu: [stem, with article, plural]
+  train:
+    ball:
+      es: [[bola, bolas, f], [pelota, pelotas, f]]
+      en: [[ball, balls]]
+      eu: [[bola, bola, bolak], [pilota, pilota, pilotak]]
+    cube:
+      es: [[cubo, cubos, m], [dado, dados, m]]
+      en: [[cube, cubes], [block, blocks]]
+      eu: [[kubo, kuboa, kuboak], [dado, dadoa, dadoak]]
+    any:
+      es: [[objeto, objetos, m], [pieza, piezas, f], [cosa, cosas, f], [elemento, elementos, m], [figura, figuras, f]]
+      en: [[object, objects], [thing, things], [item, items], [piece, pieces], [one, ones]]
+      eu: [[objektu, objektua, objektuak], [gauza, gauza, gauzak], [pieza, pieza, piezak]]
+    other:
+      es: [[plátano, plátanos, m], [pera, peras, f], [manzana, manzanas, f], [naranja, naranjas, f],
+           [destornillador, destornilladores, m], [vaso, vasos, m], [taza, tazas, f], [llave, llaves, f],
+           [lápiz, lápices, m], [botella, botellas, f], [martillo, martillos, m], [cuchara, cucharas, f],
+           [libro, libros, m], [juguete, juguetes, m], [rotulador, rotuladores, m], [goma, gomas, f],
+           [tornillo, tornillos, m], [tuerca, tuercas, f], [pinza, pinzas, f], [esponja, esponjas, f],
+           [limón, limones, m], [fresa, fresas, f], [coche de juguete, coches de juguete, m], [muñeco, muñecos, m],
+           [anillo, anillos, m], [moneda, monedas, f], [pila, pilas, f], [cable, cables, m]]
+      en: [[banana, bananas], [pear, pears], [apple, apples], [orange, oranges], [screwdriver, screwdrivers],
+           [cup, cups], [glass, glasses], [bottle, bottles], [key, keys], [pencil, pencils], [hammer, hammers],
+           [spoon, spoons], [book, books], [toy, toys], [marker, markers], [eraser, erasers], [screw, screws],
+           [nut, nuts], [clip, clips], [sponge, sponges], [lemon, lemons], [strawberry, strawberries],
+           [toy car, toy cars], [doll, dolls], [ring, rings], [coin, coins], [battery, batteries], [cable, cables]]
+      eu: [[platano, platanoa, platanoak], [udare, udarea, udareak], [sagar, sagarra, sagarrak],
+           [laranja, laranja, laranjak], [bihurkin, bihurkina, bihurkinak], [edalontzi, edalontzia, edalontziak],
+           [kikara, kikara, kikarak], [giltza, giltza, giltzak], [arkatz, arkatza, arkatzak], [botila, botila, botilak],
+           [mailu, mailua, mailuak], [koilara, koilara, koilarak], [liburu, liburua, liburuak],
+           [jostailu, jostailua, jostailuak], [errotulagailu, errotulagailua, errotulagailuak],
+           [torloju, torlojua, torlojuak], [belaki, belakia, belakiak], [limoi, limoia, limoiak],
+           [marrubi, marrubia, marrubiak], [panpina, panpina, panpinak], [eraztun, eraztuna, eraztunak],
+           [txanpon, txanpona, txanponak], [pila, pila, pilak], [kable, kablea, kableak]]
+  test_only:
+    ball:
+      es: [[esfera, esferas, f], [canica, canicas, f]]
+      en: [[sphere, spheres], [marble, marbles]]
+      eu: [[esfera, esfera, esferak], [kanika, kanika, kanikak]]
+    cube:
+      es: [[bloque, bloques, m], [ladrillo, ladrillos, m]]
+      en: [[brick, bricks]]
+      eu: [[bloke, blokea, blokeak], [adreilu, adreilua, adreiluak]]
+    any:
+      es: [[trozo, trozos, m]]
+      en: [[bit, bits]]
+      eu: [[zati, zatia, zatiak]]
+    other:
+      es: [[grapadora, grapadoras, f], [zanahoria, zanahorias, f], [calcetín, calcetines, m], [tijera, tijeras, f]]
+      en: [[stapler, staplers], [carrot, carrots], [sock, socks], [scissors, scissors]]
+      eu: [[grapagailu, grapagailua, grapagailuak], [azenario, azenarioa, azenarioak], [galtzerdi, galtzerdia, galtzerdiak]]
+
+places:
+  # kind: basket / box / tray / table / left / right / other (a place the robot does not use)
+  # es: [noun, f|m]   en: [noun]   eu: [stem, in, to]  (table and sides are built in the generator)
+  train:
+    basket:
+      es: [[cesto, m], [cesta, f]]
+      en: [[basket], [bin]]
+      eu: [[saski, saskian, saskira]]
+    box:
+      es: [[caja, f]]
+      en: [[box]]
+      eu: [[kutxa, kutxan, kutxara]]
+    tray:
+      es: [[bandeja, f]]
+      en: [[tray]]
+      eu: [[erretilu, erretiluan, erretilura]]
+    table:
+      es: [[mesa, f]]
+      en: [[table]]
+      eu: [[mahai, mahai gainean, mahai gainera]]
+    other:
+      es: [[estantería, f], [silla, f], [suelo, m], [cajón, m], [armario, m], [ventana, f], [puerta, f]]
+      en: [[shelf], [chair], [floor], [drawer], [cupboard], [window], [door]]
+      eu: [[apal, apalean, apalera], [aulki, aulkian, aulkira], [lur, lurrean, lurrera], [tiradera, tiraderan, tiraderara],
+           [armairu, armairuan, armairura], [leiho, leihoan, leihora]]
+  test_only:
+    basket:
+      es: [[canasta, f]]
+      en: [[hamper]]
+      eu: [[otzara, otzaran, otzarara]]
+    box:
+      es: [[contenedor, m]]
+      en: [[crate]]
+      eu: [[kaxa, kaxan, kaxara]]
+    other:
+      es: [[sofá, m], [nevera, f]]
+      en: [[sofa], [fridge]]
+      eu: [[sofa, sofan, sofara], [hozkailu, hozkailuan, hozkailura]]
