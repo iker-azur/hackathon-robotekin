@@ -267,6 +267,9 @@ class Thing:
     pos_m: list[float] | None = None
     pos_m_depth: list[float] | None = None
     inner_rect_m: list[float] | None = None
+    elongation: float | None = None
+    fill: float | None = None
+    hollow: bool | None = None
 
     def anchor(self, width: int, height: int) -> np.ndarray:
         """A 2D position in the scene's space: metres if known, else the pixel."""
@@ -291,7 +294,7 @@ class Thing:
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        for optional in ("inner_rect_m", "track_id", "pos_m", "pos_m_depth"):
+        for optional in ("inner_rect_m", "track_id", "pos_m", "pos_m_depth", "elongation", "fill", "hollow"):
             if getattr(self, optional) is None:
                 del data[optional]
         return data
@@ -299,7 +302,7 @@ class Thing:
     @classmethod
     def from_dict(cls, data: dict) -> Thing:
         data = dict(data)
-        for optional in ("inner_rect_m", "track_id", "pos_m", "pos_m_depth"):
+        for optional in ("inner_rect_m", "track_id", "pos_m", "pos_m_depth", "elongation", "fill", "hollow"):
             data.setdefault(optional, None)
         return cls(**data)
 

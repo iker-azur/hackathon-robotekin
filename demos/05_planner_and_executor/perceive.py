@@ -78,10 +78,20 @@ BOX_ELONGATION = 0.55
 # check after changing BALL_FILL.
 CUBE_FILL = 0.954
 
-# Fraction of a container's bounding box taken to be wall rather than interior. A
-# 10 x 8 cm tray with 3 cm walls has an interior that is 40% of its width, so 0.12 on
-# each side of both dimensions is the value that reproduces it. It is a geometric
-# estimate from the detected footprint, not something measured off the image.
+# Fraction of a container's bounding box taken to be wall rather than interior, applied
+# to each side of each dimension, so the interior is (1 - 2 * this) of the footprint.
+#
+# NOT YET RE-MEASURED AGAINST A HOLLOW TRAY. Demo 09 never applied this at all: it
+# declared the constant, documented the intent, and returned the outer footprint, which
+# is why its own readme could promise that demo 10 would consume inner_rect_m while the
+# value pointed at the outside edge of the container.
+#
+# With 0.12 the interior comes out 0.76 of the footprint. A 6 cm tray with 1 cm walls
+# has an interior of 0.667, so this constant over-estimates the cavity by about 4.6 mm
+# per side and the gripper would be aimed into the wall. It has to be measured against
+# the hollow trays built in hollow.py, using tools/measure_shapes.py and the truth
+# footprints, and set to whatever the measurement says. It is recorded here rather than
+# tuned to taste.
 WALL_INSET_FRACTION = 0.12
 
 # A container's footprint this close to square is called a box. A 10 x 8 cm tray is
@@ -206,17 +216,56 @@ def distance_to_edge(centroid: tuple[float, float], width: int, height: int) -> 
 
 
 def inner_rect(thing: Thing, pixels_per_m: float | None) -> list[float] | None:
-    """A container's usable interior, estimated by insetting its footprint.
+    """A container's usable interior: its footprint inset by the wall fraction.
 
     Only meaningful with a real scale: without ``pixels_per_m`` there are no metres to
     report and the caller gets None, which is the honest answer for a webcam frame.
+
+    Demo 09's copy of this function documented the inset and never applied it: it
+    returned the outer footprint, which is harmless for a solid coloured zone but points
+    the gripper straight into a wall for a hollow tray, because the bounding box of a
+    tray is its outside edge. ``WALL_INSET_FRACTION`` was declared and never referenced.
+    Both are fixed here, since this demo places objects inside real trays.
+
+    The interior is clamped so a very thin detection cannot produce a negative extent.
     """
     if pixels_per_m is None or pixels_per_m <= 0 or not thing.pos_m:
         return None
     x, y = thing.pos_m[0], thing.pos_m[1]
     half_w = thing.bbox_px[2] / 2.0 / pixels_per_m
     half_d = thing.bbox_px[3] / 2.0 / pixels_per_m
-    return [x - half_w, y - half_d, 2 * half_w, 2 * half_d]
+    keep = max(0.0, 1.0 - 2.0 * WALL_INSET_FRACTION)
+    inner_w = max(0.0, half_w * keep)
+    inner_d = max(0.0, half_d * keep)
+    return [round(x - inner_w, 5), round(y - inner_d, 5), round(2 * inner_w, 5), round(2 * inner_d, 5)]
+
+
+def is_container(blob: Blob, min_area: int) -> bool:
+    """Whether a blob is a receptacle rather than an object to pick up.
+
+    Size first, then one shape exclusion. Measured over 120 blobs in 20 frames
+    (``tools/measure_shapes.py``):
+
+    * objects to pick up are 612..687 px;
+    * receptacles are 1900..2600 px.
+
+    That is a clean 3x gap and ``colors.CONTAINER_MIN_AREA_PX`` sits in the middle of
+    it, so size does the real work.
+
+    Shape is used to rule out one case only: a ball is never a receptacle. Cubes and
+    boxes are *not* separable by shape here, which was worth measuring rather than
+    assuming. A solid near-square coloured zone measures fill 0.958..0.985 and
+    elongation 0.749..0.935, which is the same range as a 3 cm cube (0.9562..0.9780),
+    so a shape test of the form "not ball and not cube" rejects every tray on the
+    table. Nothing was detected as a container at all until this was measured.
+
+    Keeping the area floor is also what makes the occluded-object case harmless: hiding
+    half a cube behind the gripper changes its shape but cannot multiply its area by
+    three, so a part-occluded object stays below the floor and is never called a tray.
+    """
+    if blob.area_px < min_area:
+        return False
+    return kind_of(blob.elongation, blob.fill) != "ball"
 
 
 def perceive(
@@ -270,11 +319,11 @@ def perceive(
         notes.append(f"colour bands for {name} overlap {', '.join(others)}; calibrate before trusting them")
 
     things: list[Thing] = []
-    is_container: list[bool] = []
+    is_container_flags: list[bool] = []
     for index, blob in enumerate(found):
         x, y, w, h = blob.bbox_px
         aspect = max(w, h) / max(1.0, min(w, h))
-        container = blob.area_px >= container_min_area
+        container = is_container(blob, container_min_area)
         if container:
             kind = "box" if aspect <= BOX_ASPECT else "any"
         else:
@@ -289,6 +338,8 @@ def perceive(
             mean_hsv=blob.mean_hsv,
             confidence=confidence_of(blob, distance_to_edge(tuple(blob.centroid_px), width, height)),
             source="segmentation",
+            elongation=round(blob.elongation, 4),
+            fill=round(blob.fill, 4),
         )
         if camera is not None and plane_z is not None:
             thing.pos_m = camera.on_plane(blob.centroid_px[0], blob.centroid_px[1], plane_z)
@@ -298,21 +349,22 @@ def perceive(
             thing.pos_m_depth = _depth_position(camera, blob, depth)
         if container:
             thing.inner_rect_m = inner_rect(thing, pixels_per_m)
+            thing.hollow = True
         things.append(thing)
-        is_container.append(container)
+        is_container_flags.append(container)
 
     if detect is not None:
         extra = _merge_detected(things, detect(image_bgr))
         things.extend(extra)
-        is_container.extend([False] * len(extra))
+        is_container_flags.extend([False] * len(extra))
 
     return Scene(
         frame=frame,
         source=source,
         width=width,
         height=height,
-        objects=[t for t, flag in zip(things, is_container) if not flag],
-        containers=[t for t, flag in zip(things, is_container) if flag],
+        objects=[t for t, flag in zip(things, is_container_flags) if not flag],
+        containers=[t for t, flag in zip(things, is_container_flags) if flag],
         camera=camera.to_dict() if camera is not None else None,
         ground_px_per_m=round(pixels_per_m, 1) if pixels_per_m else None,
         plane_z=plane_z,
