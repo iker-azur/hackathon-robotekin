@@ -81,17 +81,25 @@ CUBE_FILL = 0.954
 # Fraction of a container's bounding box taken to be wall rather than interior, applied
 # to each side of each dimension, so the interior is (1 - 2 * this) of the footprint.
 #
-# NOT YET RE-MEASURED AGAINST A HOLLOW TRAY. Demo 09 never applied this at all: it
-# declared the constant, documented the intent, and returned the outer footprint, which
-# is why its own readme could promise that demo 10 would consume inner_rect_m while the
-# value pointed at the outside edge of the container.
+# MEASURED, AND FOUND NOT TO BE ENOUGH ON ITS OWN.
 #
-# With 0.12 the interior comes out 0.76 of the footprint. A 6 cm tray with 1 cm walls
-# has an interior of 0.667, so this constant over-estimates the cavity by about 4.6 mm
-# per side and the gripper would be aimed into the wall. It has to be measured against
-# the hollow trays built in hollow.py, using tools/measure_shapes.py and the truth
-# footprints, and set to whatever the measurement says. It is recorded here rather than
-# tuned to taste.
+# History, because the gap between "declared" and "used" here caused a bug. Demo 09
+# declared this constant, documented the intent, and then never applied it: it returned the
+# outer footprint, which is why its own readme could promise that demo 10 would consume
+# inner_rect_m while the value pointed at the outside edge of the container.
+#
+# With 0.12 the interior comes out 0.76 of the footprint. The trays in this directory have
+# a cavity/footprint ratio of 0.800, which would want 0.100. But the detected footprint is
+# not the declared footprint: a 7 cm tray 5 cm tall, seen from 67 degrees, has a colour
+# blob whose bounding box came to 8.0 x 8.0 cm, inflated by the tray's height as well as
+# its footprint. Measured against the truth (results/tray_check.md), inner_rect_m came out
+# 4.8 cm for a 5.6 cm cavity on one tray and 6.0 x 6.9 cm on the other - right on one side,
+# 1.3 cm wrong on the other.
+#
+# So this constant is a reasonable estimate and is not the placement mechanism. The
+# executor aims at the container's ``pos_m`` and uses the DECLARED cavity size from
+# scene_spec, then verifies where the object actually came to rest. That was measured to
+# work: dropping at the perceived centre, 9-11 mm out, lands inside both cavities.
 WALL_INSET_FRACTION = 0.12
 
 # A container's footprint this close to square is called a box. A 10 x 8 cm tray is
@@ -215,8 +223,101 @@ def distance_to_edge(centroid: tuple[float, float], width: int, height: int) -> 
     return min(centroid) / half if half else 0.0
 
 
-def inner_rect(thing: Thing, pixels_per_m: float | None) -> list[float] | None:
+def base_band(camera: CameraModel, blob: Blob, depth: np.ndarray,
+              tol: float = 0.004, trim: float = 2.0):
+    """The blob's lowest points in world coordinates, as an (N, 3) array.
+
+    Shared by ``base_centre`` and ``base_footprint``. Returns None without a usable depth
+    image.
+    """
+    ys, xs = np.nonzero(blob.mask)
+    if len(xs) < 40:
+        return None
+    readings = np.asarray(depth, dtype=np.float64)
+    if readings.ndim != 2:
+        return None
+    readings = readings[ys, xs]
+    ok = np.isfinite(readings) & (readings > 0)
+    if int(ok.sum()) < 40:
+        return None
+    xs, ys, readings = xs[ok], ys[ok], readings[ok]
+
+    # from_depth, vectorised: camera.ray puts x = 1 forward, so the camera-frame point is
+    # the ray scaled by the reading, and the world point is that rotated into the world.
+    rays = np.stack([
+        np.ones_like(xs, dtype=float),
+        -(xs - camera.k[0, 2]) / camera.k[0, 0],
+        -(ys - camera.k[1, 2]) / camera.k[1, 1],
+    ], axis=-1)
+    points = (camera.rotation @ (rays * readings[:, None]).T).T + camera.origin
+
+    lowest = float(np.percentile(points[:, 2], trim))
+    band = points[points[:, 2] <= lowest + tol]
+    if len(band) < 40:
+        band = points[points[:, 2] <= lowest + 2.0 * tol]
+    return band if len(band) >= 40 else None
+
+
+def base_centre(camera: CameraModel, blob: Blob, depth: np.ndarray) -> list[float] | None:
+    """A container's centre on the table, from the floor pixels rather than the blob's middle.
+
+    A container's colour blob is not its footprint. A 6 cm tray 5 cm tall, seen from 67
+    degrees, presents its rim, the inside of its far wall and part of its floor, and the
+    blob's area centroid sits off the tray's centre because that presentation is not
+    symmetric about it. Measured against ground truth on the two trays in this directory:
+    the plane-ray estimate ``pos_m`` lands 6 mm and 12 mm away from the truth.
+
+    The floor is the part of the blob that lies where the tray really is: it is the lowest
+    surface, it sits at a known height, and its pixels back-project exactly. Taking the
+    MEDIAN of the lowest band rather than its bounding box keeps stray boundary pixels -
+    where the depth reading straddles the tray and the table beside it - from dragging the
+    answer.
+
+    Returns None without a depth image; the caller falls back to ``pos_m``.
+    """
+    band = base_band(camera, blob, depth)
+    if band is None:
+        return None
+    return [round(float(np.median(band[:, 0])), 5), round(float(np.median(band[:, 1])), 5)]
+
+
+def base_footprint(camera: CameraModel, blob: Blob, depth: np.ndarray,
+                   trim: float = 2.0) -> list[float] | None:
+    """A container's measured footprint on the table, as ``[x, y, w, d]``.
+
+    DIAGNOSTIC ONLY, AND KNOWN TO BE UNRELIABLE. Kept because it is the natural way to
+    estimate a cavity and the numbers say how far off it is, but two instances of the same
+    geometry disagree by more than a factor of two on one axis: on the two trays in this
+    directory it returned 5.2 x 5.2 cm and 6.8 x 7.9 cm for a 6.0 x 6.0 cm footprint.
+
+    The trouble is that what the camera can see of a tray's base is not its base. The near
+    wall hides its own foot, and the cavity floor of this scene's tray spans the full outer
+    footprint because the floor slab runs under the walls, so the lowest visible pixels are
+    a partial, asymmetric view of it. Robust percentiles do not fix an asymmetric sample.
+
+    So the executor does NOT use this to decide where to drop something. It uses
+    ``base_centre`` for the position and the declared cavity from scene_spec for the size,
+    and then verifies the result. See planner.py.
+
+    ``pos_m`` and the bounding box remain the honest fallbacks when there is no depth.
+    """
+    band = base_band(camera, blob, depth, trim=trim)
+    if band is None:
+        return None
+    x0, x1 = (float(np.percentile(band[:, 0], trim)),
+              float(np.percentile(band[:, 0], 100.0 - trim)))
+    y0, y1 = (float(np.percentile(band[:, 1], trim)),
+              float(np.percentile(band[:, 1], 100.0 - trim)))
+    return [round(x0, 5), round(y0, 5), round(x1 - x0, 5), round(y1 - y0, 5)]
+
+
+def inner_rect(thing: Thing, pixels_per_m: float | None, footprint: list[float] | None = None) -> list[float] | None:
     """A container's usable interior: its footprint inset by the wall fraction.
+
+    ``footprint`` is ``base_footprint``'s answer when a depth image was available, and is
+    the better of the two measurements because it is not inflated by the container's
+    height. Without it the detected bounding box is used, which is right for a flat
+    coloured zone and wrong for anything with walls.
 
     Only meaningful with a real scale: without ``pixels_per_m`` there are no metres to
     report and the caller gets None, which is the honest answer for a webcam frame.
@@ -231,13 +332,18 @@ def inner_rect(thing: Thing, pixels_per_m: float | None) -> list[float] | None:
     """
     if pixels_per_m is None or pixels_per_m <= 0 or not thing.pos_m:
         return None
-    x, y = thing.pos_m[0], thing.pos_m[1]
-    half_w = thing.bbox_px[2] / 2.0 / pixels_per_m
-    half_d = thing.bbox_px[3] / 2.0 / pixels_per_m
+    if footprint is not None:
+        fx, fy, fw, fd = footprint
+        centre = ((fx + fw / 2.0), (fy + fd / 2.0))
+    else:
+        centre = (thing.pos_m[0], thing.pos_m[1])
+        fw = thing.bbox_px[2] / pixels_per_m
+        fd = thing.bbox_px[3] / pixels_per_m
     keep = max(0.0, 1.0 - 2.0 * WALL_INSET_FRACTION)
-    inner_w = max(0.0, half_w * keep)
-    inner_d = max(0.0, half_d * keep)
-    return [round(x - inner_w, 5), round(y - inner_d, 5), round(2 * inner_w, 5), round(2 * inner_d, 5)]
+    inner_w = max(0.0, fw * keep)
+    inner_d = max(0.0, fd * keep)
+    return [round(centre[0] - inner_w / 2.0, 5), round(centre[1] - inner_d / 2.0, 5),
+            round(inner_w, 5), round(inner_d, 5)]
 
 
 def is_container(blob: Blob, min_area: int) -> bool:
@@ -348,7 +454,14 @@ def perceive(
         if camera is not None and depth is not None:
             thing.pos_m_depth = _depth_position(camera, blob, depth)
         if container:
-            thing.inner_rect_m = inner_rect(thing, pixels_per_m)
+            footprint = None
+            centre = None
+            if camera is not None and depth is not None:
+                footprint = base_footprint(camera, blob, depth)
+                centre = base_centre(camera, blob, depth)
+            thing.footprint_m = footprint
+            thing.base_centre_m = centre
+            thing.inner_rect_m = inner_rect(thing, pixels_per_m, footprint)
             thing.hollow = True
         things.append(thing)
         is_container_flags.append(container)

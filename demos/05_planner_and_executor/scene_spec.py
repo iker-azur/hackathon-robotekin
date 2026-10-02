@@ -77,6 +77,7 @@ class Item:
     container: bool = False
     inner: tuple[float, float] = (0.0, 0.0)
     wall: float = 0.0
+    floor: float = 0.0
 
     @property
     def height(self) -> float:
@@ -86,6 +87,21 @@ class Item:
     def z(self) -> float:
         """The height of the item's centre when it is resting on the table."""
         return TABLE_TOP_Z + self.height / 2.0
+
+    @property
+    def outer(self) -> tuple[float, float]:
+        """A container's footprint from its cavity, for checking against ``size``.
+
+        ``size`` stays the outer footprint on purpose: ``half_width``, ``half_depth`` and
+        ``clearance`` all read it, so the working area fitted for demo 09 still holds. This
+        is the same number stated the other way round, which is what hollow.py needs.
+        """
+        return (self.inner[0] + 2.0 * self.wall, self.inner[1] + 2.0 * self.wall)
+
+    @property
+    def cavity_depth(self) -> float:
+        """Usable depth inside a tray: its height less the floor slab."""
+        return max(0.0, self.height - self.floor)
 
 
 def _cube(prim: str, color: str, x: float, y: float, edge: float = 0.03) -> Item:
@@ -99,40 +115,64 @@ def _ball(prim: str, color: str, x: float, y: float, diameter: float = 0.04) -> 
 
 
 def _tray(prim: str, color: str, x: float, y: float) -> Item:
-    """A tray is a shallow zone 3 x 4 cm inside, 1.2 cm tall, with 1.5 cm walls.
+    """A shallow open tray: a 4.4 x 4.4 cm cavity 4.4 cm deep, in a 6 x 6 cm footprint.
 
-    Its footprint is 6 x 7 cm, an aspect of 1.17, which is below ``perceive.BOX_ASPECT``
-    (1.25), so perception calls it a box and that is what this declares.
+    CHANGED IN THIS COPY. Demo 09's tray was a solid 6 x 7 x 1.2 cm coloured slab - a zone
+    painted on the table, with nothing an object could go inside. Demo 09's own readme
+    records that as the thing demo 10 had to fix: *"Containers are coloured zones, not
+    hollow boxes... Making one hollow is a demo 10 change."*
 
-    The footprint used to be 9 x 7 cm, aspect 1.29, which did clear the threshold and did
-    not fit: a 9 cm wide tray has a half-extent of 5.7 cm, and at its nearest allowed y
-    the reach constraint left it 7.3 mm outside ``MAX_REACH_M``. There is no layout of
-    three rows at that width inside a 33 cm arm, so the tray was narrowed until the
-    reach envelope, ``WORK_X`` and the same-colour gaps were all satisfiable at once,
-    and it stopped being distinguishable from the box by shape on the way.
+    This is that change. hollow.py builds it as one kinematic rigid body whose five
+    collision shapes are a floor and four walls, so an object dropped from above stays
+    inside. The footprint is 7 cm square, the widest two trays fit across the 16 cm working
+    area with a gap between them.
 
-    So the two zones are now told apart by colour and by height (1.2 cm against 3 cm),
-    not by aspect, and this declares ``box`` because that is what the shape test returns
-    for it. Declaring ``any`` here would have made the report disagree with itself for a
-    reason that has nothing to do with perception.
+    The cavity is 5.6 cm rather than the 4.4 cm first tried, and that number was measured
+    rather than chosen (``tools/tray_sizes.py``). Perception localises a tray to within
+    9-11 mm on this camera, and the margin left after that error is the cavity half-width
+    less the object's half-width less 12 mm:
+
+        3 cm cube   5.6 cm cavity -> +1 mm     4.4 cm cavity -> -5 mm
+        4 cm ball   5.6 cm cavity -> -4 mm     4.4 cm cavity -> -10 mm
+
+    So even the largest cavity the reach envelope allows cannot absorb the localisation
+    error for a ball. The tray is therefore sized to make the cube case marginal rather
+    than impossible, and the executor does not rely on the margin: it verifies where the
+    object actually came to rest and re-drops it if it is not in the cavity. That is the
+    recovery loop this demo is supposed to demonstrate anyway, and it is the honest answer
+    to an error that perception cannot be made small enough to remove.
+
+    ``kind`` is still ``box``: perception sees a rim and a cavity, not an aspect ratio it
+    can classify, and hollow.py has no way to make a square tray read as anything else.
     """
-    inner_w, inner_d, wall = 0.03, 0.04, 0.015
+    inner_w, inner_d, wall = 0.056, 0.056, 0.007
+    height, floor = 0.05, 0.006
     return Item(
         prim=prim, kind="box", color=color, x=x, y=y, shape="cuboid",
-        size=(inner_w + 2 * wall, inner_d + 2 * wall, 0.012),
-        container=True, inner=(inner_w, inner_d), wall=wall,
+        size=(inner_w + 2 * wall, inner_d + 2 * wall, height),
+        container=True, inner=(inner_w, inner_d), wall=wall, floor=floor,
     )
 
 
 def _box(prim: str, color: str, x: float, y: float) -> Item:
-    """A box is a squarer zone, 3 x 3 cm inside and 3 cm tall, so its aspect is 1.0 and
-    perception calls it a box. Its 3 cm interior is exactly one cube wide, which is what
-    demo 10 needs to place a cube in it."""
-    inner, wall = 0.03, 0.015
+    """A deeper, squarer tray: the same 4.4 cm cavity but 5 cm of wall above the floor.
+
+    CHANGED IN THIS COPY, same reason as ``_tray``. Demo 09 declared this one 3 cm tall and
+    therefore 3 cm of solid slab with its "interior" written in a field nothing read -
+    ``Item.inner`` and ``Item.wall`` had no readers anywhere in the repository.
+
+    It is now a real cavity too, told apart from ``_tray`` by height rather than by being
+    hollower: the rim of this one sits higher above the table, which is a difference the
+    depth image can see even though the colour blob cannot. Same cavity size, so the two
+    are interchangeable for placement and the reach margin argument in ``_tray`` applies
+    here too.
+    """
+    inner, wall = 0.056, 0.007
+    height, floor = 0.05, 0.006
     return Item(
         prim=prim, kind="box", color=color, x=x, y=y, shape="cuboid",
-        size=(inner + 2 * wall, inner + 2 * wall, 0.03),
-        container=True, inner=(inner, inner), wall=wall,
+        size=(inner + 2 * wall, inner + 2 * wall, height),
+        container=True, inner=(inner, inner), wall=wall, floor=floor,
     )
 
 
@@ -169,9 +209,16 @@ DEFAULT_SCENE: list[Item] = [
     # also separated along x.
     _ball("ball_red", "red", 0.270, -0.455),
     _ball("ball_green", "green", 0.355, -0.455),
-    # nearest row: the coloured zones
-    _tray("tray_blue", "blue", 0.270, -0.370),
-    _box("box_red", "red", 0.355, -0.365),
+    # nearest row: the hollow receptacles.
+    #
+    # CHANGED IN THIS COPY: both moved 5 mm further from the robot's near edge, from x
+    # 0.270/0.355 to 0.275/0.360. The cavities grew to 5.6 cm so that a 3 cm cube has a
+    # chance of landing inside rather than on the wall (see _tray for the measurement), and
+    # a 7 cm footprint at x 0.270 spans 0.235..0.305, which pokes 5 mm outside WORK_X's
+    # lower bound of 0.24. At 0.275 and 0.360 they span 0.240..0.310 and 0.325..0.395,
+    # inside the working area with a 15 mm gap between them.
+    _tray("tray_blue", "blue", 0.275, -0.370),
+    _box("box_red", "red", 0.360, -0.365),
 ]
 
 # The shipped cube is the only rigid body inside the scene USD, so

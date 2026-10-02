@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 
 import colors
+import hollow
 import scene_spec
 from scene import CameraModel, Frame
 
@@ -143,7 +144,13 @@ def build_env(camera: str, items: list[scene_spec.Item]):
     for item in items:
         if item.prim == scene_spec.SHIPPED_CUBE:
             continue  # already a rigid body inside the scene USD
-        setattr(cfg.scene, item.prim, rigid_cfg(item))
+        if item.container:
+            # A hollow tray, not a solid slab: one kinematic rigid body with a floor and
+            # four walls as its collision shapes. See hollow.py for why this cannot be
+            # five sibling objects.
+            setattr(cfg.scene, item.prim, hollow.make_tray_asset_cfg(item))
+        else:
+            setattr(cfg.scene, item.prim, rigid_cfg(item))
 
     sensor = ensure_camera(cfg, camera)
     return gym.make(TASK, cfg=cfg).unwrapped, sensor
@@ -324,7 +331,13 @@ def capture(env, name: str) -> tuple[np.ndarray, np.ndarray | None, CameraModel]
 
     depth = None
     if scene_spec.DEPTH in sensor.data.output:
-        depth = sensor.data.output[scene_spec.DEPTH][0].detach().cpu().numpy().astype(np.float64)
+        raw = sensor.data.output[scene_spec.DEPTH][0].detach().cpu().numpy()
+        if not hasattr(capture, "_depth_shape_reported"):
+            capture._depth_shape_reported = True
+            print(f"  raw depth shape {raw.shape}, squeezing to 2-D")
+        depth = np.squeeze(raw).astype(np.float64)
+        if depth.ndim != 2:
+            depth = depth.reshape(depth.shape[-2], depth.shape[-1])
 
     height, width = sensor.data.image_shape
     camera = CameraModel(
