@@ -9,8 +9,23 @@ model and frame recorded in that JSON, and diffs the result against the JSON its
 Any difference at all is a bug in the copying, not in the code, and has to be settled
 before a single line of the copies is changed. No Isaac Sim, no torch.
 
-    python tools/verify_copy.py
-    python tools/verify_copy.py --frames ..\04_perception\out\frames --scenes ..\04_perception\out\scenes
+Run it with no arguments to see everything that differs. Run it with the fields this demo
+deliberately changed ignored to turn it into a regression test - that is the form to use
+after any edit to the copies, because it then fails if anything moves that should not:
+
+    python tools/verify_copy.py ^
+        --ignore-field inner_rect_m ^
+        --ignore-field elongation ^
+        --ignore-field fill ^
+        --ignore-field hollow ^
+        --ignore-field notes
+
+``inner_rect_m`` changed because demo 09 promised a wall inset and never applied one.
+``elongation``, ``fill`` and ``hollow`` are new fields demo 10 added to Thing so that the
+container threshold is measurable. ``notes`` changed because the detection note lists
+which colours exist, and demo 10 measured three more.
+
+    python tools/verify_copy.py --frames ..\\04_perception\\out\\frames --scenes ..\\04_perception\\out\\scenes
 """
 
 from __future__ import annotations

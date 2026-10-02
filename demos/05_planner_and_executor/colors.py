@@ -60,6 +60,8 @@ class Color:
     val_min: int = 0
     val_max: int = 255
     note: str = ""
+    measured: bool = True
+    usable: bool = True
 
     def as_dict(self) -> dict:
         return {
@@ -68,6 +70,8 @@ class Color:
             "hue": [list(band) for band in self.hue],
             "sat": [self.sat_min, self.sat_max],
             "val": [self.val_min, self.val_max],
+            "measured": self.measured,
+            "usable": self.usable,
             "note": self.note,
         }
 
@@ -169,18 +173,111 @@ COLORS: dict[str, Color] = {
         note="Found by low saturation and low value. In this scene it matches the "
              "robot's own dark grey links.",
     ),
+
+    # --- the three colours vocabulary.yaml can name and demo 09 could not see --------
+    #
+    # All nine bands below now come from a rendered frame, measured by
+    # tools/calibrate_colours.py: a 5 cm probe cube per colour on one grid, one rendered
+    # frame, and the pixels each probe's known footprint covers read in HSV. The table
+    # and its reasoning are in results/colour_calibration.md.
+    #
+    # Two of the three are measured and NOT USABLE, and that is the result rather than a
+    # failure of the measurement:
+    #
+    #   orange  H peak 24, S 170-182, V 217-222
+    #   yellow  H peak 29, S 167-180, V 210-220
+    #
+    # A hue gap of 5 with overlapping saturation and overlapping value. Orange is
+    # physically between red and yellow, and this scene already has red at H 1 and yellow
+    # at H 29, so there is no room left for it. Widening one of the two neighbours would
+    # cost a band that currently works.
+    #
+    #   pink    H peak 170, S 19-202, V 156-223
+    #   red     H peak   1, S 168-186, V 210-220
+    #
+    # A hue gap of 11 across the wrap, and pink's saturation spans almost the whole
+    # range, so saturation cannot separate them either.
+    #
+    # Both are kept in COLORS so that a detected object can still be *named* by a command
+    # model that says the word, and both are left out of the detect set. Perception is
+    # better off saying it cannot see an orange than finding the wood table's hue.
+    "orange": Color(
+        name="orange",
+        albedo=(0.85, 0.42, 0.05),
+        hue=[(20, 28)],
+        sat_min=140,
+        val_min=190,
+        measured=True,
+        usable=False,
+        note="MEASURED AND NOT USABLE. H peak 24, S 170-182, V 217-222. Yellow measures "
+             "H peak 29, S 167-180, V 210-220: a hue gap of 5 with both saturation and "
+             "value overlapping. Orange sits between this scene's red (H 1) and yellow "
+             "(H 29) and there is no room for it. Band kept for reference only; excluded "
+             "from the detect set.",
+    ),
+    "purple": Color(
+        name="purple",
+        albedo=(0.72, 0.18, 0.62),
+        hue=[(144, 163)],
+        sat_min=85,
+        val_min=160,
+        measured=True,
+        usable=True,
+        note="MEASURED. H peak 153, S 94-132, V 172-214. 95% of its pixels agree on the peak "
+             "hue. Separated by hue from every colour this can actually detect: red, "
+             "green, blue and yellow are all >= 20 hue units away. Its one conflict is "
+             "pink, at a hue gap of 17 where pink's saturation range (19-202) swallows "
+             "purple's (94-132) so saturation does not separate them either - but pink "
+             "is itself measured as unusable and is not detectable, so the conflict "
+             "never arises in practice. Usable, though still not in the proven detect "
+             "set until it has been through the same 20-trial check as red/green/blue.",
+    ),
+    "pink": Color(
+        name="pink",
+        albedo=(0.95, 0.62, 0.70),
+        hue=[(163, 177)],
+        sat_min=15,
+        val_min=150,
+        measured=True,
+        usable=False,
+        note="MEASURED AND NOT USABLE. H peak 170, S 19-202, V 156-223. Red measures H 1, "
+             "S 168-186: a hue gap of 11 across the wrap, and pink's saturation spans "
+             "almost the entire range so it cannot be separated by saturation either. "
+             "Excluded from the detect set; kept only so the word is nameable.",
+    ),
 }
 
 # What the perception half actually looks for, in order.
 #
-# White and black are in COLORS because vocabulary.yaml has them and a detected object
-# must be nameable, but they are NOT in DEFAULT_DETECT: the background measures as white
-# and the robot's links measure as black, so including them turns the whole frame into
-# detections. They come back with --detect white,black.
+# UNCHANGED from demo 09 on purpose. red, green and blue are the only three measured over
+# 20 trials of a full scene (117/120 kinds correct), and adding a fourth colour to this
+# tuple changes what every mask in the frame contains, so it has to earn its place the
+# same way those three did.
 #
-# Yellow is off for the same kind of reason and a stronger one: it shares its hue band
-# with the wood table. `--detect yellow` works, but expect to measure it first.
+# What the nine-colour measurement (tools/calibrate_colours.py, results/
+# colour_calibration.md) established, for whoever wants to widen this:
+#
+#   usable   red H1, green H69, blue H110, yellow H29, purple H153,
+#            white (S0-1, V216-223), black (V67-69)
+#   unusable orange  H24 - a hue gap of 5 from yellow, saturation and value overlapping
+#            pink    H170 - a hue gap of 11 from red across the wrap, saturation 19-202
+#
+# White and black are separable, but not by hue: white has no saturation (0-1) and black
+# has no value above 69, and both are far from every other colour's range. They are off
+# by default for a different reason - the background beyond the table measures as white
+# and the robot's own links measure as black, so including them turns the whole frame
+# into detections. Yellow is off because it needs S >= 130 to clear the wood table, which
+# its measured S 167-180 supports; purple is off because it has never been through a
+# 20-trial check.
+#
+# So the next colour to try adding is purple, and `WIDER_DETECT` below is the list to
+# measure against demo 09's baseline before believing it.
 DEFAULT_DETECT = ("red", "green", "blue")
+
+# Every colour the measurement says is separable from every other. NOT the detect set:
+# this is the candidate list, and widening DEFAULT_DETECT to it has to be re-measured
+# over the same 20 trials first.
+WIDER_DETECT = ("red", "green", "blue", "yellow", "purple")
 
 # Containers are the only large blobs, so they are found with the same colour masks and
 # then told apart by area. Not a second colour set: a blue tray and a blue cube differ in
