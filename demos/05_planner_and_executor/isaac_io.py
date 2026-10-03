@@ -36,6 +36,15 @@ TASK = "LeIsaac-SO101-LiftCube-v0"
 # needs a few more because it can land on an edge.
 SETTLE_STEPS = 40
 
+# A sphere written to rest height is not at rest. The first contact resolves as a small pop,
+# and these materials roll far enough to matter: measured, ``place_items`` left only 1.5 mm of
+# drift but the balls were still creeping at 2 cm/s afterwards and had drifted 27 mm by the
+# time the arm had parked. So settling is a loop with a stop condition, not a fixed count,
+# and the residual velocity is zeroed once more afterwards - a ball dropped on a level table
+# has no reason to move, so stopping it dead is not cheating.
+SETTLE_MAX_STEPS = 600
+SETTLE_STILL_M = 0.002
+
 # Physics steps given to the arm to reach its parked pose. The SO-101 servos are
 # position-controlled with stiffness 17.8, so 60 steps of 16.7 ms is a second, which is
 # plenty for a 1.4 rad elbow move and is not enough for it to drift back.
@@ -294,6 +303,23 @@ def robot_frame(env) -> Frame:
     return Frame.from_robot((float(position[0]), float(position[1])), left, forward)
 
 
+def _rest(env, items: list[scene_spec.Item]) -> int:
+    """Step physics until nothing on the table is moving. Returns the steps taken."""
+    import torch
+
+    for count in range(1, SETTLE_MAX_STEPS + 1):
+        env.sim.step(render=False)
+        worst = 0.0
+        for item in items:
+            speed = env.scene[item.prim].data.root_lin_vel_w[0]
+            worst = max(worst, float(torch.linalg.norm(speed)))
+        if worst < SETTLE_STILL_M:
+            env.scene.update(dt=env.physics_dt)
+            return count
+    env.scene.update(dt=env.physics_dt)
+    return SETTLE_MAX_STEPS
+
+
 def place_items(env, items: list[scene_spec.Item]) -> None:
     """Write every object's pose and let it settle, the way demo 05 places the cube."""
     import torch
@@ -306,9 +332,12 @@ def place_items(env, items: list[scene_spec.Item]) -> None:
         position = torch.tensor([[item.x, item.y, item.z]], device=device)
         obj.write_root_pose_to_sim(torch.cat([position, upright], dim=-1))
         obj.write_root_velocity_to_sim(zeros)
-    for _ in range(SETTLE_STEPS):
-        env.sim.step(render=False)
-    env.scene.update(dt=env.physics_dt)
+    _rest(env, items)
+    # Zero once more: the first contact leaves a residual roll that a level table will not
+    # stop on its own. See SETTLE_STILL_M.
+    for item in items:
+        env.scene[item.prim].write_root_velocity_to_sim(zeros)
+    _rest(env, items)
 
 
 def capture(env, name: str) -> tuple[np.ndarray, np.ndarray | None, CameraModel]:

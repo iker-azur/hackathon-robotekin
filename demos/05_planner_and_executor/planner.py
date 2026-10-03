@@ -143,8 +143,9 @@ def in_workspace(point: tuple[float, float, float]) -> str | None:
     return None
 
 
-def _carry(plan: Plan, pose, grip, target, note="") -> None:
-    plan.steps.append(Step("carry", pose, grip, target, note))
+def _carry(plan: Plan, action: str, pose, grip, target, note="") -> None:
+    """Add one step. The action name is what the executor times, so it has to be a real one."""
+    plan.steps.append(Step(action, pose, grip, target, note))
 
 
 def _pick_and_place(plan: Plan, thing: Thing, tray: Thing, offset, tag: str) -> None:
@@ -154,26 +155,26 @@ def _pick_and_place(plan: Plan, thing: Thing, tray: Thing, offset, tag: str) -> 
     above_grasp = (grasp[0], grasp[1], TRAVEL_Z)
     above_drop = (drop[0], drop[1], TRAVEL_Z)
 
-    _carry(plan, above_grasp, OPEN, thing.id, f"{tag}: above #{thing.id}")
-    _carry(plan, grasp, OPEN, thing.id, f"{tag}: down onto #{thing.id}")
-    _carry(plan, grasp, CLOSE, thing.id, f"{tag}: close on #{thing.id}")
-    _carry(plan, above_grasp, CLOSE, thing.id, f"{tag}: lift #{thing.id}")
+    _carry(plan, "above", above_grasp, OPEN, thing.id, f"{tag}: above #{thing.id}")
+    _carry(plan, "down", grasp, OPEN, thing.id, f"{tag}: down onto #{thing.id}")
+    _carry(plan, "close", grasp, CLOSE, thing.id, f"{tag}: close on #{thing.id}")
+    _carry(plan, "lift", above_grasp, CLOSE, thing.id, f"{tag}: lift #{thing.id}")
     plan.picks.append(thing.id)
-    _carry(plan, above_drop, CLOSE, thing.id, f"{tag}: carry to #{tray.id}")
-    _carry(plan, drop, CLOSE, tray.id, f"{tag}: lower over #{tray.id}")
-    _carry(plan, drop, OPEN, tray.id, f"{tag}: release into #{tray.id}")
+    _carry(plan, "carry", above_drop, CLOSE, thing.id, f"{tag}: carry to #{tray.id}")
+    _carry(plan, "lower", drop, CLOSE, tray.id, f"{tag}: lower over #{tray.id}")
+    _carry(plan, "release", drop, OPEN, tray.id, f"{tag}: release into #{tray.id}")
     plan.places.append(tray.id)
-    _carry(plan, above_drop, OPEN, tray.id, f"{tag}: retreat from #{tray.id}")
+    _carry(plan, "retreat", above_drop, OPEN, tray.id, f"{tag}: retreat from #{tray.id}")
 
 
 def _grasp_and_hold(plan: Plan, thing: Thing, offset, tag: str) -> None:
     """Pick an object up and keep it. `pick` has no destination, so there is no carry."""
     grasp = grasp_pose(thing, offset)
     above = (grasp[0], grasp[1], TRAVEL_Z)
-    _carry(plan, above, OPEN, thing.id, f"{tag}: above #{thing.id}")
-    _carry(plan, grasp, OPEN, thing.id, f"{tag}: down onto #{thing.id}")
-    _carry(plan, grasp, CLOSE, thing.id, f"{tag}: close on #{thing.id}")
-    _carry(plan, above, CLOSE, thing.id, f"{tag}: lift #{thing.id} and hold")
+    _carry(plan, "above", above, OPEN, thing.id, f"{tag}: above #{thing.id}")
+    _carry(plan, "down", grasp, OPEN, thing.id, f"{tag}: down onto #{thing.id}")
+    _carry(plan, "close", grasp, CLOSE, thing.id, f"{tag}: close on #{thing.id}")
+    _carry(plan, "lift", above, CLOSE, thing.id, f"{tag}: lift #{thing.id} and hold")
     plan.picks.append(thing.id)
 
 
