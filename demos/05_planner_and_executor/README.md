@@ -174,17 +174,19 @@ stale grasps: the robot cannot look at a ball without disturbing it, because par
 to see the table sweeps the same row the ball is in. Perception and action are fighting over
 the same object. Cubes are fine — 10–12 mm of drift against 15 mm of jaw reach.
 
-Three candidate fixes were tested and **disproved by measurement**, which is why they are not
-in the code: reversing the layout so the receptacles sit between the robot and the objects
-(changed nothing — the arm descends *through* the row height to reach its target, so it hits
-the target either way), approaching in two legs via a high waypoint (10× worse), and slowing
-the descent (much worse — 1200 steps drifts 1893 mm against 16.6 mm for 40, the signature of
-something rolling freely rather than being trapped). Details and numbers in
-`results/approach_drift.md`.
+**Balls cannot be grasped, and the reason is the gripper.** Re-aiming at a knocked ball is
+implemented (`--regrasp`, and a re-aim between the hover and the descent) and it works
+mechanically — the ball comes to rest in about 6.7 s after being displaced 157 mm, and the
+camera still sees it from the hover pose to within 14 mm. It does not rescue them: **aimed
+correctly at a freshly measured position, the descent still ejects the ball 77 mm**, past the
+20 mm the jaws can reach. A 3 cm cube survives the same approach at 10 mm.
 
-The one lever the measurements actually point at is damping the ball's rolling, since the drift
-is a function of how long it is free. That is a physics change to the scene, not a code fix,
-and it has not been tried.
+The cause is that "close" is binary and drives the jaws to 0.15 rad — essentially shut — and a
+4 cm sphere does not fit between fingers that close to nothing; it is squeezed out. The fix is
+to drive the gripper joint to an opening sized to the object (about 2 cm for a ball), which is
+a change to how the executor commands the gripper. Not implemented: the gripper action term is
+configured in the downloaded LeIsaac Hub module, so its closed command is not a parameter this
+demo owns. Full analysis in `results/approach_drift.md`.
 
 **A tray holds one object.** The cavity is 5.6 cm square, so a 3 cm cube or a 4 cm ball fits
 but not both. A command that asks for a second object in the same tray is refused by the

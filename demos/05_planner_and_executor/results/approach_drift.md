@@ -98,7 +98,45 @@ diagonal it was meant to avoid.
 
 **4. Refusing the fake grasp — this one worked.** See above.
 
-## What the measurements point at instead
+## Option 2, built and measured: re-aiming after the arm knocks its own target
+
+Rather than stop the arm knocking things, join the roll: after the hover, wait for the target
+to stop moving, look again, and aim at where it actually ended up. Implemented as
+`Executor.run(retarget=...)` plus `make_retarget` in the demo.
+
+**The two preconditions both hold**, which was not guaranteed:
+
+- the ball does come to rest — displaced 157 mm, taking 6.7 s (400 steps);
+- the camera still sees it from the hover pose, to within **14 mm**. The arm hovering above
+  where the ball *was* does not hide it, which was the thing that could have made this
+  impossible.
+
+So the mechanism works: it recovers a ball that rolled out of the working area (measured at
+x = −0.22 on a table whose near edge is x = 0.003), puts it back, re-perceives and replans.
+
+**And it still does not rescue balls.** Re-aimed at a freshly measured position, the descent
+displaces the ball **77 mm** — past the 20 mm the jaws can reach, so the grasp is correctly
+refused as stale.
+
+That is the finding that matters, and it revises the diagnosis. The ball is not only knocked
+on the way in; **the descent ejects it even when the aim is correct.** Re-aiming fixes the
+aiming error and leaves the real cause untouched.
+
+## What that points at instead
+
+The jaws cannot close on a 4 cm ball. `OPEN, CLOSE = 1.0, -1.0` drives the gripper action to
+`JAW_CLOSED_RAD = 0.15`, which is essentially shut, and a 4 cm sphere does not fit between
+fingers that close to nothing — it is squeezed out, which is the 77 mm. A 3 cm cube survives
+the same approach at 10 mm, which is why cubes work.
+
+The fix is therefore not perception and not planning. It is to stop treating "close" as binary
+and to drive the gripper joint to an opening sized to the object — about 2 cm for a 4 cm ball,
+closed for a cube. That is a change to how the executor commands the gripper rather than a
+change to the scene, and it is the one thing left that addresses the cause.
+
+It is not implemented here: the gripper action term is configured in the LeIsaac Hub module
+that `env_loader` downloads, so `closed_command` is not a parameter this demo owns, and
+overriding the action term was judged a larger change than it should be made untested.
 
 Every motion of this arm near a 4 cm ball ejects it, and the ejection scales with how long the
 ball is free to roll. The objects are 50 g spheres on a low-friction table, so a knock sends

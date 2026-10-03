@@ -61,8 +61,15 @@ STEP_COUNTS = {
 }
 DEFAULT_STEPS = 100
 
+# How many steps to wait for a knocked object to stop rolling before re-aiming at it.
+# Measured: 6.7 s (400 steps) for the worst ball, so the cap is generous rather than tight.
+SETTLE_UNTIL_STILL_STEPS = 400
+
+# Below this speed an object counts as stopped, so that it will not move appreciably during
+# the camera capture that follows.
+STILL_M = 0.001
+
 # How close an object must still be to where the plan aimed when the jaws finish closing.
-#
 # This is the check that was missing, and its absence is why the demo reported successes it
 # did not have. ``grab`` writes an object's pose from the gripper frame every step, so an
 # object 371 mm away was picked out of empty air, carried, and placed correctly - and nothing
@@ -153,6 +160,8 @@ class RunResult:
     # away. These are the ones that used to be reported as successes.
     stale_grasps = 0
     stale_prims: list[str] = field(default_factory=list)
+    # Times the plan was re-aimed after the arm knocked its own target.
+    reaimed = 0
 
     @property
     def ok(self) -> bool:
@@ -349,15 +358,44 @@ class Executor:
 
     # -- a whole plan ---------------------------------------------------------
 
-    def run(self, plan, resolve=None, keys=lambda: set(), fps=1) -> RunResult:
+    def settle_object(self, prim: str, cap: int = SETTLE_UNTIL_STILL_STEPS) -> int:
+        """Step physics until ``prim`` stops moving. Returns the steps taken.
+
+        Needed because the arm knocks its own target: measured, a ball is displaced 157 mm
+        and takes 6.7 s to come to rest, and aiming at where it *was* closes the jaws on empty
+        air. Zeroing its velocity instead would be simpler and a lie - the ball would stop
+        unnaturally fast, in a place nothing put it.
+        """
+        import torch
+
+        taken = 0
+        for taken in range(1, cap + 1):
+            self.env.sim.step(render=False)
+            if float(torch.linalg.norm(self.env.scene[prim].data.root_lin_vel_w[0])) < STILL_M:
+                break
+        self.env.scene.update(dt=self.env.physics_dt)
+        return taken
+
+    def run(self, plan, resolve=None, keys=lambda: set(), fps=1, retarget=None) -> RunResult:
         """Run a planner Plan. ``resolve`` maps a scene id to a prim name for grabbing.
 
         ``keys`` is called after every step and returns the keys pressed in the viewer; a
         ``q`` aborts the run rather than the process, so the demo can report what it managed
         before the user gave up.
+
+        ``retarget`` is called once, after a hover that precedes a descent onto something.
+        The arm knocks its own target on the way in - a ball is displaced 157 mm and rolls for
+        6.7 s - so the descent needs re-aiming at where the object ended up rather than where
+        it was seen. The callback is given the step about to run and returns a replacement for
+        the rest of the plan, or None to carry on with the original. It is the demo's job, not
+        the executor's, because it needs perception.
         """
         out = RunResult()
-        for step in plan.steps:
+        steps_left = list(plan.steps)
+        index = 0
+        reaimed = False
+        while index < len(steps_left):
+            step = steps_left[index]
             prim = None
             # Two different checks on two different steps, and both are needed:
             #
@@ -379,6 +417,17 @@ class Executor:
 
             result = self.do(step.action, np.asarray(step.pose, dtype=float), step.grip,
                              prim=prim, on_close=on_close, check=check)
+
+            # Re-aim once, at the first descent, after the hover that preceded it. This is
+            # the point where the arm has knocked the target and it has finished rolling.
+            if (retarget is not None and not reaimed and step.action == "above"
+                    and index + 1 < len(steps_left) and steps_left[index + 1].action == "down"):
+                reaimed = True
+                fresh = retarget(step, resolve(step.target) if (
+                    resolve and step.target is not None) else None)
+                if fresh:
+                    out.reaimed += 1
+                    steps_left = steps_left[:index + 1] + list(fresh)
             if result.grasp == "real":
                 out.real_grasps += 1
             elif result.grasp == "kinematic":
@@ -410,6 +459,7 @@ class Executor:
                 out.aborted = True
                 out.aborted_at = f"{result.action}: nothing to close on"
                 break
+            index += 1
         return out
 
     # -- settling -------------------------------------------------------------

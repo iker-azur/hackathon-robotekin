@@ -124,6 +124,9 @@ class Robot:
         self.replanned = 0
         # Commands that had to be replanned because the arm knocked its own target away.
         self.regrasped = 0
+        # Commands re-aimed after the arm knocked the target and it finished rolling.
+        self.reaimed = 0
+        self.premise: dict[int, str] = {}
         # Always a writer, so the "save this frame" key works whatever --save-every says. With
         # --save-every 0 the counter is set out of reach, so nothing is written until asked.
         self.writer = viewer_module.FrameWriter(
@@ -205,6 +208,29 @@ class Robot:
     def _xy(self, prim: str) -> tuple[float, float]:
         where = self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy()
         return float(where[0]), float(where[1])
+
+    def ensure_on_table(self, prim: str) -> bool:
+        """Put an object back if it has left the working area. True if it had to.
+
+        The arm does not merely displace what it reaches for, it ejects it: measured, a ball
+        ends up at x = -0.22 on a table whose near edge is x = 0.003, and one at x = -2.1.
+        An object that has rolled off the table cannot be re-aimed at, because there is
+        nothing left on the table to aim at.
+
+        This is the same restore ``park`` uses, for the same reason and with the same
+        reporting: the arm's own motion is what moved it, so putting it back is correcting
+        for the robot's action rather than inventing a scene.
+        """
+        if self._inside_area(prim):
+            return False
+        item = next((i for i in self.layout if i.prim == prim), None)
+        if item is None:
+            return False
+        x, y = self._xy(prim)
+        isaac_io.place_items(self.env, [item])
+        self.say(f"  {prim} had rolled off the working area to ({x:+.4f}, {y:+.4f}); "
+                 f"put it back")
+        return True
 
     def _inside_area(self, prim: str, slack: float = 0.02) -> bool:
         """Is this object still somewhere the arm can reach and the camera can see?"""
@@ -375,8 +401,12 @@ class Robot:
         # placement was verified as correct. See GRASP_REACH_M in executor.py for the numbers.
         for attempt in range(1 + self.args.regrasp):
             self.say(f"  {plan.summary}")
-            run = self.bot.run(plan, resolve=premise.get, keys=lambda: self.keys())
+            run = self.bot.run(plan, resolve=premise.get, keys=lambda: self.keys(),
+                             retarget=make_retarget(self, command, self.args))
             self.say(f"  {run.summary()}")
+            if run.reaimed:
+                self.reaimed += 1
+                premise = self.premise
 
             if run.stale_grasps:
                 self.regrasped += 1
@@ -404,8 +434,6 @@ class Robot:
             self.check(plan, premise)
             return True
         return True
-
-    # -- verification and recovery ---------------------------------------------
 
     def check(self, plan, premise: dict[int, str]) -> None:
         """Did each object actually end up inside? Re-perceive, and retry once if not.
@@ -579,6 +607,51 @@ class Robot:
             return "quit"
 
 
+    # -- re-aiming after the arm knocks its own target --------------------------
+
+def make_retarget(robot, command, args):
+    """Build the ``retarget`` callback the executor calls before a descent.
+
+    The arm knocks whatever it reaches for - a ball ends up 157 mm away and rolls for 6.7 s -
+    so descending onto where the object *was* closes the jaws on empty air. The fix is not to
+    stop knocking it, which three separate approaches failed to do (see
+    results/approach_drift.md), but to re-look once the roll has finished and aim at where it
+    ended up.
+
+    Measured to work: with the arm hovering above where the ball used to be, once the ball has
+    stopped, perception still finds it and places it within 14 mm. The hover does not hide it,
+    which was the thing that could have made this impossible.
+
+    No parking here, deliberately. Parking is what sweeps the objects in the first place, so
+    looking from the hover pose is not a compromise - it is the only place the robot can look
+    from without disturbing what it is looking at.
+    """
+    state = {"done": False}
+
+    def retarget(step, prim):
+        if state["done"] or prim is None:
+            return None
+        state["done"] = True
+
+        moved = robot.bot.settle_object(prim)
+        robot.say(f"  the arm knocked {prim} moving; waited {moved} step(s) for it to stop")
+        if robot.ensure_on_table(prim):
+            moved = robot.bot.settle_object(prim)
+
+        seen = robot.look("re-aiming")
+        fresh = planner.plan_command(command, seen, offset=args.offset)
+        if not fresh.moves:
+            robot.say(f"  nothing left to aim at: {fresh.reply}")
+            return None
+
+        robot.say(f"  re-aimed: {fresh.summary}")
+        robot.premise = robot.link(seen)
+        # Drop the fresh plan's leading hover: the arm is already there.
+        tail = fresh.steps[1:] if fresh.steps and fresh.steps[0].action == "above" else fresh.steps
+        return tail
+
+    return retarget
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -689,6 +762,7 @@ def main() -> int:
         robot.say(f"  never verified      : {robot.missed}")
         robot.say(f"  replanned mid-task  : {robot.replanned}")
         robot.say(f"  regrasp after a stale target : {robot.regrasped}")
+        robot.say(f"  re-aimed at a knocked target : {robot.reaimed}")
         failures += robot.missed
         if robot.writer:
             robot.writer.close()
