@@ -172,8 +172,19 @@ as **stale**, the run aborts, and `--regrasp N` re-perceives and replans. Full a
 **Replanning does not converge for balls, and the reason is structural.** Four attempts, four
 stale grasps: the robot cannot look at a ball without disturbing it, because parking the arm
 to see the table sweeps the same row the ball is in. Perception and action are fighting over
-the same object. Cubes are fine — 10–12 mm of drift against 15 mm of jaw reach. The two ways
-out are to damp the rolling, or to move the trays between the robot and the loose objects.
+the same object. Cubes are fine — 10–12 mm of drift against 15 mm of jaw reach.
+
+Three candidate fixes were tested and **disproved by measurement**, which is why they are not
+in the code: reversing the layout so the receptacles sit between the robot and the objects
+(changed nothing — the arm descends *through* the row height to reach its target, so it hits
+the target either way), approaching in two legs via a high waypoint (10× worse), and slowing
+the descent (much worse — 1200 steps drifts 1893 mm against 16.6 mm for 40, the signature of
+something rolling freely rather than being trapped). Details and numbers in
+`results/approach_drift.md`.
+
+The one lever the measurements actually point at is damping the ball's rolling, since the drift
+is a function of how long it is free. That is a physics change to the scene, not a code fix,
+and it has not been tried.
 
 **A tray holds one object.** The cavity is 5.6 cm square, so a 3 cm cube or a 4 cm ball fits
 but not both. A command that asks for a second object in the same tray is refused by the

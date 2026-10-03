@@ -56,6 +56,62 @@ across the table, and the ball then rolls away on its own while the gripper desc
 The same signature appears in the parking sweep, where duration is likewise how long the
 forearm leans on the balls: 1200 park steps drifted 1893 mm against 16.6 mm for 40.
 
+## What was tried, and what the measurements ruled out
+
+Four candidate fixes were tested. Three are disproven by measurement, which is worth recording
+as carefully as the thing that worked, because they are the obvious next ideas.
+
+**1. A gentler descent — disproven, and backwards.** Sweeping the step count:
+
+| `down` steps | 15 | 25 | 40 | 60 | 100 | 300 | 800 |
+|---|---|---|---|---|---|---|---|
+| ball drift | 145 mm | 119 mm | 206 mm | 146 mm | 373 mm | 1860 mm | 6791 mm |
+
+At 15 steps, where the ball has almost no time to react, it is still 145 mm away — so the
+descending fingers are not squeezing it out. And the slow end is catastrophic, which is the
+signature of something **rolling freely for the duration**. Same signature as the parking
+sweep, where 1200 steps drifted 1893 mm against 16.6 mm for 40.
+
+**2. Reversing the layout — implemented, measured, reverted.** Put the receptacles between the
+robot and the loose objects, with all four loose objects in one row beyond them, so the arm's
+transit crosses only kinematic trays. Validated offline first (reaches 214–284 mm against a
+330 mm envelope, minimum same-colour gap 35 mm, and a 40 mm row gap against a 13 mm occlusion
+shadow, so nothing hides anything), and `conflicts` was clean over 400 random seeds.
+
+It changed nothing. Balls still moved 57–62 mm during `above` and ended 106–245 mm from the
+aim — the same as before. The parking sweep was also unchanged, 16.3 mm against 16.6 mm.
+
+The reason is that the arm **descends through the height of the object row on the way to the
+target**, so it collides with the target itself no matter which side of it the other objects
+are on. Since the layout flip would have invalidated the colour, shape and tray calibrations
+for no measured gain, it was reverted.
+
+**3. Approaching in two legs — disproven, badly.** Travel to a waypoint high above the target,
+then descend vertically, so the diagonal descent through the row never happens:
+
+| waypoint z | 0.20 | 0.30 | 0.40 |
+|---|---|---|---|
+| ball drift | 1772 mm | 1793 mm | 1073 mm |
+
+Worse by an order of magnitude. The extra motion at table height does more damage than the
+diagonal it was meant to avoid.
+
+**4. Refusing the fake grasp — this one worked.** See above.
+
+## What the measurements point at instead
+
+Every motion of this arm near a 4 cm ball ejects it, and the ejection scales with how long the
+ball is free to roll. The objects are 50 g spheres on a low-friction table, so a knock sends
+them metres. The one lever that follows directly from that is **damping the rolling** — the
+drift is a function of free-roll time, so it is the free-roll time that has to change. That is
+a physics change to the scene rather than a code fix, and it has not been tried.
+
+The alternative, which needs no physics change, is to **not require the ball to stay still**:
+accept that the arm will always disturb its target, and grasp it anyway by reaching for where
+it has rolled to. That is a prediction problem rather than a rejection problem — it needs a
+second perception pass timed to the end of the approach, when the ball is stationary — and it
+is what "the camera should work more" would have to mean in practice.
+
 ## What is fixed
 
 - `GRASP_REACH_M` (20 mm, a ball's own radius): at the end of `close`, if the object is not

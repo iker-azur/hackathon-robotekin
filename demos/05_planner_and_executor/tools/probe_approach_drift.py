@@ -52,6 +52,11 @@ def main() -> int:
     parser.add_argument("--down-steps", type=int, default=None,
                         help="override the step count for the descent, to test whether a "
                              "gentler approach leaves the ball alone")
+    parser.add_argument("--high-waypoint", type=float, default=None, metavar="Z",
+                        help="approach in two legs: travel to this height directly above the "
+                             "target, then descend vertically. The planner's `above` goes "
+                             "there in one straight line from park, descending diagonally "
+                             "through the height of the object row on the way.")
     args = parser.parse_args()
 
     base = list(scene_spec.DEFAULT_SCENE)
@@ -112,7 +117,15 @@ def main() -> int:
                 start = where(env, prim)
 
                 above_step = next(s for s in plan.steps if s.action == "above")
-                bot.do("above", np.asarray(above_step.pose), executor_module.OPEN)
+                if args.high_waypoint is None:
+                    bot.do("above", np.asarray(above_step.pose), executor_module.OPEN)
+                else:
+                    # Two legs: get above the target at a height that clears the object row,
+                    # then come straight down. Only the vertical leg is at table height.
+                    high = np.array([above_step.pose[0], above_step.pose[1],
+                                     args.high_waypoint])
+                    bot.do("above", high, executor_module.OPEN, steps=120)
+                    bot.do("above", np.asarray(above_step.pose), executor_module.OPEN)
                 drift_above = float(np.linalg.norm(where(env, prim)[:2] - start[:2])) * 1000
 
                 down_step = next(s for s in plan.steps if s.action == "down")
