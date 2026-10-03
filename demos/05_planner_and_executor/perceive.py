@@ -60,23 +60,29 @@ KIND_MIN_AREA_PX = 400
 #     3 cm cubes, 80 blobs:  fill 0.9562 .. 0.9780   elong 0.739 .. 0.863
 #     4 cm balls, 80 blobs:  fill 0.9985 .. 1.0001   elong 0.961 .. 0.998
 #
-# The two ranges do not touch, so any threshold in (0.9780, 0.9985) separates them.
-# 0.985 sits in the middle of that gap. An ideal disc gives 0.9988-1.000 and an ideal
-# square 0.954-0.957, which is the same story: it is the antialiased thresholded cube,
-# not the geometry, that needs the room.
+# Those were demo 09's numbers, on a scene whose receptacles were flat coloured slabs. This
+# copy replaced them with hollow trays 7 cm across and 5 cm tall, which changes what the
+# camera sees around the objects, and the thresholds were re-measured rather than nudged -
+# tools/measure_kinds.py, 20 jittered trials, 40 cubes and 40 balls labelled against the
+# simulator's own ground truth (results/kind_calibration.md):
 #
-# The old value was 0.975, which is *below* the top of the cube range and so called the
-# largest blue cube a ball. 0.985 is not a fudge to hide that: it is in the middle of a
-# gap that 160 measured blobs agree on. If a future scene moves the cubes closer to the
-# camera, re-measure this rather than nudging it.
-BALL_ELONGATION = 0.80
-BALL_FILL = 0.985
+#     3 cm cubes, 40 blobs:  fill 0.9629 .. 0.9850   elong 0.749 .. 0.861
+#     4 cm balls, 40 blobs:  fill 0.9980 .. 0.9999   elong 0.952 .. 0.996
+#
+# The cube ceiling rose from 0.9780 to 0.9850, which is exactly where demo 09 had put the
+# threshold: `fill >= 0.985` was already false for every cube demo 09 measured, and now a
+# cube sitting at the new ceiling fails the test by nothing at all. So the threshold has
+# moved to the middle of the new gap, 0.9915, the same rule demo 09 used and the same reason.
+#
+# Any threshold in (0.9850, 0.9980) separates the two ranges. 0.9915 is the middle.
+BALL_ELONGATION = 0.907
+BALL_FILL = 0.9915
 BOX_ELONGATION = 0.55
 
-# What a square measures, kept as its own constant because confidence_of scores
-# distance from either of the two expected values, and because it is the number to
-# check after changing BALL_FILL.
-CUBE_FILL = 0.954
+# What a square measures, kept as its own constant because confidence_of scores distance
+# from either of the two expected values, and because it is the number to check after
+# changing BALL_FILL. Measured midpoint of the 40 cubes above, 0.9629..0.9850.
+CUBE_FILL = 0.974
 
 # Fraction of a container's bounding box taken to be wall rather than interior, applied
 # to each side of each dimension, so the interior is (1 - 2 * this) of the footprint.

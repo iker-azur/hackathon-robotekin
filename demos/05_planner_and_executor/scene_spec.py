@@ -155,17 +155,24 @@ def _tray(prim: str, color: str, x: float, y: float) -> Item:
 
 
 def _box(prim: str, color: str, x: float, y: float) -> Item:
-    """A deeper, squarer tray: the same 4.4 cm cavity but 5 cm of wall above the floor.
+    """A second tray, geometrically identical to ``_tray`` and told apart only by colour.
 
-    CHANGED IN THIS COPY, same reason as ``_tray``. Demo 09 declared this one 3 cm tall and
-    therefore 3 cm of solid slab with its "interior" written in a field nothing read -
-    ``Item.inner`` and ``Item.wall`` had no readers anywhere in the repository.
+    CHANGED IN THIS COPY. Demo 09 declared this one 3 cm tall against the tray's 1.2 cm,
+    and wrote "told apart by height" - but both were SOLID SLABS, so the height difference
+    was between two painted rectangles and nothing could grasp into either. Its docstring
+    also claimed a "3 cm interior ... exactly one cube wide", which was a field no code
+    anywhere read: ``Item.inner`` and ``Item.wall`` had no readers in the repository.
 
-    It is now a real cavity too, told apart from ``_tray`` by height rather than by being
-    hollower: the rim of this one sits higher above the table, which is a difference the
-    depth image can see even though the colour blob cannot. Same cavity size, so the two
-    are interchangeable for placement and the reach margin argument in ``_tray`` applies
-    here too.
+    It is now a real cavity, and it is the SAME SIZE as the tray. An earlier version of
+    this copy gave the box a taller rim and said so here; that was dropped because
+    perception cannot tell the two apart either way - ``perceive.py`` is explicit that
+    nothing is called a tray from shape, and the colour blob of a hollow box is the same
+    ring a hollow tray's is. Claiming a distinction that no measurement can see is the same
+    mistake demo 09 made in the other direction, so the two are declared equal and the demo
+    relies on colour, which a person would too.
+
+    Its footprint is 7 cm square, the same as the tray's, so nothing in the layout maths
+    moves, and ``_tray``'s reach and margin argument applies here unchanged.
     """
     inner, wall = 0.056, 0.007
     height, floor = 0.05, 0.006

@@ -334,18 +334,55 @@ def mask_of(hsv: np.ndarray, color: Color) -> np.ndarray:
 
 
 def parse_detect(text: str) -> list[str]:
-    """The colours named on the command line, in the order COLORS defines."""
-    return colors([name for name in re.split(r"[,\s]+", text or "") if name])
+    """The colours named on the command line, in the order COLORS defines.
+
+    Warns about any colour that was measured as unusable, rather than refusing it. Asking
+    for one is a reasonable thing to do while investigating, and the point of the ``usable``
+    flag is that someone finds out the band does not work instead of quietly discovering it
+    through wrong detections.
+    """
+    import warnings
+
+    wanted = colors([name for name in re.split(r"[,\s]+", text or "") if name])
+    bad = [name for name in wanted if not COLORS[name].usable]
+    if bad:
+        warnings.warn(
+            f"{', '.join(bad)} {'was' if len(bad) == 1 else 'were'} measured as not separable "
+            f"from another colour and will match it. Expect wrong detections; see "
+            f"results/colour_calibration.md.",
+            stacklevel=2,
+        )
+    return wanted
 
 
 def detection_note() -> str:
-    """One line explaining why some colours are off by default, for the report."""
-    return (
-        f"looking for: {', '.join(DEFAULT_DETECT)}. "
-        f"not by default: {', '.join(c for c in COLORS if c not in DEFAULT_DETECT)} "
-        f"(white and black match the background and the robot's own links; yellow "
-        f"shares its hue band with the wood table). Add one with --detect."
-    )
+    """One line explaining why some colours are off by default, for the report.
+
+    Three groups, because "off by default" means two different things. A colour can be
+    separable but not yet proven over a full scene, or it can be measured as impossible to
+    separate from another colour at all, and conflating them would invite someone to add
+    an unusable band to the detect set because it was merely untested. ``usable`` is what
+    separates the second group from the first.
+    """
+    off = [c for c in COLORS if c not in DEFAULT_DETECT]
+    unusable = [c for c in off if not COLORS[c].usable]
+    untested = [c for c in off if COLORS[c].usable]
+    parts = [f"looking for: {', '.join(DEFAULT_DETECT)}."]
+    if untested:
+        parts.append(f"separable but off by default: {', '.join(untested)} "
+                     f"(white and black match the background and the robot's own links; "
+                     f"yellow shares its hue band with the wood table; purple has not been "
+                     f"through the 20-trial check yet).")
+    if unusable:
+        parts.append(f"MEASURED AS NOT SEPARABLE, leave off: {', '.join(unusable)} "
+                     f"(orange is 5 hue units from yellow, pink is 11 from red, and "
+                     f"saturation separates neither). They stay in COLORS so a command model "
+                     f"can still name them.")
+    added = [c for c in WIDER_DETECT if c not in DEFAULT_DETECT]
+    if added:
+        parts.append(f"measured candidates to try next: {', '.join(added)}.")
+    parts.append("Add one with --detect.")
+    return " ".join(parts)
 
 
 def overlapping(colors: list[str]) -> dict[str, list[str]]:

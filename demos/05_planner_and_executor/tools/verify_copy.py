@@ -18,12 +18,24 @@ after any edit to the copies, because it then fails if anything moves that shoul
         --ignore-field elongation ^
         --ignore-field fill ^
         --ignore-field hollow ^
-        --ignore-field notes
+        --ignore-field footprint_m ^
+        --ignore-field base_centre_m ^
+        --ignore-field notes ^
+        --ignore-field kind ^
+        --ignore-field confidence
 
 ``inner_rect_m`` changed because demo 09 promised a wall inset and never applied one.
-``elongation``, ``fill`` and ``hollow`` are new fields demo 10 added to Thing so that the
-container threshold is measurable. ``notes`` changed because the detection note lists
-which colours exist, and demo 10 measured three more.
+``elongation``, ``fill``, ``hollow``, ``footprint_m`` and ``base_centre_m`` are new fields
+demo 10 added to Thing, so that the container and cavity thresholds are measurable instead
+of asserted. ``notes`` changed because the detection note lists which colours exist, and
+demo 10 measured three more.
+
+``kind`` and ``confidence`` changed because demo 10 re-measured the cube/ball shape
+thresholds for its own scene, whose hollow trays are taller and wider than the flat slabs
+demo 09 measured them on. That is a fix, not a drift: ``tools/compare_thresholds.py``
+checks demo 09's recorded labels against the simulator's own ground truth and finds
+``cube_blue`` called a ball in 4 of the 20 recorded scenes, which the re-measured threshold
+calls correctly.
 
     python tools/verify_copy.py --frames ..\\04_perception\\out\\frames --scenes ..\\04_perception\\out\\scenes
 """

@@ -149,7 +149,6 @@ def main() -> int:
                 env.sim.step(render=False)
             env.scene.update(dt=env.physics_dt)
             landed = env.scene[cube.prim].data.root_pos_w[0].detach().cpu().numpy()
-            floor_top = scene_spec.TABLE_TOP_Z + tray.floor
             rim = scene_spec.TABLE_TOP_Z + tray.height
             in_cavity = inside((tray.x, tray.y), tray.inner, float(landed[0]), float(landed[1]))
             below_rim = float(landed[2]) < rim
@@ -235,8 +234,10 @@ def main() -> int:
 
             # Only gate on the centre estimate, not on the footprint: the footprint is a
             # documented diagnostic that is known to be unreliable on one axis.
-            best = min(centre_results.items() if centre_results else [], key=lambda kv: sum(kv[1]))
-            if best and sum(best[1]) / len(best[1]) > 0.012:
+            if not centre_results:
+                problems.append("no centre estimate was measured at all")
+            best = min(centre_results.items(), key=lambda kv: sum(kv[1]))
+            if sum(best[1]) / len(best[1]) > 0.012:
                 problems.append(
                     f"{item.prim}: the best centre estimate ({best[0]}) is "
                     f"{sum(best[1]) / len(best[1]) * 1000:.0f} mm off on average, over the 12 mm budget"
