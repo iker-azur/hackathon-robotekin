@@ -1,0 +1,87 @@
+# Why the robot aimed at the wrong place, and why it looked like it worked
+
+Measured with `tools/probe_approach_drift.py`.
+
+## The symptom
+
+The robot reached for a ball that was no longer where it had been seen, closed its jaws on
+empty air, and the demo reported a successful placement.
+
+## Why it looked successful
+
+`Executor.grab` writes the held object's pose from the gripper frame every step. That is demo
+05's deliberate kinematic-carry mechanism, and it is what makes the shipped 3 cm cube
+reproducible. But nothing checked whether the object was actually there first, so the same
+mechanism silently picked an object out of thin air: the jaws closed 371 mm from the ball,
+`grab` teleported the ball into the gripper, and the placement verified as correct.
+
+A check that cannot fail is not a check. This is the same failure as the earlier
+"verification passed vacuously" bug, one layer deeper: that one could not detect a *missing*
+placement, this one could not detect a *fake* one.
+
+## How far the target actually moves
+
+Planned from a real camera frame, then driven `above` and `down`, comparing where the jaws
+aimed with where the object was:
+
+| target | moved during `above` | distance at `down` | jaws can reach |
+|---|---|---|---|
+| `cube_blue` | 0.0 mm | 9.6–11.7 mm | 15 mm |
+| `cube` (shipped) | 0.0 mm | 10.1–11.3 mm | 15 mm |
+| `ball_red` | 57.6–60.4 mm | **192–371 mm** | 20 mm |
+
+The jaws closed more than half an object away on **3 of 9** approaches. Every one was a ball.
+A cube moves 10–12 mm over the same approach, which is perception error and well inside reach.
+
+## The descent is not the cause; the ball keeps rolling
+
+Sweeping the descent duration:
+
+| `down` steps | seconds | ball drift at `down` |
+|---|---|---|
+| 15 | 0.25 | 145 mm |
+| 25 | 0.42 | 119 mm |
+| 40 | 0.67 | 206 mm |
+| 60 | 1.00 | 146 mm |
+| 100 (default) | 1.67 | 373 mm |
+| 300 | 5.00 | 1860 mm |
+| 800 | 13.4 | 6791 mm |
+
+Two things follow. The ball is not squeezed out by the descending fingers — at 15 steps,
+where it has almost no time to react, it is still 145 mm away. And the relationship is not
+monotonic at the fast end but is brutal at the slow end, which is the signature of **something
+rolling freely for the duration of the motion**. The arm knocks the ball during its transit
+across the table, and the ball then rolls away on its own while the gripper descends.
+
+The same signature appears in the parking sweep, where duration is likewise how long the
+forearm leans on the balls: 1200 park steps drifted 1893 mm against 16.6 mm for 40.
+
+## What is fixed
+
+- `GRASP_REACH_M` (20 mm, a ball's own radius): at the end of `close`, if the object is not
+  within reach of where the jaws aimed, the grasp is marked `stale`, the run **aborts** rather
+  than carrying on, and no kinematic carry is started. The demo says *"nothing to close on:
+  the object is 113 mm from where the jaws aimed"*.
+- `--regrasp N` (default 2) re-perceives and replans on a stale grasp, which is the right
+  response to a target that moved.
+- A stale or lost grasp is no longer counted as a placement.
+
+## What is not fixed
+
+**Replanning does not converge for balls**, measured: 4 attempts, 4 stale grasps. The reason
+is that the robot cannot observe a ball without disturbing it — parking the arm to see the
+table sweeps the same row, and the ball rolls further each time. Perception and action are
+fighting over the same object.
+
+Cubes are unaffected and work: 10–12 mm of drift against 15 mm of reach.
+
+The two ways out, neither of which is a code tweak:
+
+1. **Stop the ball rolling.** The drift scales with how long the ball is free, so damping it
+   is the direct fix. Current rolling behaviour is not what a rubber ball on a table does —
+   a real one stops within a few tens of centimetres.
+2. **Move the trays between the robot and the loose objects.** The arm's transit crosses the
+   object row only because the receptacles are on the far side of it. Putting them on the near
+   side means only the target is disturbed. This is the layout change already identified as
+   the fix for the parking sweep, and it would fix this too — at the cost of re-measuring the
+   colour, shape and tray calibrations.

@@ -122,6 +122,8 @@ class Robot:
         self.recovered = 0
         self.missed = 0
         self.replanned = 0
+        # Commands that had to be replanned because the arm knocked its own target away.
+        self.regrasped = 0
         # Always a writer, so the "save this frame" key works whatever --save-every says. With
         # --save-every 0 the counter is set out of reach, so nothing is written until asked.
         self.writer = viewer_module.FrameWriter(
@@ -367,14 +369,40 @@ class Robot:
             self.say(f"  replanned: {plan.summary} -> {again.summary}")
             plan = again
 
-        self.say(f"  {plan.summary}")
-        run = self.bot.run(plan, resolve=premise.get, keys=lambda: self.keys())
-        self.say(f"  {run.summary()}")
-        if run.aborted:
-            self.say("  stopped early at your request")
-            return True
+        # Run it, and if the arm knocked the target away on the way in, look again and plan
+        # again. This is the case that used to be reported as a success: the jaws shut on
+        # empty air, the kinematic fallback picked the object up out of thin air, and the
+        # placement was verified as correct. See GRASP_REACH_M in executor.py for the numbers.
+        for attempt in range(1 + self.args.regrasp):
+            self.say(f"  {plan.summary}")
+            run = self.bot.run(plan, resolve=premise.get, keys=lambda: self.keys())
+            self.say(f"  {run.summary()}")
 
-        self.check(plan, premise)
+            if run.stale_grasps:
+                self.regrasped += 1
+                self.say(f"  the arm knocked the target away before closing "
+                         f"({run.aborted_at})")
+                if attempt < self.args.regrasp:
+                    self.say(f"  looking again and replanning (attempt {attempt + 2} of "
+                             f"{self.args.regrasp + 1})")
+                    self.park()
+                    seen = self.look("after a stale grasp")
+                    premise = self.link(seen)
+                    again = planner.plan_command(command, seen, offset=self.args.offset)
+                    if not again.moves:
+                        self.say(f"  nothing left to plan: {again.reply}")
+                        return True
+                    plan = again
+                    continue
+                self.say("  out of attempts; the placement did not happen")
+                return True
+
+            if run.aborted:
+                self.say("  stopped early at your request")
+                return True
+
+            self.check(plan, premise)
+            return True
         return True
 
     # -- verification and recovery ---------------------------------------------
@@ -571,6 +599,9 @@ def main() -> int:
                         help="how far a randomised layout may move things, in metres")
     parser.add_argument("--disturb", type=float, default=0.0, metavar="P",
                         help="probability of shoving the scene between planning and executing")
+    parser.add_argument("--regrasp", type=int, default=2, metavar="N",
+                        help="times to re-perceive and replan when the arm knocks the target "
+                             "out of the jaws' reach before closing (default 2)")
     parser.add_argument("--text", action="append", default=[], metavar="COMMAND",
                         help="run this command instead of waiting; repeatable")
     parser.add_argument("--detect", nargs="+", default=list(colors.DEFAULT_DETECT),
@@ -657,6 +688,7 @@ def main() -> int:
         robot.say(f"  needed a retry      : {robot.recovered}")
         robot.say(f"  never verified      : {robot.missed}")
         robot.say(f"  replanned mid-task  : {robot.replanned}")
+        robot.say(f"  regrasp after a stale target : {robot.regrasped}")
         failures += robot.missed
         if robot.writer:
             robot.writer.close()

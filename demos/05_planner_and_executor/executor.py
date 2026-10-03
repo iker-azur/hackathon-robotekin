@@ -61,6 +61,21 @@ STEP_COUNTS = {
 }
 DEFAULT_STEPS = 100
 
+# How close an object must still be to where the plan aimed when the jaws finish closing.
+#
+# This is the check that was missing, and its absence is why the demo reported successes it
+# did not have. ``grab`` writes an object's pose from the gripper frame every step, so an
+# object 371 mm away was picked out of empty air, carried, and placed correctly - and nothing
+# in the report said the jaws had never touched it. The number comes from
+# tools/probe_approach_drift.py: a ball is knocked 57-60 mm by the arm's own transit across
+# the table and a further 130-310 mm by the descent, because the jaws shut to 0.15 rad around
+# a 4 cm ball and squirt it out. A 3 cm cube moves 10-12 mm over the same approach, all of it
+# perception error, and is well inside this.
+#
+# 20 mm is a ball's own radius, i.e. "the jaws could still physically be around it". Beyond
+# that the grasp did not happen and must not be faked.
+GRASP_REACH_M = 0.020
+
 # What fraction of the gripper's own travel an object must follow during the lift to count as
 # held. Absolute distance is not enough: a 4 cm ball closed on by jaws that shut to 0.15 rad
 # is nudged 30 mm of the lift's 60 mm and then drops out, which a "did it move at all" test
@@ -134,6 +149,10 @@ class RunResult:
     real_grasps = 0
     kinematic_grasps = 0
     lost_grasps = 0
+    # Grasps where the jaws shut on nothing because the arm had already knocked the target
+    # away. These are the ones that used to be reported as successes.
+    stale_grasps = 0
+    stale_prims: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -144,7 +163,9 @@ class RunResult:
             return f"aborted at {self.aborted_at} after {len(self.steps)} step(s)"
         return (f"{len(self.steps)} step(s), {self.real_grasps} real grasp(s), "
                 f"{self.kinematic_grasps} kinematic"
-                + (f", {self.lost_grasps} lost" if self.lost_grasps else ""))
+                + (f", {self.lost_grasps} lost" if self.lost_grasps else "")
+                + (f", {self.stale_grasps} stale (jaws closed on nothing)"
+                   if self.stale_grasps else ""))
 
 
 class Executor:
@@ -238,8 +259,18 @@ class Executor:
     # -- one step -------------------------------------------------------------
 
     def do(self, action: str, pose, grip: float, prim: str | None = None,
-           on_close=None, steps: int | None = None) -> StepResult:
+           on_close=None, steps: int | None = None, check: str | None = None) -> StepResult:
         """Run one planner action to completion. ``pose`` is a world-frame gripper point.
+
+        ``check`` is what to test at the END of this action, and both checks exist because a
+        grasp can fail in two different ways:
+
+        ``"reach"``
+            on ``close``: is the object still where this step aimed? If it is not, the jaws
+            shut on nothing and the run is stale. See ``GRASP_REACH_M``.
+        ``"follow"``
+            on ``lift``: did the object come up with the gripper? This is the friction test,
+            and it is what decides real against kinematic.
 
         The interpolation is demo 05's: each step moves 1/0.8n of the remaining distance, so
         the arm covers the whole way in 80% of the steps and then holds. Without that the last
@@ -264,11 +295,24 @@ class Executor:
                 self.current = start + (goal - start) * min(1.0, index / (0.8 * steps))
                 self.env.step(self._action(self.current, grip))
 
-                if on_close is not None and index == steps:
-                    # Checked at the END of the action, not during it, and judged as a
-                    # fraction of how far the GRIPPER moved. A grasp that "took" because the
-                    # closing jaws nudged the object is not a grasp; and an object that
-                    # followed half the lift and then slipped out is not held either.
+                if on_close is not None and index == steps and check == "reach":
+                    # The jaws have finished shutting. Is the object still where this step
+                    # aimed? If not, the descent knocked it away, the jaws closed on nothing,
+                    # and the honest answer is that the grasp did not happen.
+                    now = self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy()
+                    aimed = np.asarray(pose, dtype=float)[:2]
+                    off = float(np.linalg.norm(now[:2] - aimed))
+                    if off > GRASP_REACH_M:
+                        result.grasp = "stale"
+                        result.ok = False
+                        result.note = (f"nothing to close on: the object is {off * 1000:.0f} mm "
+                                       f"from where the jaws aimed, past the "
+                                       f"{GRASP_REACH_M * 1000:.0f} mm the jaws can reach")
+
+                if on_close is not None and index == steps and check == "follow":
+                    # Judged as a fraction of how far the GRIPPER moved. A grasp that "took"
+                    # because the closing jaws nudged the object is not a grasp; and an object
+                    # that followed half the lift and then slipped out is not held either.
                     moved = self._moved(prim, on_close)
                     travel = float(self.torch.linalg.norm((goal - start)[0]))
                     follow = moved / travel if travel > 1e-6 else 0.0
@@ -315,14 +359,18 @@ class Executor:
         out = RunResult()
         for step in plan.steps:
             prim = None
-            # The grasp is judged on the LIFT, not on the close. The close is where the jaws
-            # shut and nudge whatever is between them, which reads as a grasp that is not one.
-            # The lift is where "is it actually in the gripper" gets answered.
+            # Two different checks on two different steps, and both are needed:
             #
-            # Only the lift carries a grasp check. ``carry`` and ``lower`` also hold CLOSE, so
-            # keying on the gripper alone counted one grasp four times over - a run reported
-            # "3 real grasps" for a plan containing a single grasp.
-            if step.action == "lift" and resolve is not None and step.target is not None:
+            # ``close`` asks whether the object is still where the jaws are aimed. This is
+            # what catches the arm knocking its own target away on the way in, which for a ball
+            # is 192-371 mm - far past anything the jaws can close around.
+            #
+            # Only those two carry a check. ``carry`` and ``lower`` also hold CLOSE, so keying
+            # on the gripper alone checked four times per grasp and reported "3 real grasps" for
+            # a plan containing one.
+            check = "reach" if step.action == "close" else (
+                "follow" if step.action == "lift" else None)
+            if check is not None and resolve is not None and step.target is not None:
                 prim = resolve(step.target)
                 on_close = (self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy().copy()
                             if prim else None)
@@ -330,13 +378,16 @@ class Executor:
                 on_close = None
 
             result = self.do(step.action, np.asarray(step.pose, dtype=float), step.grip,
-                             prim=prim, on_close=on_close)
+                             prim=prim, on_close=on_close, check=check)
             if result.grasp == "real":
                 out.real_grasps += 1
             elif result.grasp == "kinematic":
                 out.kinematic_grasps += 1
             elif result.grasp == "lost":
                 out.lost_grasps += 1
+            elif result.grasp == "stale":
+                out.stale_grasps += 1
+                out.stale_prims.append(prim)
 
             if step.grip == OPEN and self._held is not None:
                 self.drop()
@@ -350,6 +401,14 @@ class Executor:
                 out.aborted = True
                 out.aborted_at = f"{result.action} ({step.note})"
                 self.log(f"  ABORTED by the user at {result.action}")
+                break
+            if result.grasp == "stale":
+                # Stop here. The rest of the plan is carry-lower-release for an object the
+                # jaws never closed on, so running it would fly the gripper to the destination
+                # and open on nothing - eight steps of motion and a placement that did not
+                # happen. The caller re-perceives and replans instead.
+                out.aborted = True
+                out.aborted_at = f"{result.action}: nothing to close on"
                 break
         return out
 

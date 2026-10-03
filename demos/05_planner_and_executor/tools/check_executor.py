@@ -86,12 +86,16 @@ def trace(bot, label, wanted):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--no-park", action="store_true",
                         help="Skip park_arm before driving, which is what demo 05 does")
     parser.add_argument("--show-action", action="store_true", help="Print the first action vector")
-    parser.add_argument("--scene", default="trial000", help="Recorded scene for the camera-derived check")
+    parser.add_argument("--scene", default="trial000",
+                        help="Recorded scene for the camera-derived check")
+    parser.add_argument("--regrasp", type=int, default=2,
+                        help="re-perceive and replan a stale grasp this many times")
     args = parser.parse_args()
 
     items = list(scene_spec.DEFAULT_SCENE)
@@ -144,17 +148,20 @@ def main() -> int:
         before = cube_xyz(env).copy()
 
         worst = 0.0
-        for name, pose, grip, prim_, close in (
-            ("above", above, executor_module.OPEN, None, None),
-            ("down", grasp, executor_module.OPEN, None, None),
-            ("close", grasp, executor_module.CLOSE, None, None),
-            ("lift", above, executor_module.CLOSE, prim, before),
-            ("carry", target + np.array([0.0, 0.0, executor_module.ABOVE]), executor_module.CLOSE, None, None),
-            ("lower", target, executor_module.CLOSE, None, None),
-            ("release", target, executor_module.OPEN, None, None),
-            ("retreat", target + np.array([0.0, 0.0, executor_module.ABOVE]), executor_module.OPEN, None, None),
+        for name, pose, grip, prim_, close, check in (
+            ("above", above, executor_module.OPEN, None, None, None),
+            ("down", grasp, executor_module.OPEN, None, None, None),
+            # The same two checks the executor's own run() applies: "reach" on the close,
+            # "follow" on the lift. Passing them explicitly is what makes this parity loop
+            # exercise the real grasp logic rather than a stripped-down copy of it.
+            ("close", grasp, executor_module.CLOSE, prim, before, "reach"),
+            ("lift", above, executor_module.CLOSE, prim, before, "follow"),
+            ("carry", target + np.array([0.0, 0.0, executor_module.ABOVE]), executor_module.CLOSE, None, None, None),
+            ("lower", target, executor_module.CLOSE, None, None, None),
+            ("release", target, executor_module.OPEN, None, None, None),
+            ("retreat", target + np.array([0.0, 0.0, executor_module.ABOVE]), executor_module.OPEN, None, None, None),
         ):
-            result = bot.do(name, pose, grip, prim=prim_, on_close=close)
+            result = bot.do(name, pose, grip, prim=prim_, on_close=close, check=check)
             if args.show_action and name == "down":
                 action = bot._action(bot.current, grip)
                 print(f"      action shape {tuple(action.shape)} dtype {action.dtype}")
@@ -244,11 +251,37 @@ def main() -> int:
                         problems.append(f"the {gap * 1000:.0f} mm error leaves no margin to grasp")
 
                     # Locating the ball well enough to plan is not the same as picking it up.
-                    # Run the plan for real and require the ball to end up in the tray.
+                    # Run the plan for real, and re-perceive and replan if the arm knocks the
+                    # ball out of the jaws' reach on the way in - which is exactly what the
+                    # demo loop does, and what this check exists to hold to account.
                     print("\n  -- executing that plan --")
-                    run = bot.run(plan, resolve=lambda _i: "ball_red")
-                    print(f"  {run.summary()}")
-                    if not run.ok:
+                    attempts = 1 + args.regrasp
+                    run = None
+                    for attempt in range(attempts):
+                        run = bot.run(plan, resolve=lambda _i: "ball_red")
+                        print(f"  {run.summary()}")
+                        if not run.stale_grasps:
+                            break
+                        print(f"  stale grasp ({run.aborted_at}); "
+                              f"re-planning, attempt {attempt + 2} of {attempts}")
+                        bot.park()
+                        isaac_io.place_items(env, items)
+                        retry_image, retry_depth, retry_camera = isaac_io.capture(env, sensor)
+                        live = perceive.perceive(retry_image, source="retry", camera=retry_camera,
+                                                 frame=isaac_io.robot_frame(env),
+                                                 plane_z=scene_spec.TABLE_TOP_Z,
+                                                 depth=retry_depth,
+                                                 looking_for=colors.colors(colors.DEFAULT_DETECT))
+                        plan = planner.plan_command(
+                            {"intent": "pick_and_place",
+                             "items": [{"kind": "ball", "name": None, "color": "red",
+                                        "quantity": 1, "position": None, "place": None}],
+                             "place": {"kind": "box", "color": "red"}, "sort_by": "none"},
+                            live)
+                        if not plan.moves:
+                            problems.append("nothing left to plan after a stale grasp")
+                            break
+                    if run is not None and not run.ok:
                         problems.append(f"the camera-derived plan did not run: {run.summary()}")
 
                     after = env.scene["ball_red"].data.root_pos_w[0].detach().cpu().numpy()

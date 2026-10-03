@@ -38,6 +38,7 @@ it, and where something does not work, the README says so and says why.
 | `--seed N` | 0 | the layout is a pure function of the seed |
 | `--spread M` | 0.018 | how far a randomised layout may move things, in metres |
 | `--disturb P` | 0 | probability of shoving the scene between planning and executing |
+| `--regrasp N` | 2 | re-perceive and replan when the arm knocks the target out of reach |
 | `--text "..."` | — | run this instead of waiting; repeatable |
 | `--detect red green blue` | red green blue | colours to look for |
 | `--lang es` | es | language for replies |
@@ -158,6 +159,21 @@ a gripper-clearance problem — drift was identical at four different hover heig
 the balls the whole way. `tools/probe_park_speed.py` has the table. The structural fix is to
 put the trays between the robot and the loose objects so the return path never crosses them;
 that is a scene-layout change and would need every calibration re-measured.
+
+**The robot reaches for balls that have moved, and used to call it a success.** A ball is
+knocked 57–60 mm by the arm's own transit and then rolls a further 192–371 mm while the
+gripper descends, so the jaws close on empty air. The kinematic carry — which writes the
+object's pose from the gripper frame, the mechanism demo 05 uses deliberately — then picked
+it up out of thin air and the placement verified as correct. Now measured and refused: a
+grasp whose target is more than 20 mm (a ball's radius) from where the jaws aimed is reported
+as **stale**, the run aborts, and `--regrasp N` re-perceives and replans. Full analysis in
+`results/approach_drift.md`.
+
+**Replanning does not converge for balls, and the reason is structural.** Four attempts, four
+stale grasps: the robot cannot look at a ball without disturbing it, because parking the arm
+to see the table sweeps the same row the ball is in. Perception and action are fighting over
+the same object. Cubes are fine — 10–12 mm of drift against 15 mm of jaw reach. The two ways
+out are to damp the rolling, or to move the trays between the robot and the loose objects.
 
 **A tray holds one object.** The cavity is 5.6 cm square, so a 3 cm cube or a 4 cm ball fits
 but not both. A command that asks for a second object in the same tray is refused by the
