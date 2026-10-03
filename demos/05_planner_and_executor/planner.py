@@ -178,19 +178,33 @@ def _grasp_and_hold(plan: Plan, thing: Thing, offset, tag: str) -> None:
     plan.picks.append(thing.id)
 
 
-def _destinations_for_sort(scene: Scene, sort_by: str):
+def _destinations_for_sort(scene: Scene, sort_by: str, filters: list[dict] | None = None):
     """Group the scene by colour or kind, and pair each group with a receptacle.
 
     A ``sort`` that named no destinations - "separa las piezas por colores" - has to work out
     for itself which things go where, and the only rule a person would use is that each
     colour goes in the receptacle of that colour.
 
+    ``filters`` is the command's ``sort_filter``, used as a *filter* and nothing else. "separa los
+    cubos por colores" names no destinations but does say what to sort, and taking that as
+    "everything on the table" put a cube and a ball into the same 5.6 cm cavity - measured, and
+    the ball did not survive it. An empty or absent filter sorts everything, which is what a
+    bare "separa las piezas" means.
+
+    The filter is read from ``sort_filter`` rather than from ``items`` because a bare sort
+    carries no items by design; see the note in ``command_model.parse``.
+
     Yields ``(key, label, members, receptacle)`` per group, the receptacle being None when
     nothing on the table matches, so the caller can report the groups that have nowhere to go
     instead of quietly doing half the sort.
     """
+    wanted = [f for f in (filters or [])
+              if f.get("kind") not in (None, "", "any") or f.get("color")]
+    objects = [t for t in scene.objects
+               if not wanted or any(t.matches(f.get("kind"), f.get("color")) for f in wanted)]
+
     groups: dict[str, list[Thing]] = {}
-    for thing in scene.objects:
+    for thing in objects:
         key = str(thing.color if sort_by == "color" else thing.kind)
         groups.setdefault(key, []).append(thing)
 
@@ -227,7 +241,12 @@ def plan_command(command: dict, scene: Scene,
 
     resolved = ground.ground_command(scene, command)
 
-    if intent == "sort" and not resolved["executable"]:
+    # A sort with no per-item destination is always worked out from the scene, whether or not it
+    # named a kind to sort. The condition used to be "grounded nothing", which broke as soon
+    # as the filter survived parsing: "separa los cubos por colores" resolves its one cube
+    # fine, so it fell through to the generic path, found no command-level place, and
+    # answered "nowhere to put it" without moving anything.
+    if intent == "sort" and not any(i.get("place") for i in command.get("items", [])):
         return _plan_sort_from_scene(plan, scene, command, resolved, offset)
 
     if intent == "clear":
@@ -292,7 +311,8 @@ def _plan_sort_from_scene(plan: Plan, scene: Scene, command: dict, resolved: dic
     sort says so.
     """
     sort_by = command.get("sort_by") or "color"
-    pairs = list(_destinations_for_sort(scene, sort_by))
+    pairs = list(_destinations_for_sort(scene, sort_by,
+                                         command.get("sort_filter") or command.get("items")))
     if not pairs:
         plan.reply = f"nothing on the table to sort by {sort_by}"
         return plan

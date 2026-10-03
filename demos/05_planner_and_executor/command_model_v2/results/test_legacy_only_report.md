@@ -1,6 +1,6 @@
 # test_legacy_only.jsonl
 
-98 sentences, 55 ms per sentence
+98 sentences, 85 ms per sentence
 
 | | intent | items | place | sort_by | **command** |
 | --- | --- | --- | --- | --- | --- |
@@ -35,43 +35,43 @@
 
 - `es` 'Coge la esfera azul y déjala en la canasta verde': wrong items  
   expected `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "esfera", "color": "blue", "quantity": 1, "position": null}], "place": {"kind": "basket", "color": "green"}, "sort_by": "none"}`  
-  got `{"intent": "pick_and_place", "items": [{"kind": "other", "name": "esfera", "color": "blue", "quantity": 1, "position": null, "place": null}], "place": {"kind": "basket", "color": "green"}, "sort_by": "none"}`
+  got `{"intent": "pick_and_place", "items": [{"kind": "other", "name": "esfera", "color": "blue", "quantity": 1, "position": null, "place": null}], "place": {"kind": "basket", "color": "green"}, "sort_by": "none", "sort_filter": []}`
 - `es` 'No cojas la bola roja, coge la verde': wrong items  
   expected `{"intent": "pick", "items": [{"kind": "any", "name": null, "color": "green", "quantity": 1, "position": null}], "place": null, "sort_by": "none"}`  
-  got `{"intent": "pick", "items": [{"kind": "ball", "name": "bola", "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "ball", "name": "bola", "color": "green", "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none"}`
+  got `{"intent": "pick", "items": [{"kind": "ball", "name": "bola", "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "ball", "name": "bola", "color": "green", "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none", "sort_filter": []}`
 - `es` 'Mueve el bloque rojo a la derecha': wrong place  
   expected `{"intent": "pick_and_place", "items": [{"kind": "cube", "name": "bloque", "color": "red", "quantity": 1, "position": null}], "place": {"kind": "right", "color": null}, "sort_by": "none"}`  
-  got `{"intent": "pick_and_place", "items": [{"kind": "cube", "name": "bloque", "color": "red", "quantity": 1, "position": null, "place": null}], "place": {"kind": "left", "color": null}, "sort_by": "none"}`
+  got `{"intent": "pick_and_place", "items": [{"kind": "cube", "name": "bloque", "color": "red", "quantity": 1, "position": null, "place": null}], "place": {"kind": "left", "color": null}, "sort_by": "none", "sort_filter": []}`
 - `es` 'Coge una bola roja y dos azules': wrong items  
   expected `{"intent": "sequence", "items": [{"kind": "ball", "name": "bola", "color": "red", "quantity": 1, "position": null}, {"kind": "any", "name": null, "color": "blue", "quantity": 2, "position": null}], "place": null, "sort_by": "none"}`  
-  got `{"intent": "sequence", "items": [{"kind": "ball", "name": "bola", "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "ball", "name": "bola", "color": "blue", "quantity": 2, "position": null, "place": null}], "place": null, "sort_by": "none"}`
+  got `{"intent": "sequence", "items": [{"kind": "ball", "name": "bola", "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "ball", "name": "bola", "color": "blue", "quantity": 2, "position": null, "place": null}], "place": null, "sort_by": "none", "sort_filter": []}`
 - `es` 'Recoge la mesa, por favor': wrong items  
   expected `{"intent": "clear", "items": [], "place": null, "sort_by": "none"}`  
-  got `{"intent": "clear", "items": [{"kind": "other", "name": "mesa", "color": null, "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none"}`
+  got `{"intent": "clear", "items": [{"kind": "other", "name": "mesa", "color": null, "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none", "sort_filter": []}`
 - `es` 'Pon rojo, azul y rojo en la caja': wrong items, place  
   expected `{"intent": "sequence", "items": [{"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null}, {"kind": "any", "name": null, "color": "blue", "quantity": 1, "position": null}, {"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null}], "place": {"kind": "box", "color": null}, "sort_by": "none"}`  
-  got `{"intent": "sequence", "items": [{"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "any", "name": null, "color": "blue", "quantity": 1, "position": null, "place": {"kind": "box", "color": "red"}}], "place": {"kind": "box", "color": "red"}, "sort_by": "none"}`
+  got `{"intent": "sequence", "items": [{"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "any", "name": null, "color": "blue", "quantity": 1, "position": null, "place": {"kind": "box", "color": "red"}}], "place": {"kind": "box", "color": "red"}, "sort_by": "none", "sort_filter": []}`
 - `es` 'Cogen el objeto verde y dejaren el incesto rojo': wrong intent, items, place  
   expected `{"intent": "pick_and_place", "items": [{"kind": "any", "name": "objeto", "color": "green", "quantity": 1, "position": null}], "place": {"kind": "basket", "color": "red"}, "sort_by": "none"}`  
-  got `{"intent": "sequence", "items": [{"kind": "any", "name": null, "color": "green", "quantity": 1, "position": null, "place": null}, {"kind": "other", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none"}`
+  got `{"intent": "sequence", "items": [{"kind": "any", "name": null, "color": "green", "quantity": 1, "position": null, "place": null}, {"kind": "other", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none", "sort_filter": []}`
 - `en` 'Grab the green ball and toss it in the crate': wrong place  
   expected `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "ball", "color": "green", "quantity": 1, "position": null}], "place": {"kind": "box", "color": null}, "sort_by": "none"}`  
-  got `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "ball", "color": "green", "quantity": 1, "position": null, "place": null}], "place": {"kind": "other", "color": null}, "sort_by": "none"}`
+  got `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "ball", "color": "green", "quantity": 1, "position": null, "place": null}], "place": {"kind": "other", "color": null}, "sort_by": "none", "sort_filter": []}`
 - `en` 'Take the red sphere and place it in the basket': wrong items  
   expected `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "sphere", "color": "red", "quantity": 1, "position": null}], "place": {"kind": "basket", "color": null}, "sort_by": "none"}`  
-  got `{"intent": "pick_and_place", "items": [{"kind": "cube", "name": "sphere", "color": "red", "quantity": 1, "position": null, "place": null}], "place": {"kind": "basket", "color": null}, "sort_by": "none"}`
+  got `{"intent": "pick_and_place", "items": [{"kind": "cube", "name": "sphere", "color": "red", "quantity": 1, "position": null, "place": null}], "place": {"kind": "basket", "color": null}, "sort_by": "none", "sort_filter": []}`
 - `en` 'I need the yellow cube in the green box': wrong intent  
   expected `{"intent": "pick_and_place", "items": [{"kind": "cube", "name": "cube", "color": "yellow", "quantity": 1, "position": null}], "place": {"kind": "box", "color": "green"}, "sort_by": "none"}`  
-  got `{"intent": "give", "items": [{"kind": "cube", "name": "cube", "color": "yellow", "quantity": 1, "position": null, "place": null}], "place": {"kind": "box", "color": "green"}, "sort_by": "none"}`
+  got `{"intent": "give", "items": [{"kind": "cube", "name": "cube", "color": "yellow", "quantity": 1, "position": null, "place": null}], "place": {"kind": "box", "color": "green"}, "sort_by": "none", "sort_filter": []}`
 - `en` 'On the red tray': wrong place  
   expected `{"intent": "answer_value", "items": [], "place": {"kind": "tray", "color": "red"}, "sort_by": "none"}`  
-  got `{"intent": "answer_value", "items": [], "place": {"kind": "tray", "color": null}, "sort_by": "none"}`
+  got `{"intent": "answer_value", "items": [], "place": {"kind": "tray", "color": null}, "sort_by": "none", "sort_filter": []}`
 - `en` 'First the yellow ball, then the red one': wrong items  
   expected `{"intent": "sequence", "items": [{"kind": "ball", "name": "ball", "color": "yellow", "quantity": 1, "position": null}, {"kind": "any", "name": "one", "color": "red", "quantity": 1, "position": null}], "place": null, "sort_by": "none"}`  
-  got `{"intent": "sequence", "items": [{"kind": "ball", "name": "ball", "color": "yellow", "quantity": 1, "position": null, "place": null}, {"kind": "ball", "name": "ball", "color": "red", "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none"}`
+  got `{"intent": "sequence", "items": [{"kind": "ball", "name": "ball", "color": "yellow", "quantity": 1, "position": null, "place": null}, {"kind": "ball", "name": "ball", "color": "red", "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none", "sort_filter": []}`
 - `eu` 'Hartu esfera urdina eta jarri otzara gorrian': wrong items, place  
   expected `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "esfera", "color": "blue", "quantity": 1, "position": null}], "place": {"kind": "basket", "color": "red"}, "sort_by": "none"}`  
-  got `{"intent": "pick_and_place", "items": [{"kind": "other", "name": "esfera", "color": "blue", "quantity": 1, "position": null, "place": null}], "place": {"kind": "other", "color": "green"}, "sort_by": "none"}`
+  got `{"intent": "pick_and_place", "items": [{"kind": "other", "name": "esfera", "color": "blue", "quantity": 1, "position": null, "place": null}], "place": {"kind": "other", "color": "green"}, "sort_by": "none", "sort_filter": []}`
 - `eu` 'gorria, urdina, gorria': wrong items  
   expected `{"intent": "sequence", "items": [{"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null}, {"kind": "any", "name": null, "color": "blue", "quantity": 1, "position": null}, {"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null}], "place": null, "sort_by": "none"}`  
-  got `{"intent": "sequence", "items": [{"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "any", "name": null, "color": "blue", "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none"}`
+  got `{"intent": "sequence", "items": [{"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "any", "name": null, "color": "blue", "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none", "sort_filter": []}`

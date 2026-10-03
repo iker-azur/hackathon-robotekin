@@ -133,6 +133,7 @@ class RunResult:
     aborted_at: str = ""
     real_grasps = 0
     kinematic_grasps = 0
+    lost_grasps = 0
 
     @property
     def ok(self) -> bool:
@@ -142,7 +143,8 @@ class RunResult:
         if self.aborted:
             return f"aborted at {self.aborted_at} after {len(self.steps)} step(s)"
         return (f"{len(self.steps)} step(s), {self.real_grasps} real grasp(s), "
-                f"{self.kinematic_grasps} kinematic")
+                f"{self.kinematic_grasps} kinematic"
+                + (f", {self.lost_grasps} lost" if self.lost_grasps else ""))
 
 
 class Executor:
@@ -270,7 +272,23 @@ class Executor:
                     moved = self._moved(prim, on_close)
                     travel = float(self.torch.linalg.norm((goal - start)[0]))
                     follow = moved / travel if travel > 1e-6 else 0.0
-                    if follow < GRASP_FOLLOW_MIN:
+                    if follow > 1.0:
+                        # Further than the gripper went, so nothing held it - the arm knocked
+                        # it, and the object is no longer on the table. Measured twice at
+                        # exactly 6417 cm, which is not a physical launch but the solver
+                        # ejecting a ball that had been squeezed against a kinematic tray, so
+                        # it is deterministic rather than chaotic.
+                        #
+                        # NOT carried, deliberately. Grabbing it would write its pose from the
+                        # gripper frame - teleporting a ghost 64 m back onto the table and
+                        # then dropping it somewhere plausible. Better to say the object was
+                        # lost and let the caller report a placement that did not happen.
+                        result.grasp = "lost"
+                        result.ok = False
+                        result.note = (f"the object was knocked out of reach, not held "
+                                       f"(moved {moved * 100:.0f} cm against a "
+                                       f"{travel * 100:.0f} cm lift); not carrying it")
+                    elif follow < GRASP_FOLLOW_MIN:
                         self.grab(prim)
                         result.grasp = "kinematic"
                         result.note = (f"followed {follow * 100:.0f}% of the lift "
@@ -317,6 +335,8 @@ class Executor:
                 out.real_grasps += 1
             elif result.grasp == "kinematic":
                 out.kinematic_grasps += 1
+            elif result.grasp == "lost":
+                out.lost_grasps += 1
 
             if step.grip == OPEN and self._held is not None:
                 self.drop()

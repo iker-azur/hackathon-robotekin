@@ -1,6 +1,6 @@
 # test_v2_only.jsonl
 
-38 sentences, 65 ms per sentence
+38 sentences, 117 ms per sentence
 
 | | intent | items | place | sort_by | **command** |
 | --- | --- | --- | --- | --- | --- |
@@ -33,22 +33,22 @@
 
 - `es` 'quita las bolas rojas de la mesa y ponlas en la caja azul': wrong intent  
   expected `{"intent": "clear", "items": [{"kind": "ball", "name": null, "color": "red", "quantity": "all", "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none"}`  
-  got `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "bolas", "color": "red", "quantity": "all", "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none"}`
+  got `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "bolas", "color": "red", "quantity": "all", "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none", "sort_filter": []}`
 - `en` 'take the red balls off the table and put them in the blue box': wrong intent  
   expected `{"intent": "clear", "items": [{"kind": "ball", "name": null, "color": "red", "quantity": "all", "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none"}`  
-  got `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "balls", "color": "red", "quantity": "all", "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none"}`
+  got `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "balls", "color": "red", "quantity": "all", "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none", "sort_filter": []}`
 - `eu` 'kendu pilota gorriak mahaitik eta jarri kutxa urdinean': wrong intent  
   expected `{"intent": "clear", "items": [{"kind": "ball", "name": null, "color": "red", "quantity": "all", "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none"}`  
-  got `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "pilota", "color": "red", "quantity": "all", "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none"}`
+  got `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "pilota", "color": "red", "quantity": "all", "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none", "sort_filter": []}`
 - `es` 'coge las dos bolas rojas y ponlas en la caja azul': wrong intent  
   expected `{"intent": "sequence", "items": [{"kind": "ball", "name": null, "color": "red", "quantity": 2, "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none"}`  
-  got `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "bolas", "color": "red", "quantity": 2, "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none"}`
+  got `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "bolas", "color": "red", "quantity": 2, "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none", "sort_filter": []}`
 - `es` 'recoge la mesa': wrong items  
   expected `{"intent": "clear", "items": [], "place": null, "sort_by": "none"}`  
-  got `{"intent": "clear", "items": [{"kind": "other", "name": "mesa", "color": null, "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none"}`
+  got `{"intent": "clear", "items": [{"kind": "other", "name": "mesa", "color": null, "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none", "sort_filter": []}`
 - `es` 'mete todo en la caja azul': wrong intent, items  
   expected `{"intent": "clear", "items": [], "place": {"kind": "box", "color": "blue"}, "sort_by": "none"}`  
-  got `{"intent": "pick_and_place", "items": [{"kind": "any", "name": null, "color": null, "quantity": "all", "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none"}`
+  got `{"intent": "pick_and_place", "items": [{"kind": "any", "name": null, "color": null, "quantity": "all", "position": null, "place": null}], "place": {"kind": "box", "color": "blue"}, "sort_by": "none", "sort_filter": []}`
 - `es` 'la de la izquierda': wrong items  
   expected `{"intent": "answer_value", "items": [{"kind": "any", "name": null, "color": null, "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none"}`  
-  got `{"intent": "answer_value", "items": [{"kind": "any", "name": null, "color": null, "quantity": 1, "position": "left", "place": null}], "place": null, "sort_by": "none"}`
+  got `{"intent": "answer_value", "items": [{"kind": "any", "name": null, "color": null, "quantity": 1, "position": "left", "place": null}], "place": null, "sort_by": "none", "sort_filter": []}`

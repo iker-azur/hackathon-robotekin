@@ -369,15 +369,32 @@ class CommandModel:
             confidences.append(sure["place_kind"])
 
         if label["intent"] == "sort" and not any(i.get("place") for i in items):
-            # A sort with no destination named per group carries no items. "Separa las piezas
-            # por colores" is an instruction about the whole table, and the dataset trains it
-            # with an empty item list; "separa las bolas rojas en la caja roja y las azules en
-            # la bandeja azul" is two groups each with somewhere to go, and those are kept.
+            # A sort with no destination named per group carries no ITEMS for the planner to
+            # pair with receptacles: "separa las piezas por colores" is an instruction about
+            # the whole table, and the dataset trains it with an empty item list; "separa las
+            # bolas rojas en la caja roja y las azules en la bandeja azul" is two groups each
+            # with somewhere to go, and those are kept.
+            #
             # Without this the model volunteers items for the first form - measured, it
             # returned a ball group and a cube group for "separa las bolas de los cubos",
             # where the training data has none.
+            #
+            # CHANGED HERE: what the sentence DID say is kept, but not in `items`. "separa los
+            # cubos por colores" names no destinations and does say what to sort, and
+            # throwing that away made the planner sort the red BALL as well, putting a cube
+            # and a ball into the same 5.6 cm cavity. It is carried as `sort_filter` instead of
+            # as items, because putting it in items costs 3 points of exact-command accuracy
+            # (measured: 84.6% to 81.6% overall, 85.7% to 82.7% on the legacy set) against a
+            # ground truth that genuinely has no items there. Only a filter that names neither
+            # kind nor colour is dropped, which is the same test "clear" uses to tell a real
+            # group from "everything".
+            sort_filter = [i for i in items
+                           if i.get("kind") not in (None, "", "any") or i.get("color")]
             items = []
+        else:
+            sort_filter = []
         return {"intent": label["intent"], "items": items, "place": place, "sort_by": label["sort_by"],
+                "sort_filter": sort_filter,
                 "confidence": round(min(confidences), 3)}
 
 

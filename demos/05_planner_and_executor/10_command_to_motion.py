@@ -164,14 +164,36 @@ class Robot:
         for prim in sorted(loose):
             x, y = self._xy(prim)
             moved = math.dist(settled[prim], (x, y)) * 1000
-            if moved < PARK_RESTORE_M:
+            if moved < PARK_RESTORE_M * 1000:  # PARK_RESTORE_M is metres, moved is mm
                 continue
             if any(self._inside(prim, tray) for tray in trays):
                 continue  # already placed: putting it back would undo the round's work
             item = next(i for i in self.layout if i.prim == prim)
+            if not self._spot_is_free(item):
+                # Restoring into an occupied spot is worse than not restoring. place_items
+                # writes the pose outright, so an object written inside another is deeply
+                # interpenetrating and PhysX resolves it violently: measured, a ball ejected
+                # to x = -6.9 m, tens of times the length of the table. Leave it where it is
+                # and let perception find it there.
+                self.say(f"  the park sweep moved {prim} {moved:.0f} mm, but its spot is "
+                         f"occupied; leaving it where it is")
+                continue
             isaac_io.place_items(self.env, [item])
             self.say(f"  the park sweep moved {prim} {moved:.0f} mm to "
                      f"({x:+.4f}, {y:+.4f}); put it back")
+
+    def _spot_is_free(self, item, slack: float = 0.005) -> bool:
+        """Is this item's declared spot clear of everything else?"""
+        for other in self.layout:
+            if other.prim == item.prim:
+                continue
+            gap_x = abs(self._xy(other.prim)[0] - item.x) - scene_spec.half_width(item) \
+                - scene_spec.half_width(other)
+            gap_y = abs(self._xy(other.prim)[1] - item.y) - scene_spec.half_depth(item) \
+                - scene_spec.half_depth(other)
+            if max(gap_x, gap_y) < slack:
+                return False
+        return True
 
     def _xy(self, prim: str) -> tuple[float, float]:
         where = self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy()
