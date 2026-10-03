@@ -305,10 +305,16 @@ def ground_place(scene: Scene, place: dict | None) -> Grounding:
 
 
 # The intents that must not move the robot, so their items are never looked up. The same
-# list as command_model.ITEMLESS, repeated rather than imported because importing that
+# list as command_model_v2.ITEMLESS, repeated rather than imported because importing that
 # module loads torch and gliner2 for what is a list of strings.
+#
+# CHANGED IN THIS COPY: "sort" and "clear" REMOVED. Demo 03's command model could not
+# represent a sort into matching receptacles or a clear with a filter, so both intents were
+# itemless and grounding them against the scene was pointless. The v2 model does both, and
+# planner.py needs their items resolved. They are still in command_model_v2.ITEMLESS? No -
+# they are deliberately not; the two lists must agree.
 NO_ACTION = {
-    "sort", "clear", "stop", "repeat", "cancel", "answer_yes", "answer_no",
+    "stop", "repeat", "cancel", "answer_yes", "answer_no",
     "greeting", "off_topic", "not_doable", "question",
 }
 
@@ -331,6 +337,7 @@ def ground_command(scene: Scene, command: dict) -> dict:
             "intent": intent,
             "items": [],
             "place": Grounding(status="no_place"),
+            "item_places": [],
             "executable": [],
             "complete": False,
             "action": False,
@@ -339,11 +346,29 @@ def ground_command(scene: Scene, command: dict) -> dict:
 
     items = [ground(scene, item) for item in command.get("items", [])]
     place = ground_place(scene, command.get("place"))
+
+    # CHANGED IN THIS COPY: resolve each item's OWN destination.
+    #
+    # "Pon el cubo rojo en la caja azul y la bola verde en la bandeja roja" has no
+    # command-level place, because there are two. Demo 03's schema had exactly one place per
+    # command, so there was nothing to resolve here; the v2 command model gives each item a
+    # destination and this is where it becomes a Thing with a position the arm can aim at.
+    #
+    # An item with no destination of its own inherits the command's, which is every item of
+    # every single-destination command. The list is parallel to "items" so a caller can index
+    # both with the same number.
+    raw_items = command.get("items", [])
+    item_places: list[Grounding] = []
+    for raw in raw_items:
+        own = raw.get("place") if isinstance(raw, dict) else None
+        item_places.append(ground_place(scene, own) if own else place)
+
     executable = [g for g in items if g.ok]
     return {
         "intent": intent,
         "items": items,
         "place": place,
+        "item_places": item_places,
         "executable": [g.target_ids for g in executable],
         "complete": bool(items) and len(executable) == len(items),
         "action": True,
