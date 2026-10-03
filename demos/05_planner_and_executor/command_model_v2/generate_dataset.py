@@ -74,6 +74,15 @@ ITEM_KINDS = ["ball", "cube", "any", "other"]
 ITEM_COUNTS = ["one", "several"]
 ITEM_FIELDS = ["mention", "name", "color_word", "quantity_word", "position_word"]
 
+# ADDED IN THIS COPY. The colours a multi-destination sort is allowed to talk about.
+#
+# Restricted to what perception can actually distinguish. vocabulary.yaml has nine, and the
+# command model can name all nine, but this repository's HSV segmentation separates only
+# red, green and blue by default, and the nine-colour measurement found orange 5 hue units
+# from yellow and pink 11 from red with saturation separating neither. A sort sentence about
+# orange would train the model toward a sort the robot cannot carry out.
+SORTABLE_COLORS = ["red", "green", "blue"]
+
 
 # --- what a sample is made of ---------------------------------------------------
 
@@ -84,6 +93,19 @@ class Item:
     color: str | None             # canonical colour
     quantity: int | str | None    # None = "the" (one), 1 = "a/una/bat", 2..5, "all", "plural" (the X-s)
     position: str | None = None   # left / right / nearest ...
+
+    # ADDED IN THIS COPY. Where this particular item goes, for a command that sends
+    # different things to different places: "pon la bola roja en la caja azul y el cubo
+    # verde en la bandeja roja".
+    #
+    # Demo 03's schema had exactly one place per command and said so deliberately - its
+    # README: *"One destination per command. 'Put the red ones in the red box and the blue
+    # ones in the blue box' is handled by `sort` (by colour), not by per-item
+    # destinations."* But `sort` had no way to express a coloured destination either:
+    # generate_dataset forced `place.color = None` for every sort sample, so all 1500 of
+    # them were trained with an uncoloured destination. This field is what makes the
+    # sentence above expressible at all.
+    dest: "Place | None" = None
 
     @property
     def several(self) -> bool:
@@ -101,6 +123,20 @@ class Place:
 class Phrase:
     text: str
     spans: dict = field(default_factory=dict)  # name / color_word / quantity_word / position_word -> words
+    # ADDED IN THIS COPY: destination_kind_word / destination_color_word. Two flat fields
+    # rather than a nested structure, because GLiNER2.5 cannot nest: calling .structure()
+    # on a record builder emits a *sibling* record, not a child (verified against the
+    # installed gliner2 2.0.0). They must not use choices=, either: demo 03's README records
+    # that multiple-choice fields inside a repeated record do not depend on which record
+    # they belong to, and the second item copied the first one's colour. Extracting the words
+    # and looking them up in a table is what the existing five fields already do.
+    #
+    # Two and not three: a third "destination_mention" holding the whole noun phrase was
+    # tried and dropped. to_records asserts every labelled word occurs verbatim in the
+    # sentence, and a composed phrase is not a literal substring - Basque inflects the
+    # colour differently inside place() than place_spans() would, since place() picks
+    # between the "in" and "to" forms at random. Both words that remain do occur verbatim,
+    # and they are all the lookup needs.
 
 
 @dataclass
@@ -154,7 +190,7 @@ def sample_place(rng, words, lang, *, usable_only=False):
     kind = rng.choice(kinds)
     if kind in ("left", "right"):
         return Place(kind, None)
-    entries = words["places"][kind].get(lang) or words["places"]["train"][kind][lang]
+    entries = _place_entries(words, lang, kind)
     color = pick_color(rng, 0.4) if kind != "other" else None
     return Place(kind, rng.choice(entries), color)
 
@@ -188,6 +224,18 @@ class Spanish:
     SORT_KIND = ["separa {g} por tipo", "clasifica {g} por forma", "ordena {g} por tipo", "separa las bolas de los cubos",
                  "separa los cubos de las bolas", "agrupa {g} por forma"]
     GROUPS = ["las piezas", "los objetos", "todo", "las cosas", "todas las piezas", "los elementos"]
+        # ADDED IN THIS COPY. Two groups, each with its own matching receptacle, which is
+    # the sentence demo 03 could not represent: "mete las rojas en la caja roja y las
+    # azules en la bandeja azul". {g1}/{g2} is the group as a noun phrase, {p1}/{p2} is
+    # the receptacle with its preposition.
+    SORT_INTO = ["mete {g1} {p1} y {g2} {p2}",
+                 "pon {g1} {p1} y {g2} {p2}",
+                 "separa por colores: {g1} {p1} y {g2} {p2}",
+                 "cada color en su caja: {g1} {p1} y {g2} {p2}",
+                 "ordena {g1} {p1} y {g2} {p2}"]
+    # One item each to its own place. {x} is the item, {p} its destination.
+    EACH_OWN_PLACE = ["mete {x} {p} y {x2} {p2}", "pon {x} {p} y {x2} {p2}",
+                      "pon {x} {p} y luego {x2} {p2}"]
     CLEAR = ["recoge la mesa", "limpia la mesa", "despeja la mesa", "recógelo todo", "guárdalo todo",
              "quita todo de la mesa", "deja la mesa limpia", "recoge todo", "ordena la mesa"]
     CLEAR_PLACE = ["mete todo {p}", "pon todo {p}", "recoge todo y mételo {p}", "guarda todo {p}", "lleva todo {p}"]
@@ -303,6 +351,18 @@ class Spanish:
         feminine = item.noun is not None and item.noun[2] == "f"
         return ("la" if feminine else "lo") + ("s" if item.several else "")
 
+    def place_spans(self, place: Place, rendered: str) -> dict:
+        """The two destination words, read back out of the rendered destination.
+
+        ADDED IN THIS COPY; see Spanish.place_spans and _longest_form_in.
+        """
+        if place.kind in ("left", "right"):
+            return {"destination_kind_word": place.kind, "destination_color_word": ""}
+        noun, _gender = place.noun
+        forms = VOCAB["colors"][place.color]["es"] if place.color else []
+        return {"destination_kind_word": noun,
+                "destination_color_word": _longest_form_in(rendered, forms)}
+
     def plural_noun(self, item: Item) -> str:
         return item.noun[1] if item.noun else "piezas"
 
@@ -325,6 +385,13 @@ class English:
     SORT_KIND = ["sort {g} by type", "sort {g} by shape", "separate the balls from the cubes",
                  "separate the cubes from the balls", "group {g} by shape", "organise {g} by type"]
     GROUPS = ["the pieces", "the objects", "everything", "the things", "all the pieces", "the items"]
+        # ADDED IN THIS COPY; see Spanish.SORT_INTO.
+    SORT_INTO = ["put {g1} {p1} and {g2} {p2}",
+                 "sort {g1} {p1} and {g2} {p2}",
+                 "put each colour in its own box: {g1} {p1} and {g2} {p2}",
+                 "the {g1} go {p1}, the {g2} {p2}"]
+    EACH_OWN_PLACE = ["put {x} {p} and {x2} {p2}", "place {x} {p} and {x2} {p2}",
+                      "first {x} {p}, then {x2} {p2}"]
     CLEAR = ["clear the table", "clean up the table", "tidy up", "tidy the table", "pick everything up",
              "remove everything from the table", "clean up", "put everything away", "clear everything"]
     CLEAR_PLACE = ["put everything {p}", "move everything {p}", "pick everything up and put it {p}",
@@ -419,6 +486,14 @@ class English:
     def pronoun(self, item: Item | None) -> str:
         return "them" if item is not None and item.several else "it"
 
+    def place_spans(self, place: Place, rendered: str) -> dict:
+        """The two destination words. ADDED IN THIS COPY; see Spanish.place_spans."""
+        if place.kind in ("left", "right"):
+            return {"destination_kind_word": place.kind, "destination_color_word": ""}
+        forms = VOCAB["colors"][place.color]["en"] if place.color else []
+        return {"destination_kind_word": place.noun[0],
+                "destination_color_word": _longest_form_in(rendered, forms)}
+
     def plural_noun(self, item: Item) -> str:
         return item.noun[1] if item.noun else "pieces"
 
@@ -440,6 +515,13 @@ class Basque:
     SORT_KIND = ["sailkatu {g} motaren arabera", "banandu bolak eta kuboak", "bereizi kuboak eta bolak",
                  "ordenatu {g} formaren arabera", "taldekatu {g} motaka"]
     GROUPS = ["piezak", "objektuak", "dena", "gauzak", "pieza guztiak", "gauza guztiak"]
+        # ADDED IN THIS COPY; see Spanish.SORT_INTO. Basque puts the destination last, so
+    # the pattern is reversed but the placeholders mean the same.
+    SORT_INTO = ["jarri {g1} {p1} eta {g2} {p2}", "sartu {g1} {p1} eta {g2} {p2}",
+                 "kolorez bereizten: {g1} {p1} eta {g2} {p2}",
+                 "kolore bakoitza bere kutxan: {g1} {p1} eta {g2} {p2}"]
+    EACH_OWN_PLACE = ["jarri {x} {p} eta {x2} {p2}", "sartu {x} {p} eta {x2} {p2}",
+                      "lehenengo {x} {p}, gero {x2} {p2}"]
     CLEAR = ["garbitu mahaia", "jaso dena", "kendu dena mahaitik", "jaso gauza guztiak", "utzi mahaia garbi",
              "txukundu mahaia", "gorde dena", "jaso mahaian dagoen guztia"]
     CLEAR_PLACE = ["sartu dena {p}", "jarri dena {p}", "jaso dena eta sartu {p}", "gorde dena {p}", "eraman dena {p}"]
@@ -538,6 +620,22 @@ class Basque:
     def pronoun(self, item: Item | None) -> str:
         return ""  # Basque needs no object pronoun here: "hartu bola eta sartu kutxan"
 
+    def place_spans(self, place: Place, rendered: str) -> dict:
+        """The two destination words. ADDED IN THIS COPY; see Spanish.place_spans.
+
+        Basque has six case forms per colour and place() picks between the "in" and "to"
+        ones at random, so this reads the form back out of the rendered sentence rather
+        than computing it. A first version computed it, recorded "berdean" for a sentence
+        that said "kutxa berdera", and the verbatim-word assertion stopped the generator.
+        """
+        if place.kind in ("left", "right"):
+            return {"destination_kind_word": place.kind, "destination_color_word": ""}
+        if place.kind == "table":
+            return {"destination_kind_word": "mahai", "destination_color_word": ""}
+        forms = list(VOCAB["colors"][place.color]["eu"].values()) if place.color else []
+        return {"destination_kind_word": place.noun[0],
+                "destination_color_word": _longest_form_in(rendered, forms)}
+
     def plural_noun(self, item: Item) -> str:
         return item.noun[0] if item.noun else "pieza"
 
@@ -550,6 +648,117 @@ def rng_choice(options):
 
 
 # --- one sample per intent ---------------------------------------------------------
+
+def _place_entries(words, lang, kind) -> list:
+    """The noun entries for one place kind in one language, train words as a fallback.
+
+    ADDED IN THIS COPY. ``sample_place`` does this fallback inline; the templates added here
+    need it too, and the ``test`` split has no ``test_only`` entry for every kind - asking
+    for a tray there raises KeyError, which is how this was found.
+    """
+    return (words["places"].get(kind) or {}).get(lang) or words["places"]["train"][kind][lang]
+
+
+def _longest_form_in(rendered: str, forms: list) -> str:
+    """Which of ``forms`` occurs in ``rendered``, longest first, accents ignored.
+
+    ADDED IN THIS COPY. The destination colour word has to be a literal substring of the
+    sentence - ``to_records`` asserts it, which is the right thing to assert - and Basque
+    inflects a colour six ways, with ``place`` choosing between them at random. Computing
+    the word independently of the rendered sentence is therefore a coin flip: the first
+    version recorded "berdean" for a sentence that said "kutxa berdera" and the assertion
+    stopped the generator. Reading the word back out of the text that was actually written
+    cannot disagree with it.
+
+    Longest first so "gorrian" does not match as the bare stem "gorri". A shorter form can
+    still match when it is a prefix of a longer one ("roja" inside "rojas"); the value is
+    only ever used for a table lookup and both resolve to the same colour.
+    """
+    haystack = strip_accents(rendered.lower())
+    for form in sorted((str(f) for f in forms), key=len, reverse=True):
+        if strip_accents(form.lower()) in haystack:
+            return form
+    return ""
+
+
+def _coloured_place(rng, words, lang, color, kinds=("box", "tray", "basket")):
+    """A receptacle of a named colour. ADDED IN THIS COPY, for the multi-destination sorts."""
+    kind = rng.choice(list(kinds))
+    entries = _place_entries(words, lang, kind)
+    return Place(kind, rng.choice(entries), color)
+
+
+def _executable_place(rng, words, lang, color=None):
+    """A destination this demo's robot can actually put something into. ADDED IN THIS COPY.
+
+    ``sample_place`` also returns table, left, right and "other" (a shelf, a sofa, the
+    floor). Those make fine sentences and are right for a command model in general, but
+    this demo's arm can only drop into a receptacle, so training on them would teach the
+    model to ask for placements the executor must then refuse. Restricted to what hollow.py
+    can build.
+    """
+    return _coloured_place(rng, words, lang, color, kinds=("box", "tray", "basket"))
+
+
+def _sort_into_matching(g, rng, words, lang) -> Sample:
+    """"Put the red ones in the red box and the blue ones in the blue tray", as a Sample.
+
+    ADDED IN THIS COPY. This is the sentence demo 03's schema could not express. Each group
+    becomes an item whose ``dest`` is a receptacle of the SAME colour, which is what lets a
+    downstream executor sort by colour without the model having to know what "matching"
+    means.
+
+    Only two groups, and only with colours the demo can actually see. Perception in this
+    repository segments red, green and blue by default; orange and pink were measured as
+    not separable from yellow and red respectively, so a sort sentence about them would
+    train the model toward a sort the robot cannot perform.
+    """
+    seen = rng.sample(SORTABLE_COLORS, 2)
+    items, dests = [], []
+    for color in seen:
+        it = sample_item(rng, words, lang, allow_color_only=False)
+        it.quantity, it.position, it.color = "plural", None, color
+        dest = _executable_place(rng, words, lang, color)
+        it.dest = dest
+        dests.append(dest)
+        items.append((it, g.item(it)))
+    # Render the destinations ONCE, then read the span words back out of what was written.
+    # place() uses the module-level random for some of its choices, so calling it twice for
+    # the same Place can return two different strings.
+    rendered = [g.place(dest) for dest in dests]
+    for (_it, ph), dest, text in zip(items, dests, rendered):
+        ph.spans.update(g.place_spans(dest, text))
+    text = rng.choice(g.SORT_INTO).format(
+        g1=items[0][1].text, p1=rendered[0],
+        g2=items[1][1].text, p2=rendered[1],
+        c1=items[0][0].color, c2=items[1][0].color,
+    )
+    return Sample(lang, "sort", text, "sort/into_matching", items, None, "color")
+
+
+def _each_own_place(g, rng, words, lang) -> Sample:
+    """"Put the red ball in the blue box and the green cube in the red tray", as a Sample.
+
+    ADDED IN THIS COPY. Same mechanism as ``_sort_into_matching`` but two individual items
+    rather than two colour groups, so the multi-destination form is trained on
+    ``sequence`` too and not only on ``sort``.
+    """
+    items, dests = [], []
+    for _ in range(2):
+        it = sample_item(rng, words, lang)
+        dest = _executable_place(rng, words, lang)
+        it.dest = dest
+        dests.append(dest)
+        items.append((it, g.item(it)))
+    rendered = [g.place(dest) for dest in dests]
+    for (_it, ph), dest, text in zip(items, dests, rendered):
+        ph.spans.update(g.place_spans(dest, text))
+    text = rng.choice(g.EACH_OWN_PLACE).format(
+        x=items[0][1].text, p=rendered[0],
+        x2=items[1][1].text, p2=rendered[1],
+    )
+    return Sample(lang, "sequence", text, "sequence/each_own_place", items, None)
+
 
 def build(intent: str, lang: str, rng: random.Random, words: dict) -> Sample:
     g = GRAMMARS[lang]
@@ -606,9 +815,33 @@ def build(intent: str, lang: str, rng: random.Random, words: dict) -> Sample:
 
     if intent == "give":
         it, ph = item()
-        return Sample(lang, intent, rng.choice(g.GIVE).format(x=ph.text), "give", [(it, ph)])
+        text = rng.choice(g.GIVE).format(x=ph.text)
+        # ADDED IN THIS COPY. Demo 03 forced place=None for every `give`, so "give it to me
+        # and leave it in the tray" was inexpressible. The design guide actually asks for
+        # this: docs/guia-so-101-autonomous-agent.md:1686 - "La entrega directa en la mano
+        # debe evitarse salvo que se hayan definido medidas de seguridad. Para el hackathon
+        # es mas seguro dejarlo en una bandeja." So most givens now name a tray, and the
+        # bare form is kept so the model still recognises it.
+        place = None
+        if r() < 0.7:
+            place = Place("tray", rng.choice(_place_entries(words, lang, "tray")), None)
+            then = {"es": " y déjalo ", "en": " and leave it ", "eu": " eta utzi "}[lang]
+            # Only from the non-question forms. Some GIVE entries end in "?" ("¿me pasas el
+            # naranja?"), and appending " y déjalo en la bandeja" after a question mark
+            # reads as two unrelated utterances, which is exactly the kind of noise that
+            # teaches a model to ignore half a sentence.
+            bank = [g for g in g.GIVE if not g.rstrip().endswith("?")] or list(g.GIVE)
+            text = rng.choice(bank).format(x=ph.text) + then + g.place(place)
+            return Sample(lang, intent, text, "give/place", [(it, ph)], place)
+        return Sample(lang, intent, text, "give", [(it, ph)])
 
     if intent == "sort":
+        # ADDED IN THIS COPY: the two-colour, two-matching-receptacle form. Demo 03's sort
+        # forced `place.color = None` a few lines below, so every one of its 1500 sort
+        # sentences was trained with an uncoloured destination and "the red ones in the red
+        # box" was not in the data at all. About a third of sorts are now this form.
+        if r() < 0.34:
+            return _sort_into_matching(g, rng, words, lang)
         by_color = r() < 0.65
         templates = g.SORT_COLOR if by_color else g.SORT_KIND
         template = rng.choice(templates)
@@ -631,12 +864,26 @@ def build(intent: str, lang: str, rng: random.Random, words: dict) -> Sample:
                       "color" if by_color else "kind")
 
     if intent == "clear":
+        # ADDED IN THIS COPY: an item filter, so "clear only the red things into the box"
+        # is expressible. Demo 03's clear took no items at all.
+        if r() < 0.25:
+            it, ph = item()
+            it.quantity = "plural"
+            ph = g.item(it)
+            place = _executable_place(rng, words, lang)
+            text = {"es": f"quita {ph.text} de la mesa y ponlos {g.place(place)}",
+                    "en": f"take {ph.text} off the table and put them {g.place(place)}",
+                    "eu": f"kendu {ph.text} mahaitik eta jarri {g.place(place)}"}[lang]
+            return Sample(lang, intent, text, "clear/filter", [(it, ph)], place)
         if r() < 0.45:
             place = sample_place(rng, words, lang, usable_only=True)
             return Sample(lang, intent, rng.choice(g.CLEAR_PLACE).format(p=g.place(place)), "clear/place", [], place)
         return Sample(lang, intent, rng.choice(g.CLEAR), "clear")
 
     if intent == "sequence":
+        # ADDED IN THIS COPY: two items, each to its own destination.
+        if r() < 0.22:
+            return _each_own_place(g, rng, words, lang)
         if r() < 0.2:  # colour sequence: "rojo, azul, rojo"
             items = []
             for _ in range(rng.choice([2, 3, 3, 4])):
@@ -762,7 +1009,13 @@ def command_of(sample: Sample) -> dict:
     return {
         "intent": sample.intent,
         "items": [{"kind": it.kind, "name": ph.spans.get("name"), "color": it.color, "quantity": number(it),
-                   "position": it.position} for it, ph in sample.items],
+                   "position": it.position,
+                   # ADDED IN THIS COPY. The per-item destination, when the sentence gave
+                   # one. A consumer falls back to the command-level ``place`` when this is
+                   # null, which is every item of every command that has one shared
+                   # destination.
+                   "place": ({"kind": it.dest.kind, "color": it.dest.color} if it.dest else None)}
+                  for it, ph in sample.items],
         "place": {"kind": sample.place.kind, "color": sample.place.color} if sample.place else None,
         "sort_by": sample.sort_by,
     }

@@ -54,9 +54,24 @@ ACTIONS = {"pick_and_place", "pick", "give", "sort", "clear", "sequence"}
 def same_item(expected: dict, got: dict) -> bool:
     if any(expected[k] != got[k] for k in ("kind", "color", "quantity", "position")):
         return False
+    # ADDED IN THIS COPY: the per-item destination is part of being right. Without this a
+    # command that sent the red ball to the blue box and the blue ball to the red box scored
+    # as correct as one that sent each to its own box, which is the whole point of the
+    # multi-destination templates.
+    if same_place(expected.get("place"), got.get("place")) is False:
+        return False
     if expected["kind"] == "other":
         return plain(expected["name"] or "") == plain(got["name"] or "")
     return True
+
+
+def same_place(expected, got) -> bool:
+    """Two destinations agree. Either may be None, meaning "use the command's place"."""
+    if expected is None and got is None:
+        return True
+    if expected is None or got is None:
+        return False
+    return expected.get("kind") == got.get("kind") and expected.get("color") == got.get("color")
 
 
 def compare(expected: dict, got: dict) -> dict:
