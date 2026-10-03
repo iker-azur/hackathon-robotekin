@@ -68,10 +68,18 @@ import viewer as viewer_module  # noqa: E402
 from command_model_v2.command_model import CommandModel  # noqa: E402
 
 # How close a perceived thing has to be to a known object before it is accepted as that
-# object. Perception is good to about 11 mm on this camera, so 25 mm is generous enough to
-# survive a randomised layout and far tighter than the 51 mm smallest gap between two things
-# of the same colour - which is what stops the red ball being linked to the red cube.
-LINK_TOLERANCE_M = 0.025
+# object.
+#
+# 35 mm, raised from 25 after measuring what it costs. Perception localises a tray to 11 mm and
+# a cube to about 10, but a BALL is seen up to 28 mm from where it is - the same ball-
+# classification weakness that leaves it rolling - and at 25 mm the link silently failed, the
+# grasp was skipped with no note, and the placement was reported as unverified for an object
+# the robot was looking straight at.
+#
+# 35 mm is still safe against confusing two objects: the closest same-coloured pair in the
+# scene is 64 mm apart centre to centre, and the link takes the nearest unclaimed prim, so a
+# ball cannot be handed a cube's name.
+LINK_TOLERANCE_M = 0.035
 
 # How far the arm's own parking sweep may move an object before the demo puts it back.
 # See Robot.park: the sweep is unavoidable and launches a ball 168 mm when the arm comes back
@@ -667,10 +675,12 @@ def main() -> int:
                         help="show the unannotated camera feed instead of the drawn detections")
     parser.add_argument("--camera", default="top", choices=sorted(scene_spec.CAMERA_CHOICES))
     parser.add_argument("--variant", default="contained",
-                        choices=["contained", "open"],
+                        choices=["contained", "open", "out_of_reach"],
                         help="'contained' walls the working area in so a disturbed object "
                              "cannot leave it; 'open' is the original pen-free demo, kept as "
-                             "the control that shows what the wall is for")
+                             "the control that shows what the wall is for; 'out_of_reach' puts "
+                             "two objects beyond the arm's reach and expects the robot to say "
+                             "so instead of trying")
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--spread", type=float, default=dynamics.DEFAULT_SPREAD_M,
@@ -712,13 +722,22 @@ def main() -> int:
                                   device=args.voice_device)
 
     isaac_io.prepare_runtime(headless=args.headless)
-    env, sensor = isaac_io.build_env(args.camera, list(scene_spec.DEFAULT_SCENE),
-                                     pen=args.variant == "contained")
-    if args.variant == "contained":
-        import pen as pen_module
-        robot_say = f"  working area walled in: {pen_module.PEN_HEIGHT * 100:.1f} cm kerb "\
-                    f"around x {scene_spec.WORK_X} y {scene_spec.WORK_Y}"
-        print(robot_say, flush=True)
+    if args.variant == "out_of_reach":
+        # The static scene with two objects beyond the arm. No pen: this variant is about
+        # refusing what cannot be reached, not about containing what can.
+        layout = scene_spec.out_of_reach_scene()
+        env, sensor = isaac_io.build_env(args.camera, layout, pen=False)
+        print("  two objects placed beyond the arm's reach, on purpose:", flush=True)
+        for item in scene_spec.OUT_OF_REACH_ITEMS:
+            print(f"    {item}: {scene_spec.why_unreachable(*scene_spec.OUT_OF_REACH_ITEMS[item])}",
+                  flush=True)
+    else:
+        env, sensor = isaac_io.build_env(args.camera, list(scene_spec.DEFAULT_SCENE),
+                                         pen=args.variant == "contained")
+        if args.variant == "contained":
+            import pen as pen_module
+            print(f"  working area walled in: {pen_module.PEN_HEIGHT * 100:.1f} cm kerb "
+                  f"around x {scene_spec.WORK_X} y {scene_spec.WORK_Y}", flush=True)
     # Reset, then aim. The camera's pose is applied at spawn and only becomes readable after a
     # reset, and aim_camera only checks where it ended up - so without the reset it reports
     # the sensor at the origin, 701 mm from where scene_spec put it, and stops. Every other
@@ -732,6 +751,9 @@ def main() -> int:
         if use_viewer:
             viewer = viewer_module.Viewer()
         robot = Robot(env, sensor, args, viewer=viewer, model=model)
+        if args.variant == "out_of_reach":
+            # The Robot starts from DEFAULT_SCENE; this variant's layout is its own.
+            robot.base = layout
         robot.voice = listener
 
         scripted = list(args.text) * max(1, args.repeat) if args.text else []
@@ -739,8 +761,15 @@ def main() -> int:
 
         for round_index in range(args.rounds):
             seed = args.seed + round_index
-            layout = dynamics.randomize(robot.base, seed, spread=args.spread)
-            robot.say(f"\n=== round {round_index} (seed {seed}) ===")
+            if args.variant == "out_of_reach":
+                # STATIC, deliberately. This variant is about a stable fact - that cube is out
+                # there and cannot be reached - so re-randomising would make the robot's answer
+                # change every round and mean nothing. Every round is the same table.
+                layout = robot.base
+                robot.say(f"\n=== round {round_index} (static layout) ===")
+            else:
+                layout = dynamics.randomize(robot.base, seed, spread=args.spread)
+                robot.say(f"\n=== round {round_index} (seed {seed}) ===")
 
             robot.park()  # before populate: the park sweep moves whatever is down
             robot.populate(layout)

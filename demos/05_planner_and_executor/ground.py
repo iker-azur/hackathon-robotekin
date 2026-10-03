@@ -30,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import describe
+import scene_spec
 from scene import POSITIONS, Scene, Thing
 
 # Below this many matches the robot would rather ask than guess, even with a position
@@ -233,6 +234,53 @@ def not_found_question(scene: Scene, item: dict) -> dict[str, str]:
     }
 
 
+def unreachable_question(points: list[tuple[float, float]], item: dict) -> dict[str, str]:
+    """Say that it is there and cannot be reached, and what would make it reachable.
+
+    The advice is the useful part. "I cannot reach it" leaves the person with nothing to do;
+    "move it into the working area" tells them what the robot wants. The two reasons are named
+    differently because they need different responses: the arm being too short is the person's
+    problem to solve by moving the object closer, and being outside the working area is a
+    decision this demo made.
+
+    The numbers go in as numbers and the sentence around them is built per language. Rendering
+    the reason in English first and splicing it in produced "Veo un cubo azul, pero no puedo
+    llegar: esta 35 cm from the base, past the 33 cm the arm can reach".
+    """
+    kind = item.get("kind") or "any"
+    color = item.get("color")
+    what = {lang: describe.phrase(kind, color, 1, lang) for lang in ("es", "en", "eu")}
+
+    x, y = points[0] if points else (0.0, 0.0)
+    facts = scene_spec.reach_facts(x, y)
+    distance = facts["distance_m"] * 100.0
+    limit = facts["limit_m"] * 100.0
+    beyond_arm = facts["beyond_arm"]
+
+    where = {
+        "es": (f"esta a {distance:.0f} cm de la base y el brazo llega a {limit:.0f}"
+               if beyond_arm
+               else f"está en ({x:+.3f}, {y:+.3f}), fuera del área de trabajo"),
+        "en": (f"it is {distance:.0f} cm from the base and the arm reaches {limit:.0f}"
+               if beyond_arm
+               else f"it is at ({x:+.3f}, {y:+.3f}), outside the working area"),
+        "eu": (f"{distance:.0f} cm dago ohatik dago eta burua {limit:.0f} cm-rera iristen"
+               if beyond_arm
+               else f"({x:+.3f}, {y:+.3f}) dago, lanetik kanpoan"),
+    }
+    advice = {
+        "es": "Muévelo más cerca." if beyond_arm else "Muévelo dentro del área de trabajo.",
+        "en": "Move it closer." if beyond_arm else "Move it into the working area.",
+        "eu": "Hurbildu gertuago." if beyond_arm else "Eman utzi zonalera eramanu.",
+    }
+    lead = {
+        "es": f"Veo {what['es']}, pero no puedo llegar: {where['es']}.",
+        "en": f"I can see {what['en']}, but I cannot reach it: {where['en']}.",
+        "eu": f"Ikusten dut {what['eu']}, baina iristu ezin dut: {where['eu']}.",
+    }
+    return {lang: f"{lead[lang]} {advice[lang]}" for lang in ("es", "en", "eu")}
+
+
 def ground(scene: Scene, item: dict) -> Grounding:
     """One item of a command, resolved against a scene.
 
@@ -251,6 +299,38 @@ def ground(scene: Scene, item: dict) -> Grounding:
     matches = scene.candidates(kind, color)
     if not matches:
         return Grounding(status="not_found", question=not_found_question(scene, item))
+
+    # ADDED FOR THE out_of_reach VARIANT: drop what the arm cannot get to.
+    #
+    # The robot can see more than it can touch, and when the only thing matching is out of
+    # reach the honest answer is to say so rather than to plan a move that cannot happen. Two
+    # different reasons come back from `why_unreachable` - beyond the arm's length, which is
+    # physics, and outside the declared working area, which is policy - and the person is told
+    # which, because "move it closer" is useful advice and "that is where I am allowed to work"
+    # is not the same request.
+    #
+    # Where one candidate is reachable and another is not, the reachable one wins silently. A
+    # question here would be pedantry: if the person said "the red cube" and there are two and
+    # only one is in reach, the one they can have is the obvious answer.
+    reachable, unreachable = [], []
+    for candidate in matches:
+        why = scene_spec.why_unreachable(candidate.pos_m[0], candidate.pos_m[1]) \
+            if candidate.pos_m else "its position was not measured"
+        if candidate.pos_m and not why:
+            reachable.append(candidate)
+        else:
+            unreachable.append(candidate)
+
+    if not reachable:
+        points = [(c.pos_m[0], c.pos_m[1]) for c in unreachable if c.pos_m]
+        return Grounding(
+            status="not_reachable",
+            candidates=unreachable,
+            question=unreachable_question(points, item),
+            note=scene_spec.why_unreachable(*points[0]) if points
+            else "its position was not measured")
+
+    matches = reachable
 
     ranked = scene.rank(matches, position)
 
@@ -292,6 +372,28 @@ def ground_place(scene: Scene, place: dict | None) -> Grounding:
         by_kind = scene.container(kind, None)
     if not by_kind and kind in ("any", "other", None, ""):
         by_kind = sorted(scene.containers, key=lambda c: -c.area_px)
+
+    # ADDED FOR THE out_of_reach VARIANT: a destination the arm cannot get to is refused for
+    # the same reason an object is. A tray outside the working area is as unreachable as a
+    # ball outside it, and saying "nowhere to put it" when the tray is plainly visible would
+    # be a worse answer than naming the tray and the reason.
+    usable, unusable = [], []
+    for tray in by_kind:
+        why = scene_spec.why_unreachable(tray.pos_m[0], tray.pos_m[1]) \
+            if tray.pos_m else "its position was not measured"
+        if tray.pos_m and not why:
+            usable.append(tray)
+        else:
+            unusable.append(tray)
+    if by_kind and not usable:
+        points = [(t.pos_m[0], t.pos_m[1]) for t in unusable if t.pos_m]
+        return Grounding(
+            status="not_reachable",
+            candidates=unusable,
+            question=unreachable_question(points, {"kind": kind or "any", "color": color}),
+            note=scene_spec.why_unreachable(*points[0]) if points
+            else "its position was not measured")
+    by_kind = usable if usable else by_kind
     if len(by_kind) == 1:
         return Grounding(status="ok", place=by_kind[0])
     if not by_kind:

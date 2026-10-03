@@ -132,15 +132,13 @@ def place_pose(thing: Thing) -> tuple[float, float, float]:
 
 
 def in_workspace(point: tuple[float, float, float]) -> str | None:
-    """Why this point is unreachable, or None if it is fine."""
-    x, y, _z = point
-    reach = math.dist((scene_spec.ROBOT_XY[0], scene_spec.ROBOT_XY[1]), (x, y))
-    if reach > scene_spec.MAX_REACH_M:
-        return (f"{reach * 100:.1f} cm from the base, over the {scene_spec.MAX_REACH_M * 100:.0f} cm reach")
-    if not (scene_spec.WORK_X[0] <= x <= scene_spec.WORK_X[1]
-            and scene_spec.WORK_Y[0] <= y <= scene_spec.WORK_Y[1]):
-        return f"({x:+.3f}, {y:+.3f}) is outside the working area"
-    return None
+    """Why this point is unreachable, or None if it is fine.
+
+    Delegates to ``scene_spec.why_unreachable`` so that planning and grounding cannot disagree
+    about where the robot stops being able to work. They used to be two copies of the same
+    arithmetic, which is exactly how a "no" from one and a plan from the other happens.
+    """
+    return scene_spec.why_unreachable(point[0], point[1])
 
 
 def _carry(plan: Plan, action: str, pose, grip, target, note="") -> None:
@@ -255,11 +253,19 @@ def plan_command(command: dict, scene: Scene,
     if not resolved["executable"]:
         plan.reply = f"nothing to pick up: {resolved['summary']}"
         for entry in resolved["items"]:
-            if entry.status == "ambiguous" and entry.question:
+            # ADDED FOR THE out_of_reach VARIANT. `not_reachable` has to be asked here as well
+            # as `ambiguous`, or the robot answers "nothing to pick up" about an object it can
+            # plainly see - which is the opposite of useful. The person asked for something and
+            # the honest answer names what they asked for and why it is not happening.
+            if entry.status in ("ambiguous", "not_reachable") and entry.question:
                 plan.question = dict(entry.question)
                 plan.reply = entry.question.get("es") or plan.reply
             elif entry.status == "not_found":
                 plan.unresolved.append(entry.say("es"))
+        place_status = resolved["place"].status
+        if place_status == "not_reachable" and resolved["place"].question:
+            plan.question = dict(resolved["place"].question)
+            plan.reply = resolved["place"].question.get("es") or plan.reply
         return plan
 
     place = resolved["place"]

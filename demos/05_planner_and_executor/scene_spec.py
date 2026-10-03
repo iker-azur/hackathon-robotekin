@@ -30,7 +30,9 @@ Objects of the same colour are at least 6 cm apart, which is 72 px at the top ca
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+import math
 
 import numpy as np
 
@@ -56,6 +58,48 @@ ROBOT_XY = (0.35, -0.64)
 # hardware, not from this simulation: if demo 10 cannot reach a zone, this is the first
 # number to move.
 MAX_REACH_M = 0.33
+
+
+def reach_facts(x: float, y: float) -> dict:
+    """The numbers behind "can the arm work here", so callers can say it in their own language.
+
+    ``why_unreachable`` renders these as an English sentence, which is fine for a log line and
+    wrong for a reply: it produced "Veo un cubo azul, pero no puedo llegar: esta 35 cm from
+    the base, past the 33 cm the arm can reach". A measurement should be a number plus a limit,
+    and the sentence around it belongs to whoever is speaking.
+    """
+    distance = math.hypot(x - ROBOT_XY[0], y - ROBOT_XY[1])
+    return {
+        "distance_m": distance,
+        "limit_m": MAX_REACH_M,
+        "beyond_arm": distance > MAX_REACH_M,
+        "in_area": (WORK_X[0] <= x <= WORK_X[1] and WORK_Y[0] <= y <= WORK_Y[1]),
+        "x": x,
+        "y": y,
+    }
+
+
+def why_unreachable(x: float, y: float) -> str | None:
+    """Why the arm cannot work at this point, or None if it can.
+
+    Lives here rather than in ``planner`` because ``ground`` needs it too and ``planner``
+    already imports ``ground`` - putting it in either would be circular. It is the one
+    definition of "the robot cannot do this here", used for planning and for refusing.
+
+    Two tests, in this order, and they are different failures:
+
+    * beyond ``MAX_REACH_M`` of the base - physically out of the arm's length, which is not a
+      policy and cannot be argued with.
+    * outside ``WORK_X``/``WORK_Y`` - the declared operating region. The arm may well be able
+      to reach it; the demo has decided that region is where it works, which is a policy.
+    """
+    facts = reach_facts(x, y)
+    if facts["beyond_arm"]:
+        return (f"{facts['distance_m'] * 100:.0f} cm from the base, past the "
+                f"{MAX_REACH_M * 100:.0f} cm the arm can reach")
+    if not facts["in_area"]:
+        return f"({x:+.3f}, {y:+.3f}) is outside the working area {WORK_X} {WORK_Y}"
+    return None
 
 
 @dataclass
@@ -240,6 +284,55 @@ def scene_of(duplicate: bool = True) -> list[Item]:
     if not duplicate:
         items = [i for i in items if i.prim != "ball_red"]
     return items
+
+
+# ADDED FOR THE out_of_reach VARIANT. Two objects placed just beyond the far edge of the
+# working area, at y = -0.325 against a WORK_Y that ends at -0.32.
+#
+# **Chosen so they are genuinely out of the arm's reach, not merely outside the declared
+# area.** That distinction is the whole demo. At y = -0.325 the base is 0.315 m away in y, so
+# the reach envelope leaves |dx| <= sqrt(0.33^2 - 0.315^2) = 0.10 m: anything past x = 0.45 or
+# before x = 0.25 is physically unreachable. Placing them merely outside WORK_X instead - say
+# at x = 0.205 - would be 0.235 m from the base and comfortably inside the arm's length, so the
+# robot could reach it and the refusal would be policy dressed up as physics.
+#
+# **Placed clear of everything, and that took one correction.** The first attempt put the blue
+# cube at x = 0.245, where it overlapped the blue tray's footprint and simply did not appear:
+# the rendered frame had three objects and no blue cube anywhere. ``clearance`` did not catch it
+# either, because it compares centre distances minus half-extents and an L-shaped overlap can
+# come out positive. x = 0.190 is 85 mm from the tray in x, well past the 50 mm their combined
+# half-widths need.
+#
+# They are still on the table (which spans y -0.6768..-0.0268) and inside the top camera's
+# field, so perception finds them: the point is that the robot can SEE something it cannot
+# TOUCH, which is the case a person needs told about.
+OUT_OF_REACH_ITEMS = {
+    # cube_blue: 19 mm further left than the nearest reachable point at this depth.
+    "cube_blue": (0.190, -0.325),
+    # ball_green: the same distance to the right. Symmetric, so the demo is not accidentally
+    # easier on one side of the table than the other.
+    "ball_green": (0.510, -0.325),
+}
+
+
+def out_of_reach_scene() -> list[Item]:
+    """The static scene for the ``out_of_reach`` variant.
+
+    STATIC on purpose, unlike the other variants which re-randomise: the point of this one is
+    that a given object is always in the same place, so "that one is out there and I cannot
+    get it" is a stable fact about the table rather than a coin flip each round.
+
+    Two objects are moved out of reach; everything else is the normal scene, so the robot has
+    to tell them apart from memory and say which is which.
+    """
+    out = []
+    for item in DEFAULT_SCENE:
+        if item.prim in OUT_OF_REACH_ITEMS:
+            x, y = OUT_OF_REACH_ITEMS[item.prim]
+            out.append(replace(item, x=x, y=y))
+        else:
+            out.append(item)
+    return out
 
 
 def jittered(items: list[Item], trial: int) -> list[Item]:
