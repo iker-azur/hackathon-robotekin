@@ -162,15 +162,26 @@ def options_of(scene: Scene, candidates: list[Thing]) -> dict[str, object]:
     return {"position": word, "first": ranked[-1].id, "second": ranked[0].id}
 
 
-def ambiguous_question(scene: Scene, candidates: list[Thing]) -> dict[str, str]:
+def ambiguous_question(scene: Scene, candidates: list[Thing],
+                       color: str | None = None) -> dict[str, str]:
     """Ask which one, naming the options when a position word can tell them apart.
 
     The noun phrases come from ``describe.phrase`` rather than being built here, so that
     "there are two red balls" agrees in Spanish, English and Basque instead of being a
     translated singular with a plural bolted on.
+
+    ``color`` is the colour that was ASKED for, and it is not the same as the candidates'
+    colour. An earlier version took the colour from ``candidates[0]``, which quietly
+    mislabelled every other candidate: "mete las bolas" - no colour asked for - matched the
+    red ball and the green ball, and the question came out "there are two BLUE balls",
+    naming a colour the person never said and that only one of them had. So the colour is
+    used only when the person gave one, or when every candidate really does share it;
+    otherwise the phrase carries no colour and the question stays true.
     """
     count = len(candidates)
-    kind, color = candidates[0].kind, candidates[0].color
+    kind = candidates[0].kind
+    if color is None and len({c.color for c in candidates}) == 1:
+        color = candidates[0].color
     split = options_of(scene, candidates)
     if split:
         # The count is already inside describe.phrase for plurals, so it is not repeated
@@ -246,7 +257,7 @@ def ground(scene: Scene, item: dict) -> Grounding:
     if position:
         if not scene.separates(matches, position):
             return Grounding(status="ambiguous", candidates=matches,
-                             question=ambiguous_question(scene, matches),
+                             question=ambiguous_question(scene, matches, color),
                              note=f"{position!r} does not tell these {len(matches)} apart")
         return Grounding(status="ok_filtered", targets=ranked[:1], candidates=matches)
 
@@ -262,7 +273,7 @@ def ground(scene: Scene, item: dict) -> Grounding:
         return Grounding(status="ok", targets=matches, candidates=matches)
 
     return Grounding(status="ambiguous", candidates=matches,
-                     question=ambiguous_question(scene, matches))
+                     question=ambiguous_question(scene, matches, color))
 
 
 def ground_place(scene: Scene, place: dict | None) -> Grounding:

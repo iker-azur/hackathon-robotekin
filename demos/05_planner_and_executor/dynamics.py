@@ -63,11 +63,27 @@ MAX_ATTEMPTS = 400
 # randomised layouts was 13.7 mm, so a 20 mm move can - and should - be re-planned.
 DEFAULT_DISTURB_M = 0.02
 
-# A shove alone is only a disturbance for a sphere. Measured with tools/probe_shove.py, a
-# 20 cm/s shove moved the balls 69 and 142 mm - they roll - and the cubes 1.4 and 2.7 mm,
-# however it was delivered: written as a velocity, written after a nudge to wake the body, or
-# accompanied by a spin to tip it. A box resting on a flat face cannot be tipped by pushing
-# at its base, and friction stops the slide almost immediately.
+# A shove is aimed roughly INWARD, toward the middle of the working area, with this much
+# random either side of that. Aimed any old direction it throws things off the table: a ball
+# shoved away from the robot at 24 cm/s rolled 12.7 cm to y = -0.568, past the table's near
+# edge at -0.6768 was fine but the same run produced x = -0.679, which is off the far side
+# entirely, and an object that leaves the table cannot be re-planned for. Aimed inward, the
+# longest roll measured over 16 rounds is 134 mm and stays between the trays.
+DISTURB_AIM_JITTER_RAD = math.radians(70.0)
+
+
+def _inward_heading(x: float, y: float, rng: random.Random) -> float:
+    """A shove direction pointing at the middle of the working area, loosely.
+
+    Aimed any old direction it throws things off the table: one ball shoved away from the
+    robot rolled to x = -0.679, which is off the far side of a table that spans x 0.0032 to
+    0.7032, and an object that leaves the table cannot be re-planned for. Aimed inward, the
+    longest roll measured over 16 rounds is 134 mm and every object stayed between the trays.
+    """
+    centre_x = (scene_spec.WORK_X[0] + scene_spec.WORK_X[1]) / 2.0
+    centre_y = (scene_spec.WORK_Y[0] + scene_spec.WORK_Y[1]) / 2.0
+    inward = math.atan2(centre_y - y, centre_x - x)
+    return inward + rng.uniform(-DISTURB_AIM_JITTER_RAD, DISTURB_AIM_JITTER_RAD)
 #
 # So a sphere is shoved, which is the interesting case because where it ends up is nobody's
 # prediction, and anything else is displaced directly by DEFAULT_DISTURB_M, which is what a
@@ -220,13 +236,13 @@ def disturb(env, items: list[Item], rng: random.Random, exclude: set[str] | None
 
     item = candidates[rng.randrange(len(candidates))]
     prim = item.prim
-    heading = rng.uniform(0.0, 2.0 * math.pi)
     speed_m = rng.uniform(*DISTURB_SPEED_M)
-    direction = (math.cos(heading), math.sin(heading), 0.0)
 
     obj = env.scene[prim]
     start = obj.data.root_pos_w[0].detach().cpu().numpy()
     from_xy = (float(start[0]), float(start[1]))
+    heading = _inward_heading(from_xy[0], from_xy[1], rng)
+    direction = (math.cos(heading), math.sin(heading), 0.0)
     upright = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=env.device)
     zeros = torch.zeros(1, 6, device=env.device)
 
@@ -251,8 +267,9 @@ def disturb(env, items: list[Item], rng: random.Random, exclude: set[str] | None
         shifted = start.copy()
         shifted[0] += direction[0] * distance
         shifted[1] += direction[1] * distance
-        obj.write_root_pose_to_sim(torch.cat([torch.tensor([shifted], device=env.device),
-                                              upright], dim=-1))
+        obj.write_root_pose_to_sim(torch.cat(
+            [torch.as_tensor(shifted, dtype=torch.float32, device=env.device)[None, :],
+             upright], dim=-1))
         obj.write_root_velocity_to_sim(zeros)
         for taken in range(1, settle + 1):
             env.sim.step(render=False)

@@ -95,9 +95,27 @@ PARK_POSE = (0.35, -0.58, 0.46)
 # populates second, and the camera capture comes after ``place_items``. Anything the sweep
 # moved is put back before a single pixel is rendered.
 
-# Long enough to converge. 150 steps was not enough for the farthest candidate tried and
-# left the arm mid-motion when the next command arrived, which then fought it.
-PARK_STEPS = 220
+# Park briskly. MEASURED, by tools/probe_park_speed.py, sweeping from the retreat pose - the
+# arm's position between commands - back to PARK_POSE with the objects down:
+#
+#     25 steps (0.4 s)   10.4 mm worst drift, nothing left the table
+#     40 steps (0.7 s)   16.6 mm
+#     60 steps (1.0 s)   24.4 mm
+#     90 steps (1.5 s)   36.5 mm, one ball out of the working area
+#    150 steps (2.5 s)   60.4 mm, one ball out of the working area
+#    300 steps           118.7 mm      600 steps  237.3 mm
+#   1200 steps (20 s)   1893.3 mm
+#
+# The direction of that trend is the opposite of the obvious one, and it is worth stating: a
+# SLOW park is far worse. The forearm rests against the balls and leans on them the whole
+# time it is passing, so duration is roughly how long the balls are being pushed. Only the
+# balls move; the cubes read 0.0 mm at every duration, because a cube on a flat face does not
+# slide.
+#
+# 40 steps is the pick: 0.7 s is still a plausible arm motion, and 16.6 mm of drift is well
+# inside the 51 mm smallest same-colour gap. The demo re-perceives after parking, so what the
+# sweep moves is seen where it came to rest and planned for there.
+PARK_STEPS = 40
 
 
 @dataclass
@@ -184,6 +202,11 @@ class Executor:
 
     def drop(self) -> None:
         self._held = None
+
+    @property
+    def holding(self) -> str | None:
+        """The prim currently being carried kinematically, if any."""
+        return self._held
 
     def _carry_if_held(self) -> None:
         """Write the held object's pose from the gripper frame. Called every step."""

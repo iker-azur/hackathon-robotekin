@@ -138,11 +138,18 @@ def in_phrase(phrase: str, table: dict, skip: str | None = None):
     return None
 
 
-def _destination_in(text: str, segment: str) -> dict | None:
+def _destination_in(text: str, segment: str, kind_required: bool = True) -> dict | None:
     """The receptacle a destination segment names, or None.
 
     ADDED IN THIS COPY. Reads the first receptacle word and the first colour word out of the
     stretch of sentence between one item's mention and the next.
+
+    ``kind_required=False`` returns a colour even when no receptacle word is recognised, for
+    the case where the classification head supplied the kind from open vocabulary but not the
+    colour. Measured: "pon el cubo rojo en el recuadro rojo" came back as other/None, because
+    "recuadro" is not one of the words PLACE_WORDS knows, so there was nothing to anchor the
+    colour read to and the whole lookup gave up - dropping "rojo" even though it was right
+    there in the sentence.
     """
     if not segment.strip():
         return None
@@ -152,13 +159,15 @@ def _destination_in(text: str, segment: str) -> dict | None:
         if word and word in plain_segment:
             kind = PLACE_WORDS[word]
             break
-    if kind is None:
+    if kind is None and kind_required:
         return None
     color = None
     for word in sorted(COLOR_WORDS, key=len, reverse=True):
         if word and word in plain_segment:
             color = COLOR_WORDS[word]
             break
+    if kind is None and color is None:
+        return None
     return {"kind": kind, "color": color}
 
 
@@ -328,6 +337,31 @@ class CommandModel:
                             for i in items)):
                 label["intent"] = "sort"
                 label["sort_by"] = "color"
+        # ADDED IN THIS COPY: fill in the command-level destination the heads left blank.
+        #
+        # The per-item fallback above is restricted to multi-item commands, because on a
+        # single-item command the item's destination IS the command's place. But that left the
+        # single-item case resting entirely on `place_kind` and `place_color`, and the head
+        # drops the colour when the item and the destination are the same colour: measured,
+        # "pon el cubo rojo en la caja roja" parsed as place box/None - the kind was right and
+        # "roja" had vanished, so grounding asked which of the two boxes was meant about a box
+        # that had been named unambiguously. "pon la bola verde en la bandeja azul" was fine,
+        # because there the two colours differ and the head has one to hold.
+        #
+        # The text is the authority here, not the head: the colour is a word sitting right
+        # next to the receptacle word, and reading it out of the sentence is the same lookup
+        # the rest of this file already uses. Only fills a blank, so a head that does answer
+        # keeps its answer.
+        if label["place_kind"] != "none" and label["place_color"] == "none":
+            tail = ""
+            if records:
+                mention = text_of(records[-1]["mention"]) or ""
+                begin = text.lower().rfind(mention.lower())
+                tail = text[begin + len(mention):] if mention and begin >= 0 else ""
+            named = _destination_in(text, tail, kind_required=False)
+            if named is not None and named["color"]:
+                label["place_color"] = named["color"]
+
         place = None
         if label["place_kind"] != "none":
             place = {"kind": label["place_kind"],

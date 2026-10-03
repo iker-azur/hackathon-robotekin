@@ -122,6 +122,16 @@ class Viewer:
     def wants_quit(self, keys: set[str]) -> bool:
         return QUIT in keys or "escape" in keys
 
+    def drain(self) -> set[str]:
+        """Keys pressed since the last call, without showing a frame.
+
+        Public because a caller that runs motion between frames still has to notice a keypress:
+        ``show`` collects them, but during a pick-and-place there are no frames being shown,
+        and a viewer that cannot be quit with the keyboard mid-move is a viewer that has to be
+        killed from another window.
+        """
+        return self._drain_keys()
+
     def close(self) -> None:
         if self.opened and hasattr(cv2, "destroyAllWindows"):
             try:
@@ -226,6 +236,20 @@ class FrameWriter:
         self.seen += 1
         if self.seen % self.every:
             return
+        self.force(image)
+
+    def force(self, image: np.ndarray) -> None:
+        """Write one frame now, ignoring the every-N counter.
+
+        For when someone asks for it - a "save this one" key - which is the only way to get
+        the frame you actually wanted rather than the next one that was due.
+        """
+        import perceive
+
         self.folder.mkdir(parents=True, exist_ok=True)
         perceive.save_png(self.folder / f"{self.prefix}{self.written:04d}.png", image)
         self.written += 1
+
+    def close(self) -> None:
+        """Nothing to release; here so callers can treat every sink the same way."""
+        return None

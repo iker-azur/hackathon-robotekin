@@ -4,9 +4,9 @@
 
 | | intent | items | place | sort_by | **command** |
 | --- | --- | --- | --- | --- | --- |
-| all | 94.9% | 90.4% | 95.6% | 100.0% | **83.8%** |
+| all | 94.9% | 90.4% | 95.6% | 100.0% | **84.6%** |
 | en | 95.0% | 95.0% | 95.0% | 100.0% | **85.0%** |
-| es | 93.3% | 85.0% | 95.0% | 100.0% | **78.3%** |
+| es | 93.3% | 85.0% | 95.0% | 100.0% | **80.0%** |
 | eu | 97.2% | 94.4% | 97.2% | 100.0% | **91.7%** |
 
 - stop caught: 100.0% (7/7)
@@ -31,11 +31,8 @@
 | sort | 100.0% (15) |
 | stop | 100.0% (7) |
 
-## Errors (22)
+## Errors (21)
 
-- `es` 'coge el objeto verde y déjalo en la caja roja': wrong place  
-  expected `{"intent": "pick_and_place", "items": [{"kind": "any", "name": "objeto", "color": "green", "quantity": 1, "position": null}], "place": {"kind": "box", "color": "red"}, "sort_by": "none"}`  
-  got `{"intent": "pick_and_place", "items": [{"kind": "any", "name": "objeto", "color": "green", "quantity": 1, "position": null, "place": null}], "place": {"kind": "box", "color": null}, "sort_by": "none"}`
 - `es` 'Coge la esfera azul y déjala en la canasta verde': wrong items  
   expected `{"intent": "pick_and_place", "items": [{"kind": "ball", "name": "esfera", "color": "blue", "quantity": 1, "position": null}], "place": {"kind": "basket", "color": "green"}, "sort_by": "none"}`  
   got `{"intent": "pick_and_place", "items": [{"kind": "other", "name": "esfera", "color": "blue", "quantity": 1, "position": null, "place": null}], "place": {"kind": "basket", "color": "green"}, "sort_by": "none"}`
@@ -51,9 +48,9 @@
 - `es` 'Recoge la mesa, por favor': wrong items  
   expected `{"intent": "clear", "items": [], "place": null, "sort_by": "none"}`  
   got `{"intent": "clear", "items": [{"kind": "other", "name": "mesa", "color": null, "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none"}`
-- `es` 'Pon rojo, azul y rojo en la caja': wrong items  
+- `es` 'Pon rojo, azul y rojo en la caja': wrong items, place  
   expected `{"intent": "sequence", "items": [{"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null}, {"kind": "any", "name": null, "color": "blue", "quantity": 1, "position": null}, {"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null}], "place": {"kind": "box", "color": null}, "sort_by": "none"}`  
-  got `{"intent": "sequence", "items": [{"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "any", "name": null, "color": "blue", "quantity": 1, "position": null, "place": {"kind": "box", "color": "red"}}], "place": {"kind": "box", "color": null}, "sort_by": "none"}`
+  got `{"intent": "sequence", "items": [{"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "any", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}, {"kind": "any", "name": null, "color": "blue", "quantity": 1, "position": null, "place": {"kind": "box", "color": "red"}}], "place": {"kind": "box", "color": "red"}, "sort_by": "none"}`
 - `es` 'Cogen el objeto verde y dejaren el incesto rojo': wrong intent, items, place  
   expected `{"intent": "pick_and_place", "items": [{"kind": "any", "name": "objeto", "color": "green", "quantity": 1, "position": null}], "place": {"kind": "basket", "color": "red"}, "sort_by": "none"}`  
   got `{"intent": "sequence", "items": [{"kind": "any", "name": null, "color": "green", "quantity": 1, "position": null, "place": null}, {"kind": "other", "name": null, "color": "red", "quantity": 1, "position": null, "place": null}], "place": null, "sort_by": "none"}`

@@ -1,6 +1,6 @@
 # test_v2_only.jsonl
 
-38 sentences, 76 ms per sentence
+38 sentences, 65 ms per sentence
 
 | | intent | items | place | sort_by | **command** |
 | --- | --- | --- | --- | --- | --- |
