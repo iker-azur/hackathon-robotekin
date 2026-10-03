@@ -104,11 +104,16 @@ class Robot:
         self.args = args
         self.viewer = viewer
         self.model = model
+        # Set to a voice.Listener by main() when --voice is passed; None means every command
+        # arrives at the keyboard. Declared here rather than only in main() so ask() cannot
+        # reach an attribute that does not exist if voice is off.
+        self.voice = None
         self.base = list(scene_spec.DEFAULT_SCENE)
         self.layout = list(self.base)
         self.bot = executor_module.Executor(env, log=self.say)
         self.scene: scene_module.Scene | None = None
         self.last_image = None
+        self.shown = None
         self.frames = 0
         self.label = "start"
         self.round_index = 0
@@ -213,19 +218,30 @@ class Robot:
         self.layout = list(layout)
 
     def look(self, caption: str = "") -> scene_module.Scene:
-        """One frame in, one Scene out, drawn in the viewer."""
+        """One frame in, one Scene out, drawn in the viewer.
+
+        What the viewer shows is the ANNOTATED frame - the picture with every blob outlined,
+        labelled with what was decided about it - not the raw camera image. Those are
+        different pictures, and showing the raw one hides the entire point: you cannot tell
+        whether the robot saw the green ball as a ball at (0.366, -0.472) or as an unclassified
+        blob, which is exactly the question you want answered by looking at the screen.
+        ``--raw`` shows the unannotated feed instead, for checking the render itself.
+        """
         image, depth, camera = isaac_io.capture(self.env, self.sensor)
         if self.mask_arm:
             image = self._mask(image, camera)
-        self.last_image = image
         self.scene = perceive.perceive(
             image, source=self.label, camera=camera,
             frame=isaac_io.robot_frame(self.env), plane_z=scene_spec.TABLE_TOP_Z,
             depth=depth, looking_for=colors.colors(self.args.detect))
-        if self.writer:
-            self.writer.offer(image)
+        self.last_image = image
+
+        caption = caption or self.scene.summary()
+        shown = image if self.args.raw else perceive.annotate(image, self.scene, caption)
+        self.shown = shown
+        self.writer.offer(shown)
         if self.viewer is not None:
-            self.viewer.show(image, caption or self.scene.summary())
+            self.viewer.show(shown, caption)
         self.frames += 1
         return self.scene
 
@@ -293,11 +309,11 @@ class Robot:
             self.say(f"  {seen.summary()}")
             return True
         if lowered in SAVE_WORDS:
-            if self.last_image is None:
+            if self.shown is None:
                 self.say("  no frame yet")
             else:
-                self.writer.force(self.last_image)
-                self.say(f"  frame saved ({self.writer.written} so far)")
+                self.writer.force(self.shown)
+                self.say(f"  frame saved ({self.writer.written} so far) to {self.writer.folder}")
             return True
 
         command = self.model.parse(text)
@@ -513,6 +529,22 @@ class Robot:
         return self.viewer.drain() if self.viewer is not None else set()
 
     def ask(self) -> str:
+        """One command, typed or spoken.
+
+        With ``--voice`` the typed prompt is still there, because a microphone is not always
+        the right input: a noisy room, a quiet voice, or a scripted run all argue for typing.
+        So voice *adds* a way in rather than replacing one, and an empty line or nothing at
+        all falls through to the keyboard.
+        """
+        if self.voice is not None:
+            print("  listening...", end="", flush=True)
+            print("\r", end="", flush=True)
+            heard = self.voice.listen()
+            if heard:
+                print(f"  heard: {heard}")
+                return heard
+            print("  heard nothing; type instead")
+
         try:
             return input("> ")
         except EOFError:
@@ -523,6 +555,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--voice", action="store_true",
+                        help="listen to each command instead of typing it; still accepts typing")
+    parser.add_argument("--voice-model", default="small",
+                        help="faster-whisper model: tiny, base, small or medium (all cached)")
+    parser.add_argument("--voice-language", default=None,
+                        help="force one language (es, en, eu) instead of detecting it")
+    parser.add_argument("--voice-device", default="cpu", choices=["cpu", "cuda"])
+    parser.add_argument("--raw", action="store_true",
+                        help="show the unannotated camera feed instead of the drawn detections")
     parser.add_argument("--camera", default="top", choices=sorted(scene_spec.CAMERA_CHOICES))
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
@@ -549,6 +590,18 @@ def main() -> int:
     # imports do not coexist in that order. Demo 03 loads its model first for the same reason.
     model = CommandModel()
 
+    listener = None
+    if args.voice:
+        import voice
+
+        complaint = voice.check_microphone()
+        if complaint:
+            parser.error(f"--voice cannot work: {complaint}")
+        # Also before the simulator, for the same reason the command model is: two heavy
+        # native libraries loading at once is what crashed the process before.
+        listener = voice.Listener(model=args.voice_model, language=args.voice_language,
+                                  device=args.voice_device)
+
     isaac_io.prepare_runtime(headless=args.headless)
     env, sensor = isaac_io.build_env(args.camera, list(scene_spec.DEFAULT_SCENE))
     # Reset, then aim. The camera's pose is applied at spawn and only becomes readable after a
@@ -564,6 +617,7 @@ def main() -> int:
         if use_viewer:
             viewer = viewer_module.Viewer()
         robot = Robot(env, sensor, args, viewer=viewer, model=model)
+        robot.voice = listener
 
         scripted = list(args.text) * max(1, args.repeat) if args.text else []
         failures = 0

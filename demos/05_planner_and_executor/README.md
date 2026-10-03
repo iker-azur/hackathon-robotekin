@@ -30,6 +30,10 @@ it, and where something does not work, the README says so and says why.
 | flag | default | |
 |---|---|---|
 | `--headless` | off | no window; needed for any scripted run |
+| `--voice` | off | listen to each command instead of typing it |
+| `--voice-model` | small | `tiny`/`base`/`small`/`medium`; all already cached locally |
+| `--voice-language` | detect | force `es`, `en` or `eu` instead of detecting |
+| `--raw` | off | show the unannotated camera feed, not the drawn detections |
 | `--rounds N` | 1 | re-randomise the layout between rounds |
 | `--seed N` | 0 | the layout is a pure function of the seed |
 | `--spread M` | 0.018 | how far a randomised layout may move things, in metres |
@@ -44,6 +48,53 @@ frame, `r` re-looks, `n` next round.
 
 Typed words that the loop answers itself: `q`/`salir`, `n`/`siguiente`, `r`/`mirar`,
 `s`/`guardar`.
+
+## Seeing what the camera sees
+
+The window shows the **annotated** frame: every blob outlined in its colour, labelled with
+what was decided about it, with a crosshair at the position it was measured at, plus the
+scale (`746 px/m on the table`). That is deliberately not the raw feed — the raw feed looks
+fine either way, which is the problem. Looking at the annotated frame is how you tell whether
+the robot saw the green ball as a *ball* at a given position or as an unclassified blob, and
+that is the question worth answering by eye.
+
+```
+python 10_command_to_motion.py                          # annotated, with a window
+python 10_command_to_motion.py --raw                    # the plain camera feed
+python 10_command_to_motion.py --save-every 1           # write every frame to out/*.png
+```
+
+`--save-every 1` writes the same annotated frames to `out/` and works with `--headless`, so a
+run can be inspected afterwards. In the window, `s` saves the current frame.
+
+To check which camera is being used, `--camera side` or `--camera front` are also wired up;
+`front` is the deliberate worst case, looking through the arm.
+
+## Saying it instead of typing it
+
+`--voice` listens for one utterance, transcribes it, and runs it exactly as if it had been
+typed. Typing still works as a fallback, because a microphone is not always the right input.
+
+```
+python 10_command_to_motion.py --voice
+python 10_command_to_motion.py --voice --voice-language es
+python 10_command_to_motion.py --voice --voice-model base
+```
+
+Both packages it needs are already installed (`faster-whisper` 1.2.1, `sounddevice` 0.5.6) and
+`Systran/faster-whisper-small` is already in the Hugging Face cache, so **nothing is
+downloaded on the first run** and it works offline.
+
+Recording starts when you speak and stops 1.2 s after you stop, or after 10 s, whichever comes
+first; nothing heard means it falls through to the keyboard. What it heard is printed before
+it is run, so a mis-transcription is visible rather than mysterious — Whisper returns
+lower-case text with no punctuation, and demo 03's command model was trained with a
+`train_asr.jsonl` set of the same sentences exactly as speech recognition returns them, so
+that shape of input is one it has already seen. All three languages are in Whisper's language
+list, Basque included; `--voice-language` forces one if auto-detection picks wrong.
+
+The model is loaded before the simulator, for the same reason the command model is: two heavy
+native libraries loading after Isaac has booted crashes the process.
 
 ## Measured
 
