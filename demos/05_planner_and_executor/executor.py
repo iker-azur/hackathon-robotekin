@@ -41,11 +41,13 @@ HOLD = (0.007, 0.0, -0.092)
 # Extra height above the grasp pose while travelling, from demo 05.
 ABOVE = 0.06
 
-# The IK action's gripper is binary: >= 0 opens to 1.0 rad, < 0 closes to JAW_CLOSED_RAD.
-# Demo 05's reasoning: LeIsaac's default of 0.4 rad suits an 8 cm orange and leaves a 1 cm
-# gap on a 3 cm cube; fully shut (-0.17) makes the hooked tip ride over the cube's top edge.
+# The IK action's gripper is binary: a positive value opens it to 1.0 rad and a negative one
+# closes it. The closing angle is NOT set here - it belongs to the BinaryJointPositionAction
+# term configured by the LeIsaac Hub module that env_loader downloads, and measured as 0.4 rad
+# by tools/probe_gripper.py. An earlier version of this file declared JAW_CLOSED_RAD = 0.15
+# and nothing ever read it, which is how a README came to claim the jaws shut to 0.15 rad.
+# They do not.
 OPEN, CLOSE = 1.0, -1.0
-JAW_CLOSED_RAD = 0.15
 
 # Physics steps per planner action. Demo 05's waypoint table, which is known to work on this
 # arm: it spends 150 steps (2.5 s) travelling and 40 (0.7 s) opening the jaws.
@@ -75,7 +77,8 @@ STILL_M = 0.001
 # object 371 mm away was picked out of empty air, carried, and placed correctly - and nothing
 # in the report said the jaws had never touched it. The number comes from
 # tools/probe_approach_drift.py: a ball is knocked 57-60 mm by the arm's own transit across
-# the table and a further 130-310 mm by the descent, because the jaws shut to 0.15 rad around
+# the table and a further 130-310 mm by the descent. Not the jaw width: measured across
+# closing angles from 0.4 to 1.0 rad the displacement is identical, including fully open.
 # a 4 cm ball and squirt it out. A 3 cm cube moves 10-12 mm over the same approach, all of it
 # perception error, and is well inside this.
 #
@@ -84,7 +87,8 @@ STILL_M = 0.001
 GRASP_REACH_M = 0.020
 
 # What fraction of the gripper's own travel an object must follow during the lift to count as
-# held. Absolute distance is not enough: a 4 cm ball closed on by jaws that shut to 0.15 rad
+# held. Absolute distance is not enough: a 4 cm ball nudged by the closing jaws follows only
+# 46% of the lift and then drops out, which a "did it move at all" test calls a real grasp.
 # is nudged 30 mm of the lift's 60 mm and then drops out, which a "did it move at all" test
 # happily calls a real grasp. The measured follow fraction is 0.51 in that case.
 GRASP_FOLLOW_MIN = 0.8

@@ -124,19 +124,49 @@ aiming error and leaves the real cause untouched.
 
 ## What that points at instead
 
-The jaws cannot close on a 4 cm ball. `OPEN, CLOSE = 1.0, -1.0` drives the gripper action to
-`JAW_CLOSED_RAD = 0.15`, which is essentially shut, and a 4 cm sphere does not fit between
-fingers that close to nothing — it is squeezed out, which is the 77 mm. A 3 cm cube survives
-the same approach at 10 mm, which is why cubes work.
+**The gripper is not the cause, and that was worth testing rather than assuming.** The
+hypothesis was that "close" is binary, drives the jaws to a single narrow opening, and that a
+4 cm sphere cannot fit between fingers that close past it. `tools/probe_grip_width.py` settles
+the knocked ball, re-aims at where it came to rest, and then closes the jaws at a range of
+widths:
 
-The fix is therefore not perception and not planning. It is to stop treating "close" as binary
-and to drive the gripper joint to an opening sized to the object — about 2 cm for a 4 cm ball,
-closed for a cube. That is a change to how the executor commands the gripper rather than a
-change to the scene, and it is the one thing left that addresses the cause.
+| close command | 0.4 | 0.5 | 0.6 | 0.7 | 0.85 | 1.0 |
+|---|---|---|---|---|---|---|
+| ball displaced at the jaws | 100 mm | 100 mm | 100 mm | 100 mm | 100 mm | 100 mm |
 
-It is not implemented here: the gripper action term is configured in the LeIsaac Hub module
-that `env_loader` downloads, so `closed_command` is not a parameter this demo owns, and
-overriding the action term was judged a larger change than it should be made untested.
+Flat, including at 1.0 rad where the jaws are fully open and grip nothing at all. So the jaws
+are not squeezing the ball out; **the descent itself moves it**, whatever the fingers are
+doing.
+
+Two corrections fell out of this, both of which had been written down wrongly:
+
+- The closed angle is **0.4 rad**, set by the `BinaryJointPositionAction` term in the
+  downloaded LeIsaac Hub module. `executor.py` declared a `JAW_CLOSED_RAD = 0.15` that
+  nothing read, and a README paragraph quoted it as the reason balls could not be grasped.
+  The constant has been removed rather than corrected, because the action term owns the value.
+- The aperture cannot be measured from the articulation: the two candidate finger bodies sit a
+  constant 36.2 mm apart at every angle, so neither is a moving finger. `tools/probe_gripper.py`
+  records that dead end.
+
+## What is left
+
+The ball is displaced by the descent, and it usually leaves the working area while doing it —
+measured at x = −0.22 on a table whose near edge is x = 0.003, and once at x = −2.1. Outside
+the working area perception mislabels a ball as a `cube` (the shape thresholds were fitted near
+the centre of the frame and do not hold at the edge), so there is nothing left for the robot to
+aim at even in principle.
+
+Three things follow, none of them a code tweak:
+
+1. **Keep the knocked ball inside the working area.** The demo already restores an object that
+   its own park sweep pushes out of the area, and reports it. Extending that to the re-aim path
+   is straightforward; it was tried and the re-aim then worked, but the ball was still found
+   mislabelled a cube.
+2. **Fix the shape classifier at the frame edge.** A ball is a ball wherever it is on the
+   table. The thresholds in `colors.py` were measured centrally and the demo now knows it.
+3. **Reduce the descent's displacement**, which is the actual cause and is still unaddressed.
+   Nothing tried so far has touched it: three approaches to the transit, the layout reversal and
+   the two-leg approach all failed, and the descent speed is not the variable.
 
 Every motion of this arm near a 4 cm ball ejects it, and the ejection scales with how long the
 ball is free to roll. The objects are 50 g spheres on a low-friction table, so a knock sends

@@ -136,10 +136,10 @@ sent to, replans that one object and tries once more. The summary counts what wa
 what needed a retry and what never verified.
 
 **Grasp honesty.** A grasp is judged by how much of the gripper's own travel the object
-followed, measured in 3-D at the end of the lift. A 4 cm ball closed on by jaws that shut to
-0.15 rad follows 46% of the lift and is reported as a kinematic carry rather than a grasp.
-An object that moved *further* than the gripper was knocked out of reach, and is not carried
-at all — carrying it would teleport a ghost back onto the table.
+followed, measured in 3-D at the end of the lift. A 4 cm ball follows only 46% of the lift —
+nudged by the closing jaws, then dropped out — and is reported as a kinematic carry rather than
+a grasp. An object that moved *further* than the gripper was knocked out of reach, and is not
+carried at all: carrying it would teleport a ghost back onto the table.
 
 **Parking comes before populating, and before every look.** A plan ends with the arm over the
 table, and a camera looking down from the far side sees the arm first; looking from there
@@ -174,19 +174,22 @@ stale grasps: the robot cannot look at a ball without disturbing it, because par
 to see the table sweeps the same row the ball is in. Perception and action are fighting over
 the same object. Cubes are fine — 10–12 mm of drift against 15 mm of jaw reach.
 
-**Balls cannot be grasped, and the reason is the gripper.** Re-aiming at a knocked ball is
-implemented (`--regrasp`, and a re-aim between the hover and the descent) and it works
-mechanically — the ball comes to rest in about 6.7 s after being displaced 157 mm, and the
-camera still sees it from the hover pose to within 14 mm. It does not rescue them: **aimed
-correctly at a freshly measured position, the descent still ejects the ball 77 mm**, past the
-20 mm the jaws can reach. A 3 cm cube survives the same approach at 10 mm.
+**Balls cannot be grasped, and the cause is the arm's approach, not the gripper.** Re-aiming
+at a knocked ball is implemented and works mechanically — the ball comes to rest in about 6.7 s
+after being displaced 157 mm, and the camera still sees it from the hover pose to within 14 mm.
+It does not rescue them: aimed correctly at a freshly measured position, the ball is still
+displaced 77 mm by the descent, past the 20 mm the jaws can reach.
 
-The cause is that "close" is binary and drives the jaws to 0.15 rad — essentially shut — and a
-4 cm sphere does not fit between fingers that close to nothing; it is squeezed out. The fix is
-to drive the gripper joint to an opening sized to the object (about 2 cm for a ball), which is
-a change to how the executor commands the gripper. Not implemented: the gripper action term is
-configured in the downloaded LeIsaac Hub module, so its closed command is not a parameter this
-demo owns. Full analysis in `results/approach_drift.md`.
+The obvious suspect — that the jaws close too far for a 4 cm sphere — was tested and
+**disproved**. `tools/probe_grip_width.py` re-aims at a settled ball and closes the jaws at
+0.4, 0.5, 0.6, 0.7, 0.85 and 1.0 rad: the displacement is the same at every width, including
+fully open, where nothing grips at all. What moves the ball is the descent itself. (The
+closed angle is 0.4 rad, set by the downloaded LeIsaac Hub module, not by this demo.)
+
+The remaining difficulty is that the knocked ball frequently leaves the working area — measured
+at x = −0.22 on a table whose near edge is x = 0.003 — and outside it perception mislabels a
+ball as a cube, so there is nothing left to aim at. Full analysis in
+`results/approach_drift.md`.
 
 **A tray holds one object.** The cavity is 5.6 cm square, so a 3 cm cube or a 4 cm ball fits
 but not both. A command that asks for a second object in the same tray is refused by the
