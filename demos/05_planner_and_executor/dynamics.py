@@ -212,7 +212,7 @@ def displacement(items: list[Item], other: list[Item]) -> dict[str, tuple[float,
 
 def disturb(env, items: list[Item], rng: random.Random, exclude: set[str] | None = None,
             distance: float = DEFAULT_DISTURB_M, settle: int = DISTURB_SETTLE_STEPS,
-            ) -> Disturbance | None:
+            speed: float | None = None) -> Disturbance | None:
     """Disturb one object that is not being held, and let it come to rest.
 
     How it is disturbed depends on what the object is, because the two kinds do not respond
@@ -236,7 +236,7 @@ def disturb(env, items: list[Item], rng: random.Random, exclude: set[str] | None
 
     item = candidates[rng.randrange(len(candidates))]
     prim = item.prim
-    speed_m = rng.uniform(*DISTURB_SPEED_M)
+    speed_m = rng.uniform(*DISTURB_SPEED_M) if speed is None else speed
 
     obj = env.scene[prim]
     start = obj.data.root_pos_w[0].detach().cpu().numpy()

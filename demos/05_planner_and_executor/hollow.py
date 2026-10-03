@@ -51,17 +51,24 @@ def tray_parts(inner_w: float, inner_d: float, wall: float, height: float,
 
     Offsets are local to the tray's own Xform, whose origin is its centre, so this is
     pure geometry with no knowledge of where the tray sits on the table.
+
+    CHANGED HERE: a ``floor`` of 0 emits four parts rather than five. ``pen.py`` reuses this
+    for a kerb around the working area, where the table is the floor and a slab would be a
+    step under everything. A zero-thickness cuboid was the alternative and is not one: it is
+    either rejected or silently collisionless depending on the PhysX version.
     """
     outer_w = inner_w + 2.0 * wall
     outer_d = inner_d + 2.0 * wall
-    bottom = -height / 2.0 + floor / 2.0
-    return [
-        ("floor", (outer_w, outer_d, floor), (0.0, 0.0, bottom)),
+    parts = [
         ("wall_neg_x", (wall, outer_d, height), (-(inner_w / 2.0 + wall / 2.0), 0.0, 0.0)),
         ("wall_pos_x", (wall, outer_d, height), ((inner_w / 2.0 + wall / 2.0), 0.0, 0.0)),
         ("wall_neg_y", (outer_w, wall, height), (0.0, -(inner_d / 2.0 + wall / 2.0), 0.0)),
         ("wall_pos_y", (outer_w, wall, height), (0.0, (inner_d / 2.0 + wall / 2.0), 0.0)),
     ]
+    if floor <= 0.0:
+        return parts
+    bottom = -height / 2.0 + floor / 2.0
+    return [("floor", (outer_w, outer_d, floor), (0.0, 0.0, bottom))] + parts
 
 
 def cavity_ratio(inner_w: float, inner_d: float, wall: float) -> float:

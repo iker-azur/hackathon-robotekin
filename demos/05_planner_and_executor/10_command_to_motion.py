@@ -666,6 +666,11 @@ def main() -> int:
     parser.add_argument("--raw", action="store_true",
                         help="show the unannotated camera feed instead of the drawn detections")
     parser.add_argument("--camera", default="top", choices=sorted(scene_spec.CAMERA_CHOICES))
+    parser.add_argument("--variant", default="contained",
+                        choices=["contained", "open"],
+                        help="'contained' walls the working area in so a disturbed object "
+                             "cannot leave it; 'open' is the original pen-free demo, kept as "
+                             "the control that shows what the wall is for")
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--spread", type=float, default=dynamics.DEFAULT_SPREAD_M,
@@ -707,7 +712,13 @@ def main() -> int:
                                   device=args.voice_device)
 
     isaac_io.prepare_runtime(headless=args.headless)
-    env, sensor = isaac_io.build_env(args.camera, list(scene_spec.DEFAULT_SCENE))
+    env, sensor = isaac_io.build_env(args.camera, list(scene_spec.DEFAULT_SCENE),
+                                     pen=args.variant == "contained")
+    if args.variant == "contained":
+        import pen as pen_module
+        robot_say = f"  working area walled in: {pen_module.PEN_HEIGHT * 100:.1f} cm kerb "\
+                    f"around x {scene_spec.WORK_X} y {scene_spec.WORK_Y}"
+        print(robot_say, flush=True)
     # Reset, then aim. The camera's pose is applied at spawn and only becomes readable after a
     # reset, and aim_camera only checks where it ended up - so without the reset it reports
     # the sensor at the origin, 701 mm from where scene_spec put it, and stops. Every other

@@ -23,6 +23,7 @@ import numpy as np
 
 import colors
 import hollow
+import pen as pen_module
 import scene_spec
 from scene import CameraModel, Frame
 
@@ -113,7 +114,7 @@ def rigid_cfg(item: scene_spec.Item):
     )
 
 
-def build_env(camera: str, items: list[scene_spec.Item]):
+def build_env(camera: str, items: list[scene_spec.Item], pen: bool = False):
     """The shipped lift-cube task, plus our objects, plus our camera.
 
     Returns the unwrapped env and the name of the camera sensor that was set up.
@@ -160,6 +161,12 @@ def build_env(camera: str, items: list[scene_spec.Item]):
             setattr(cfg.scene, item.prim, hollow.make_tray_asset_cfg(item))
         else:
             setattr(cfg.scene, item.prim, rigid_cfg(item))
+
+    if pen:
+        # The containment kerb for the "contained" variant. Same body shape as a tray, four
+        # walls and no floor; see pen.py. Spawned last so it exists before anything is placed
+        # inside it.
+        setattr(cfg.scene, pen_module.PEN_PRIM, pen_module.make_pen_asset_cfg())
 
     sensor = ensure_camera(cfg, camera)
     return gym.make(TASK, cfg=cfg).unwrapped, sensor
