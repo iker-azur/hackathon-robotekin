@@ -29,6 +29,7 @@ import isaac_io  # noqa: E402
 import scene_spec  # noqa: E402
 
 ANGLES = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+OPEN_ANGLES = (1.0, 1.2, 1.4, 1.6, 1.7453)
 SETTLE = 90
 
 
@@ -40,6 +41,13 @@ def finger_tips(robot):
     the distance between them. There is nothing else to measure against.
     """
     return [n for n in ("gripper", "jaw") if n in robot.body_names]
+
+
+def gap_mm(robot, tips) -> float:
+    """Distance between the two finger bodies' origins, in millimetres."""
+    left = robot.data.body_pos_w[0, robot.find_bodies(tips[0])[0][0]].detach().cpu().numpy()
+    right = robot.data.body_pos_w[0, robot.find_bodies(tips[1])[0][0]].detach().cpu().numpy()
+    return float(math.dist(left[:3], right[:3])) * 1000
 
 
 def main() -> int:
@@ -71,21 +79,36 @@ def main() -> int:
             print("\nRESULT: FAILED, could not identify two finger tips to measure")
             return 2
 
-        print("\n| angle rad | tip gap mm | fits 3 cm cube | fits 4 cm ball |")
+        print("\n| close command rad | tip gap mm | fits 3 cm cube | fits 4 cm ball |")
         print("|---|---|---|---|")
         for angle in ANGLES:
             term._close_command[:] = float(angle)
             for _ in range(SETTLE):
-                env.step(torch_action(robot))
-            left = robot.data.body_pos_w[0, robot.find_bodies(tips[0])[0][0]].detach().cpu().numpy()
-            right = robot.data.body_pos_w[0, robot.find_bodies(tips[1])[0][0]].detach().cpu().numpy()
-            gap = float(math.dist(left[:3], right[:3])) * 1000
+                env.step(torch_action(robot, closing=True))
+            gap = gap_mm(robot, tips)
+            print(f"| {angle:.2f} | {gap:.1f} | {'yes' if gap > 30 else 'no'} "
+                  f"| {'yes' if gap > 40 else 'no'} |")
+
+        # The open side is the one that decides whether a ball can be picked up at all, and
+        # the first version of this probe never varied it: it always commanded "close" and
+        # only moved the close target. The joint limit is 1.7453 rad, so the shipped open
+        # command of 1.0 rad is not the widest the gripper can be driven.
+        print("\n| open command rad | tip gap mm | fits 3 cm cube | fits 4 cm ball |")
+        print("|---|---|---|---|")
+        term._close_command[:] = float(term._close_command[0])
+        for angle in OPEN_ANGLES:
+            term._open_command[:] = float(angle)
+            for _ in range(SETTLE):
+                env.step(torch_action(robot, closing=False))
+            gap = gap_mm(robot, tips)
             print(f"| {angle:.2f} | {gap:.1f} | {'yes' if gap > 30 else 'no'} "
                   f"| {'yes' if gap > 40 else 'no'} |")
 
         print("")
-        print("The gap is between the two finger bodies' origins, not their tips, so it is an")
-        print("upper bound on the aperture a ball must fit through. Treat it as indicative.")
+        print("The gap is between the two finger bodies' origins, not their tips, and the")
+        print("origins are fixed to their mounts: that is why it reads the same for every")
+        print("command. So it is the width a ball has to be pushed down between, and if it")
+        print("does not exceed the ball's own diameter then no amount of re-aiming will help.")
         print("RESULT: SUCCESS")
         return 0
     finally:

@@ -41,12 +41,35 @@ TABLE_TOP_Z = 0.0409
 TABLE_X = (0.0032, 0.7032)
 TABLE_Y = (-0.6768, -0.0268)
 
-# The working area demo 10 will reuse. It is deliberately inside the reach of the
-# SO-101, not just inside the table: the base sits at (0.35, -0.64) and the shipped cube
-# rests 28 cm forward of it. Widening this would make the perception demo look better
-# and demo 10 unable to reach the objects.
-WORK_X = (0.24, 0.40)
-WORK_Y = (-0.53, -0.32)
+# The area the robot works in.
+#
+# **CHANGED: wider and shallower, from x 0.24..0.40 by y -0.53..-0.32 to x 0.275..0.515 by
+# y -0.52..-0.40.** This is 24 cm across instead of 16, and 12 cm deep instead of 21. The
+# direction looks backwards until you know what was measured, so here it is.
+#
+# The old area was a 16 x 21 cm rectangle whose farthest corner is 0.31 m from the base, and the
+# arm's reach is 0.33 m. That rectangle simply does not fit inside the reachable disc: the
+# largest rectangle inscribable in a disc of radius r has area 2r^2, which for r = 0.33 is
+# 218 cm2, and the old area was 336 cm2. So parts of it could never have been worked in, and
+# they were not theoretical - ``tools/probe_grasp.py``, which runs the real pick cycle at each
+# point of a grid, found the jaws closing on nothing at x = 0.56 and along the y = -0.34 row,
+# both comfortably inside the declared area.
+#
+# The new area is fitted to the region where a pick actually completes. Measured, both a cube
+# and a ball, x from 0.29 to 0.48 and y from -0.40 to -0.47: every point lifts. The two
+# neighbouring corners do not - (0.29, -0.54) and (0.48, -0.40) fail for both - so they are
+# left outside. Perception localises to 10 mm inside this band and to 53 mm along y = -0.34,
+# which is why the far row is not in the area: that limit is the camera's, not the arm's.
+#
+# The bounds are a few millimetres wider than the layout needs, which is not tidiness: an item
+# placed exactly on the boundary fails ``clearance`` on a floating-point comparison
+# (0.290 - 0.015 evaluates to just under 0.275) and is reported as outside its own area.
+#
+# **So the working area did not get bigger, and it cannot.** It got the shape the arm and the
+# camera can actually cover, which is 50% wider than before. Anyone who wants more room needs
+# the robot further back from the table or a longer arm, not a larger constant here.
+WORK_X = (0.27, 0.52)
+WORK_Y = (-0.54, -0.42)
 
 # The SO-101's base, from LiftCubeEnvCfg.__post_init__. Needed because "left" is the
 # robot's left, and a scene that does not say where the robot is cannot answer that.
@@ -153,7 +176,26 @@ def _cube(prim: str, color: str, x: float, y: float, edge: float = 0.03) -> Item
                 shape="cuboid", size=(edge, edge, edge))
 
 
-def _ball(prim: str, color: str, x: float, y: float, diameter: float = 0.04) -> Item:
+def _ball(prim: str, color: str, x: float, y: float, diameter: float = 0.03) -> Item:
+    """A ball, 3 cm across.
+
+    **CHANGED: 4 cm to 3 cm, because the gripper physically cannot close on 4 cm.**
+
+    The SO-101's two finger bodies sit 36.2 mm apart and that number does not move: measured
+    across close commands from 0.0 to 1.0 rad and open commands from 1.0 to the 1.745 rad
+    joint limit, ``tools/probe_gripper.py`` reads 36.2 mm every single time. The fingers are
+    fixed to their mounts; the joint drives them along their own axes and never widens the
+    span between the two bodies. So 40 mm is not "hard to grip", it does not fit: the jaws
+    close onto a ball that is wider than the distance between them and push it off the table.
+
+    That is the whole reason this demo's ball handling looked broken. ``results/
+    approach_drift.md`` records three attempted fixes - slower descent, re-grasp, re-aim -
+    and all three failed for the same reason, which no amount of aiming could have fixed. A
+    3 cm ball has 6.2 mm of clearance in a 36.2 mm aperture, and it is the same size as the
+    cubes, so the two are still told apart by shape rather than by scale - which is what
+    ``perceive`` uses anyway, since it separates a disc from a square by their second
+    moments and not by how many pixels across they are.
+    """
     return Item(prim=prim, kind="ball", color=color, x=x, y=y,
                 shape="sphere", size=(diameter, diameter, diameter))
 
@@ -251,25 +293,43 @@ def _box(prim: str, color: str, x: float, y: float) -> Item:
 #   85 mm. The rows are now 55 mm apart in y and the balls are in the *opposite* columns
 #   to the cubes, which separates that pair in x instead. Minimum same-colour gap is
 #   51 mm, or 38 px at the measured 747 px/m, against a 3 px morphological opening.
+# The default scene: the loose objects in the near row, the receptacles in the far row.
+#
+# **CHANGED from two columns of three to a row of four plus a row of two.** The old layout was
+# a 2 x 3 grid because the old working area was 16 cm wide; this one is 25 cm wide, and the
+# constraints below are what actually decide where things can go.
+#
+# Three constraints, and the second is the one that costs the most:
+#
+# 1. **Receptacles in the FAR row, objects in the NEAR row.** The camera is at y = -0.22, so
+#    y = -0.50 is behind y = -0.435, and a 5 cm tall tray standing in the near row stands
+#    between the camera and everything behind it. A first attempt put the trays in the near row
+#    and recorded 2 of 4 objects per frame.
+# 2. **Same-coloured pairs at least 70 mm apart in x.** Two blobs of one colour that touch come
+#    back from segmentation as a single blob, and then a tray swallows the object behind it: a
+#    recorded frame showed a 4158 px blue blob where a tray alone measures about 2600 px, and
+#    the cube was simply gone. Measured blob half-widths put the threshold at about 63 mm - a
+#    24 px tray plus a 12 px cube - so the positions below keep 80-150 mm. This is why the red
+#    cube and the red box are 150 mm apart in x rather than sitting in a tidy column.
+# 3. **Loose objects 70 mm apart**, which is a 40 mm gap between two 3 cm objects: 50 px of
+#    daylight at 747 px/m against a 3 px morphological opening.
+#
+# Everything here is also a position ``tools/probe_grasp.py`` measured to lift.
 DEFAULT_SCENE: list[Item] = [
-    # farthest row: the 3 cm cubes, and the shipped USD cube
-    _cube("cube_blue", "blue", 0.270, -0.510),
-    _cube("cube", "red", 0.355, -0.510),
-    # middle row: the balls. The reds are deliberately in different columns from the red
-    # cube and the red box, so "the red ball" is ambiguous by colour and each red pair is
-    # also separated along x.
-    _ball("ball_red", "red", 0.270, -0.455),
-    _ball("ball_green", "green", 0.355, -0.455),
-    # nearest row: the hollow receptacles.
+    # near row: the loose objects, 70 mm apart.
     #
-    # CHANGED IN THIS COPY: both moved 5 mm further from the robot's near edge, from x
-    # 0.270/0.355 to 0.275/0.360. The cavities grew to 5.6 cm so that a 3 cm cube has a
-    # chance of landing inside rather than on the wall (see _tray for the measurement), and
-    # a 7 cm footprint at x 0.270 spans 0.235..0.305, which pokes 5 mm outside WORK_X's
-    # lower bound of 0.24. At 0.275 and 0.360 they span 0.240..0.310 and 0.325..0.395,
-    # inside the working area with a 15 mm gap between them.
-    _tray("tray_blue", "blue", 0.275, -0.370),
-    _box("box_red", "red", 0.360, -0.365),
+    # The COLOURS are assigned across the row, not down it, and that is the whole point of this
+    # list. Read the x column and the same-colour gaps are 150 mm, 110 mm and 80 mm; read it as
+    # two tidy columns instead and the red ball ends up 10 mm from the red box, which is a
+    # single blob and a missing object. An earlier version of this very list did that and
+    # recorded 2 of 4 objects per frame.
+    _cube("cube", "red", 0.290, -0.435),
+    _ball("ball_red", "red", 0.360, -0.435),
+    _cube("cube_blue", "blue", 0.430, -0.435),
+    _ball("ball_green", "green", 0.500, -0.435),
+    # far row: the hollow receptacles, 120 mm apart so their 7 cm footprints leave 5 cm between
+    _tray("tray_blue", "blue", 0.320, -0.500),
+    _box("box_red", "red", 0.440, -0.500),
 ]
 
 # The shipped cube is the only rigid body inside the scene USD, so
@@ -383,6 +443,49 @@ def half_extent(item: Item) -> float:
     of the working area.
     """
     return max(item.size[0], item.size[1]) / 2.0
+
+
+# How far the plane-ray position estimate is off, and the correction to aim with.
+#
+# ``perceive`` turns a blob centroid into a position by casting one ray to the TABLE PLANE,
+# which assumes the centroid is on the table. It is not: it is on the object's TOP face, 3 cm
+# higher, so the ray carries on past it and lands short of the far side. The error is fixed and
+# one-signed, which is the good case - a bias can be subtracted, noise cannot.
+#
+# Measured over the 20 recorded frames, 120 blobs, against the simulator's own positions
+# (``tools/measure_bias.py``, no simulator needed - the layout each frame came from is a pure
+# function of the trial number):
+#
+#     blobs   n    dx      dy     mean |err|
+#     balls  40   +2.1   -7.3      4.8 mm
+#     cubes  40   +1.0   -6.5      4.2 mm
+#     trays  40   +0.3  -10.3      8.0 mm
+#
+# These are the AIMING corrections, i.e. truth minus perceived, so they are added to ``pos_m``.
+# Subtracting the measured bias takes the residual from 10.3-12.5 mm to 4.2-4.8 mm, which matters
+# because ``executor.GRASP_REACH_M`` is 20 mm: a 7 mm systematic error is a third of the entire
+# grasp budget, spent before the arm has moved at all.
+#
+# Trays are corrected separately and by more, because a tray's blob centroid is not over the
+# cavity floor either - it sits over the whole rim-and-interior shape, whose projected centre is
+# further from the camera than the tray's footprint centre.
+AIM_CORRECTION_OBJECT_M = (-0.0016, 0.0069)
+AIM_CORRECTION_TRAY_M = (-0.0003, 0.0103)
+
+
+def aim_point(pos_m, container: bool = False) -> tuple[float, float]:
+    """Where to point the arm, given what the plane-ray estimate reported.
+
+    Deliberately not applied inside ``perceive``: ``pos_m`` stays the raw measurement, with
+    ``pos_m_depth`` beside it for comparison, and only the three places that AIM use this -
+    ``planner.grasp_pose``, ``planner.place_pose`` and ``Robot.locate`` while tracking. Grounding
+    does not, because it only needs to know roughly where something is: whether it is inside the
+    working area does not turn on 7 mm.
+    """
+    if pos_m is None:
+        raise ValueError("aim_point needs a measured position")
+    dx, dy = AIM_CORRECTION_TRAY_M if container else AIM_CORRECTION_OBJECT_M
+    return (pos_m[0] + dx, pos_m[1] + dy)
 
 
 def clearance(items: list[Item], same_colour_only: bool = True) -> list[tuple[str, str, float]]:

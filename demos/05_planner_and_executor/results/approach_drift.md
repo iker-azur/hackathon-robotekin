@@ -1,5 +1,12 @@
 # Why the robot aimed at the wrong place, and why it looked like it worked
 
+**SUPERSEDED IN PART.** The two guards described here — `GRASP_REACH_M` and the stale-grasp
+refusal — are still in the code and still correct. The *diagnosis* below is, for balls: it
+attributes the drift to the approach motion, when the measurements now show the dominant cause
+was that a 4 cm ball does not fit in a 36.2 mm gripper and was being pushed away by the jaws
+closing on it. See **`ball_handling.md`** for the current account, which is measured end to end;
+this file is kept for the guard's own history.
+
 Measured with `tools/probe_approach_drift.py`.
 
 ## The symptom

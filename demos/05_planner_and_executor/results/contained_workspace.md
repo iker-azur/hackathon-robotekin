@@ -48,7 +48,7 @@ Swept, and all three hold everything in:
 | 2.0 cm | 0 of 12 | 0.0 mm |
 | 3.0 cm | 0 of 12 | 0.0 mm |
 
-2.5 cm is kept, on the reasoning that a 4 cm ball's centre is 2 cm above the table so a kerb
+2.5 cm is kept, on the reasoning that a ball's centre is 1.5 cm above the table so a kerb
 reaching past the centre catches it rather than being climbed — but the measurement says even
 1.5 cm does, and a lower kerb occludes less.
 

@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 import scene_spec  # noqa: E402
 
 # The objects this demo moves, and the worst-case position error measured on real trays.
-OBJECTS = (("3 cm cube", 0.03), ("4 cm ball", 0.04))
+OBJECTS = (("3 cm cube", 0.03), ("3 cm ball", 0.03))
 POSITION_ERROR_M = 0.012  # the worst of the three centre estimates, measured
 
 CANDIDATES = [
@@ -52,7 +52,7 @@ def main() -> int:
     print(f"working area x {scene_spec.WORK_X}, y {scene_spec.WORK_Y}")
     print(f"budgeting for the worst measured position error, {POSITION_ERROR_M * 1000:.0f} mm")
     print()
-    print("| cavity | wall | footprint | margin, 3 cm cube | margin, 4 cm ball | farthest corner | verdict |")
+    print("| cavity | wall | footprint | margin, 3 cm cube | margin, 3 cm ball | farthest corner | verdict |")
     print("|---|---|---|---|---|---|---|")
     for inner, wall in CANDIDATES:
         outer = inner + 2 * wall

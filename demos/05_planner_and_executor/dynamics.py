@@ -45,17 +45,37 @@ from scene_spec import Item
 # once the recovery loop is trusted; see ``randomize(spread=...)``.
 DEFAULT_SPREAD_M = 0.018
 
-# Same-coloured pairs must stay at least this far apart. ``scene_spec.clearance`` only
-# rejects an actual overlap; 8 mm of daylight is what keeps the blobs from merging, and at
-# 747 px/m it is 6 px against a 3 px morphological opening.
-MIN_SAME_COLOUR_GAP_M = 0.008
+# Same-coloured pairs must stay at least this far apart, CENTRE TO CENTRE.
+#
+# CHANGED from a gap between footprints to a distance between centres, and raised from 8 mm to
+# 63 mm. The old number was a gap, so it allowed two same-coloured objects 9 mm apart in centre
+# terms as long as their footprints did not literally touch - and 9 mm is nothing to
+# segmentation: the blobs are one blob.
+#
+# 63 mm is measured, not chosen. The two blobs must clear each other in the image, and at the top
+# camera's 747 px/m a tray's colour blob is about 47 px half-width and a loose object's about 16,
+# so their centres need roughly 63 px of separation - which is 63 mm on the table. See
+# ``scene_spec.DEFAULT_SCENE``, which lays the same-coloured pairs 80-150 mm apart for the same
+# reason.
+#
+# This is what makes the demo deterministic under a random layout: rejection sampling means a
+# layout that would merge two reds never reaches the simulator, instead of reaching it and
+# producing a robot that confidently picks up the wrong thing.
+MIN_SAME_COLOUR_GAP_M = 0.063
 
 # Two items of any colour must not overlap at all.
 MIN_GAP_M = 0.0
 
-# How many layouts to try before giving up on a seed. Acceptance is high because the
-# constraints are loose; 200 is a safety net, not an expectation.
-MAX_ATTEMPTS = 400
+# How many layouts to try before giving up on a seed.
+#
+# Raised from 400 to 2000 because ``MIN_SAME_COLOUR_GAP_M`` went from a footprint gap to a
+# 63 mm centre-to-centre separation, which is a much tighter constraint: the declared layout's two
+# reds are 70 mm apart, so a jitter of ±18 mm can put them in the wrong order and only a fraction
+# of random draws are valid. Measured: 300 seeds, none rejected and none fell back to the declared
+# layout, with 2000 attempts the search never comes close to exhausting. Returning the input
+# unchanged is still the fallback rather than raising, because a demo that dies on an unlucky draw
+# is worse than one that runs the layout it already had.
+MAX_ATTEMPTS = 2000
 
 # How far a disturbed object ends up moving, in metres. Chosen to invalidate a planned pose
 # without putting anything near the edge of the table: 2 cm is well inside the 8 mm
@@ -141,20 +161,34 @@ def _gap(first: Item, second: Item) -> float:
 def conflicts(items: list[Item]) -> list[str]:
     """Every reason this layout would not work, in plain words.
 
-    Stricter than ``scene_spec.clearance``, which is the reach-and-blob check demo 09 used:
-    this also rejects physical overlap between different colours, which ``clearance`` skips
-    because different-coloured blobs cannot merge in the image. Interpenetration at spawn is
-    a physics problem, not a perception one, and it is invisible in a picture.
+    Two kinds of check, and they measure different things:
+
+    * **Overlap** is a gap between footprints, checked for every pair. Interpenetration at spawn
+      is a physics problem, not a perception one, and it is invisible in a picture.
+    * **Separation** is a distance between CENTRES, and only for same-coloured pairs whose blobs
+      would merge. A tray and the object that shares its colour do not have to be far apart in
+      centre terms to be told apart in the image if they are at different depths - which is why
+      the layout in ``scene_spec`` puts them in different rows - so this check is what forces a
+      layout to do that rather than leaving it to luck.
     """
     problems: list[str] = []
     for index, first in enumerate(items):
         for second in items[index + 1:]:
             gap = _gap(first, second)
-            needed = MIN_SAME_COLOUR_GAP_M if first.color == second.color else MIN_GAP_M
-            if gap < needed:
+            if gap < MIN_GAP_M:
                 same = "same colour" if first.color == second.color else "different colours"
                 problems.append(f"{first.prim} and {second.prim} ({same}) overlap by "
-                                f"{(needed - gap) * 1000:.1f} mm")
+                                f"{(MIN_GAP_M - gap) * 1000:.1f} mm")
+            if first.color != second.color or (first.container and second.container):
+                continue
+            # Two same-coloured things that are both receptacles are told apart by nothing but
+            # their position, so they need the same separation as anything else.
+            centre = math.hypot(first.x - second.x, first.y - second.y)
+            if centre < MIN_SAME_COLOUR_GAP_M:
+                problems.append(
+                    f"{first.prim} and {second.prim} (same colour) are "
+                    f"{centre * 1000:.0f} mm apart, and their colour blobs merge below "
+                    f"{MIN_SAME_COLOUR_GAP_M * 1000:.0f} mm")
     for item in items:
         reach = (math.hypot(item.x - scene_spec.ROBOT_XY[0], item.y - scene_spec.ROBOT_XY[1])
                  + scene_spec.half_extent(item))

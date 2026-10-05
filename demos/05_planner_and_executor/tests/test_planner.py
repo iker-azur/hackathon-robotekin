@@ -43,7 +43,8 @@ def item(kind="ball", color="red", quantity=1, position=None, place=None) -> dic
 
 def test_constants():
     check(planner.OBJECT_HEIGHT.get("cube") == 0.03, f"cube height {planner.OBJECT_HEIGHT}")
-    check(planner.OBJECT_HEIGHT.get("ball") == 0.04, f"ball height {planner.OBJECT_HEIGHT}")
+    check(planner.OBJECT_HEIGHT.get("ball") == 0.03,
+          f"ball height {planner.OBJECT_HEIGHT}: a 4 cm ball does not fit the 36.2 mm gripper")
     check(planner.TRAY_CAVITY[0] == 0.056, f"cavity {planner.TRAY_CAVITY}")
     check(planner.TRAVEL_Z > scene_spec.TABLE_TOP_Z + scene_spec.DEFAULT_SCENE[-1].height,
           "travel height must clear the tray rim")
@@ -71,7 +72,12 @@ def test_pick_and_place():
     plan = planner.plan_command(
         command("pick_and_place", [item("ball", "red")], {"kind": "box", "color": "red"}), s)
     check(plan.moves, "pick_and_place should move")
-    check(plan.picks == [3], f"the red ball is #3 in trial000, got {plan.picks}")
+    # Which id the red ball happens to be is a property of the recorded frame, not of the
+    # planner: ids are assigned biggest-blob-first, so it moves whenever the layout does. Ask
+    # the scene which id is the red ball instead of pinning a number that a re-recorded fixture
+    # would invalidate for no reason.
+    reds = [t.id for t in s.objects if t.color == "red" and t.kind == "ball"]
+    check(plan.picks == reds, f"the red ball is {reds} in {s.source}, got {plan.picks}")
     check(len(plan.places) == 1, f"one destination, got {plan.places}")
     check(len(plan.steps) == 8, f"the pick-and-place cycle is 8 steps, got {len(plan.steps)}")
 
@@ -86,8 +92,12 @@ def test_step_poses_are_sane():
         if step.pose is None:
             continue
         x, y, z = step.pose
-        check(0.2 < x < 0.45, f"{step.action} x={x:.3f} off the table")
-        check(-0.56 < y < -0.30, f"{step.action} y={y:.3f} off the table")
+        # The working area, read from the spec rather than written here: these bounds were
+        # hardcoded to the old 16 cm-wide layout and went stale the moment it was resized.
+        check(scene_spec.WORK_X[0] - 0.01 < x < scene_spec.WORK_X[1] + 0.01,
+              f"{step.action} x={x:.3f} outside the working area {scene_spec.WORK_X}")
+        check(scene_spec.WORK_Y[0] - 0.01 < y < scene_spec.WORK_Y[1] + 0.01,
+              f"{step.action} y={y:.3f} outside the working area {scene_spec.WORK_Y}")
         check(scene_spec.TABLE_TOP_Z <= z <= planner.TRAVEL_Z + 1e-9,
               f"{step.action} z={z:.3f} between the table and travel height")
         check(planner.in_workspace(step.pose) is None,
@@ -96,15 +106,40 @@ def test_step_poses_are_sane():
 
 
 def test_grasp_pose_uses_declared_height():
+    """The grasp height is the DECLARED height of the kind, read from the scene spec.
+
+    Both kinds are 3 cm in this scene - the cubes always were, and the balls were changed
+    from 4 cm because the gripper's fingers are 36.2 mm apart and cannot close on 40 mm
+    (``tools/probe_gripper.py``). So this can no longer tell the two kinds apart by their
+    size, and instead checks the thing that actually matters: that the z comes from
+    ``planner.OBJECT_HEIGHT`` rather than from a constant, including for a kind that is not
+    in the table at all.
+    """
     s = scene()
-    cube = next(t for t in s.objects if t.kind == "cube")
-    ball = next(t for t in s.objects if t.kind == "ball")
-    gz_cube = planner.grasp_pose(cube)[2]
-    gz_ball = planner.grasp_pose(ball)[2]
-    check(gz_ball > gz_cube,
-          f"a ball is taller than a cube, so its grasp is higher: ball {gz_ball} vs cube {gz_cube}")
-    check(abs(gz_cube - (scene_spec.TABLE_TOP_Z + 0.015)) < 1e-9, f"cube grasp z {gz_cube}")
-    check(abs(gz_ball - (scene_spec.TABLE_TOP_Z + 0.020)) < 1e-9, f"ball grasp z {gz_ball}")
+    for kind in ("cube", "ball"):
+        thing = next(t for t in s.objects if t.kind == kind)
+        height = planner.OBJECT_HEIGHT.get(kind, planner.DEFAULT_HEIGHT)
+        check(abs(planner.grasp_pose(thing)[2] - (scene_spec.TABLE_TOP_Z + height / 2.0)) < 1e-9,
+              f"{kind} grasp z is the declared height + {height}")
+
+    # A kind the spec does not know falls back to the cube's height rather than to None.
+    unknown = next(t for t in s.objects if t.kind == "cube")
+    unknown.kind = "dodecahedron"
+    check(abs(planner.grasp_pose(unknown)[2]
+              - (scene_spec.TABLE_TOP_Z + planner.DEFAULT_HEIGHT / 2.0)) < 1e-9,
+          "an unknown kind uses DEFAULT_HEIGHT")
+    unknown.kind = "cube"
+
+    # And a taller declared kind is grasped higher, which is the property the old 4 cm ball
+    # happened to demonstrate and the default scene can no longer show.
+    taller = next(t for t in s.objects if t.kind == "ball")
+    was = planner.OBJECT_HEIGHT.get("ball")
+    planner.OBJECT_HEIGHT["ball"] = 0.08
+    try:
+        check(planner.grasp_pose(taller)[2] > planner.grasp_pose(unknown)[2],
+              "a taller declared kind is grasped higher")
+    finally:
+        planner.OBJECT_HEIGHT["ball"] = was
 
 
 def test_grasp_offset_is_applied():

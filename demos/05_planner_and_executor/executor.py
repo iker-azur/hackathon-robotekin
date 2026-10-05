@@ -28,6 +28,7 @@ moving the cube, not about tuning contacts."* The difference here is that the fa
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -63,6 +64,39 @@ STEP_COUNTS = {
 }
 DEFAULT_STEPS = 100
 
+# Closed-loop approach. Every approach and descent re-reads the camera and re-aims, instead of
+# driving once at a position computed before the arm started moving.
+#
+# The open-loop version is what made ball handling look hopeless, and the reason is in the
+# measurements this file already quotes: the arm's own transit knocks a target 57-62 mm and the
+# descent knocks it a further 192-371 mm. A plan built from one camera frame is therefore wrong
+# by 20-40 cm by the time the jaws close, and no amount of re-planning between steps fixes that
+# because the object is being knocked *continuously* while the arm is moving. The old remedy was
+# to re-aim once, after the hover; this re-aims throughout, so the jaws arrive where the object
+# is rather than where it was.
+TRACK_TRAVEL_STEPS = 150
+TRACK_DESCEND_STEPS = 200
+
+# How often to re-look while moving. 20 steps is a third of a second: often enough to follow a
+# roll, rare enough that a descent is not dominated by rendering.
+TRACK_EVERY = 20
+
+# How far the aim may be corrected in one update before it is treated as "this is a different
+# object" rather than "this object got knocked". A shove moves a ball 33-45 mm
+# (isaac_io.BALL_LINEAR_DAMPING); 120 mm is well past that and inside the distance between two
+# same-coloured objects.
+TRACK_MAX_SHIFT_M = 0.120
+
+# The camera stops being asked once the gripper BODY is below this height, which is where the
+# arm stops occluding the object it is reaching for: measured at the bottom of a descent, a blue
+# cube was not in the frame at all.
+#
+# In BODY coordinates, not hold-point coordinates, because ``track`` compares it against the
+# interpolated body height. The hover sits at a hold point of scene_spec.TABLE_TOP_Z + tray
+# height + 0.04 = 0.131, so its body is at 0.223 - above this, and the bottom of a descent is at
+# 0.148 - below it. That gap is where the arm follows the target and then locks in.
+TRACK_OBSERVE_ABOVE_Z = 0.20
+
 # How many steps to wait for a knocked object to stop rolling before re-aiming at it.
 # Measured: 6.7 s (400 steps) for the worst ball, so the cap is generous rather than tight.
 SETTLE_UNTIL_STILL_STEPS = 400
@@ -89,9 +123,25 @@ GRASP_REACH_M = 0.020
 # What fraction of the gripper's own travel an object must follow during the lift to count as
 # held. Absolute distance is not enough: a 4 cm ball nudged by the closing jaws follows only
 # 46% of the lift and then drops out, which a "did it move at all" test calls a real grasp.
-# is nudged 30 mm of the lift's 60 mm and then drops out, which a "did it move at all" test
-# happily calls a real grasp. The measured follow fraction is 0.51 in that case.
+# A ball is nudged 30 mm of the lift's 60 mm and then drops out, which a "did it move at all"
+# test happily calls a real grasp. The measured follow fraction is 0.51 in that case.
 GRASP_FOLLOW_MIN = 0.8
+
+# Below this the object did not move AT ALL during the lift, so nothing held it and the
+# kinematic fallback must not be used on it.
+#
+# It is NOT on its own a failure, and this took one run to find out why. In this simulation
+# nothing is ever held by friction - demo 05 says so of the cube it inherited - so the fallback
+# is the intended mechanism and the object is *supposed* to sit still while the gripper rises.
+# ``tools/check_executor.py`` passes a cube through the fallback on this exact test.
+#
+# What distinguishes the fallback working from the jaws missing is whether the object is still
+# where the jaws were aimed. The ``close`` step has already refused anything further away than
+# ``GRASP_REACH_M``, so by the time the lift is judged the object should be within 20 mm of the
+# aim; if it has wandered off even that far while the gripper rose, nothing was grasped and
+# carrying it would place a ghost. 8 mm is a third of the smallest object here, well clear of
+# the solver jitter a resting object shows.
+GRASP_TOUCHED_M = 0.008
 
 
 # The park pose is MEASURED, not chosen. tools/find_park_pose.py sweeps nine candidates and,
@@ -166,6 +216,8 @@ class RunResult:
     stale_prims: list[str] = field(default_factory=list)
     # Times the plan was re-aimed after the arm knocked its own target.
     reaimed = 0
+    # Approach and descent moves that re-read the camera while the arm was moving.
+    tracked = 0
 
     @property
     def ok(self) -> bool:
@@ -176,6 +228,7 @@ class RunResult:
             return f"aborted at {self.aborted_at} after {len(self.steps)} step(s)"
         return (f"{len(self.steps)} step(s), {self.real_grasps} real grasp(s), "
                 f"{self.kinematic_grasps} kinematic"
+                + (f", {self.tracked} tracked" if self.tracked else "")
                 + (f", {self.lost_grasps} lost" if self.lost_grasps else "")
                 + (f", {self.stale_grasps} stale (jaws closed on nothing)"
                    if self.stale_grasps else ""))
@@ -346,11 +399,25 @@ class Executor:
                                        f"(moved {moved * 100:.0f} cm against a "
                                        f"{travel * 100:.0f} cm lift); not carrying it")
                     elif follow < GRASP_FOLLOW_MIN:
-                        self.grab(prim)
-                        result.grasp = "kinematic"
-                        result.note = (f"followed {follow * 100:.0f}% of the lift "
-                                       f"(moved {moved * 1000:.1f} of {travel * 1000:.1f} mm), "
-                                       f"carrying kinematically")
+                        # Still where the jaws were aimed, or not? That, and not whether it
+                        # moved, is what says the jaws closed around it.
+                        here = self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy()
+                        aimed = np.asarray(pose, dtype=float)[:2]
+                        off = float(np.linalg.norm(here[:2] - aimed))
+                        if moved < GRASP_TOUCHED_M and off > GRASP_REACH_M:
+                            result.grasp = "stale"
+                            result.ok = False
+                            result.note = (f"the jaws closed and the object is not there: it "
+                                           f"ended {off * 1000:.0f} mm from where they aimed, "
+                                           f"past the {GRASP_REACH_M * 1000:.0f} mm they can "
+                                           f"reach; not carrying it")
+                        else:
+                            self.grab(prim)
+                            result.grasp = "kinematic"
+                            result.note = (f"followed {follow * 100:.0f}% of the lift "
+                                           f"(moved {moved * 1000:.1f} of "
+                                           f"{travel * 1000:.1f} mm), "
+                                           f"carrying kinematically")
                     else:
                         result.grasp = "real"
                         result.note = (f"followed {follow * 100:.0f}% of the lift "
@@ -359,6 +426,72 @@ class Executor:
                 if grip == CLOSE or self._held is not None:
                     self._carry_if_held()
         return result
+
+    def track(self, observe, target_z: float, steps: int, action: str = "above",
+              grip: float = OPEN, every: int = TRACK_EVERY,
+              aim: tuple[float, float] | None = None) -> StepResult:
+        """Move to ``target_z`` while re-aiming at a moving target the whole way.
+
+        This is the difference between the arm arriving where the object is and arriving where
+        it was. ``observe`` is called every ``every`` steps and returns the object's current
+        x-y as the camera sees it, or None if it cannot be found; the aim is then corrected to
+        match. Only x and y move: z keeps the same 1/0.8n schedule ``do`` uses, so the arm still
+        accelerates in and slows into the target rather than creeping the last millimetres.
+
+        A correction larger than ``TRACK_MAX_SHIFT_M`` is not followed. Following it would mean
+        the arm chasing a different object - the perception layer re-grounds on colour, kind and
+        the last known position, so a blob belonging to something else can be picked up - and a
+        grasp at the wrong place is worse than a refusal to move.
+
+        Returns the number of corrections and the largest one, so the run can report honestly
+        that the arm followed its target instead of pretending it aimed correctly first time.
+        """
+        start = self.current.clone()
+        aim = aim if aim is not None else (float(start[0][0]), float(start[0][1]))
+        # self.current is the GRIPPER BODY, but target_z is the HOLD POINT - the place the
+        # object should be - and the two differ by HOLD. ``do`` handles this by computing
+        # ``goal = pose - HOLD``; the first version of ``track`` interpolated z verbatim, which
+        # drove the body 92 mm too low on every descent and put the fingers through the table.
+        # That is why the tracked picks were landing 85-128 mm outside the cavity: the arm was
+        # not reaching for the tray, it was ploughing into the table beside it.
+        hold_z = float(self._hold[0][2])
+        start_z = float(start[0][2])
+        target_body_z = target_z - hold_z
+        corrections = 0
+        largest = 0.0
+        lost = 0
+
+        with self.torch.no_grad():
+            for index in range(1, steps + 1):
+                fraction = min(1.0, index / (0.8 * steps))
+                z = start_z + (target_body_z - start_z) * fraction
+                # Only consult the camera while the gripper is high enough not to be standing
+                # on top of the thing it is looking for. Measured: at the bottom of a descent
+                # the blue cube was gone from the frame altogether, and the only thing the
+                # camera had left to offer was a gripper-shaped error. The aim is locked in
+                # from the hover instead, and the stale-grasp check after the jaws close is
+                # what verifies it.
+                if (index % every == 0 or index == steps) and z >= TRACK_OBSERVE_ABOVE_Z:
+                    seen = observe()
+                    if seen is None:
+                        lost += 1
+                    else:
+                        shift = math.dist((seen[0], seen[1]), aim)
+                        if shift > TRACK_MAX_SHIFT_M:
+                            lost += 1
+                        elif shift > 0.002:  # 2 mm: below this the camera is repeating itself
+                            aim = (float(seen[0]), float(seen[1]))
+                            corrections += 1
+                            largest = max(largest, shift)
+                self.current = self.torch.tensor([[aim[0], aim[1], z]], device=self.device)
+                self.env.step(self._action(self.current, grip))
+
+        note = f"aimed at ({aim[0]:+.3f}, {aim[1]:+.3f})"
+        if corrections:
+            note += f", re-aimed {corrections}x (largest {largest * 1000:.0f} mm)"
+        if lost:
+            note += f", {lost} look(s) could not find it"
+        return StepResult(action=action, note=note, ok=lost == 0)
 
     # -- a whole plan ---------------------------------------------------------
 
@@ -380,24 +513,33 @@ class Executor:
         self.env.scene.update(dt=self.env.physics_dt)
         return taken
 
-    def run(self, plan, resolve=None, keys=lambda: set(), fps=1, retarget=None) -> RunResult:
+    def run(self, plan, resolve=None, keys=lambda: set(), fps=1, retarget=None,
+            observe=None) -> RunResult:
         """Run a planner Plan. ``resolve`` maps a scene id to a prim name for grabbing.
 
         ``keys`` is called after every step and returns the keys pressed in the viewer; a
         ``q`` aborts the run rather than the process, so the demo can report what it managed
         before the user gave up.
 
-        ``retarget`` is called once, after a hover that precedes a descent onto something.
-        The arm knocks its own target on the way in - a ball is displaced 157 mm and rolls for
-        6.7 s - so the descent needs re-aiming at where the object ended up rather than where
-        it was seen. The callback is given the step about to run and returns a replacement for
-        the rest of the plan, or None to carry on with the original. It is the demo's job, not
-        the executor's, because it needs perception.
+        ``observe`` is the closed loop. Given a prim it returns where the camera says that
+        object is right now, and every ``above`` and ``down`` step becomes a ``track`` that
+        re-reads it as the arm moves. Without it the two approach steps are driven once at a
+        pose computed from a frame that is already stale, which is worth 57-371 mm on a ball.
+
+        ``retarget`` is the older, blunter remedy and is kept for the case ``track`` cannot
+        cover: the object has left the camera's view entirely, so re-aiming has nothing to aim
+        at and the plan has to be rebuilt against a new scene. It returns
+        ``(steps, resolve)`` - the replacement steps AND the resolver that goes with them,
+        because a re-planned step's ``target`` is an id from a *new* camera frame. Reusing the
+        old resolver silently aimed later steps at the wrong object: a run once logged
+        "above #2" followed by "down onto #4" because the fresh plan's ids were resolved with
+        the stale frame's map. The demo owns ``retarget`` and needs perception to build it.
         """
         out = RunResult()
         steps_left = list(plan.steps)
         index = 0
         reaimed = False
+        tracked: dict[str, int] = {}
         while index < len(steps_left):
             step = steps_left[index]
             prim = None
@@ -412,26 +554,47 @@ class Executor:
             # a plan containing one.
             check = "reach" if step.action == "close" else (
                 "follow" if step.action == "lift" else None)
-            if check is not None and resolve is not None and step.target is not None:
+            # The prim is needed by three different things, so it is resolved for every step
+            # that names a target - not only for the two that carry a check. Resolving it only
+            # for those two left ``prim`` None on ``above`` and ``down``, which is exactly the
+            # pair of steps the closed loop is for, so the tracking silently never ran and the
+            # demo reported zero re-aims while behaving exactly as open-loop as before.
+            if resolve is not None and step.target is not None:
                 prim = resolve(step.target)
-                on_close = (self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy().copy()
-                            if prim else None)
+            on_close = None
+            if check is not None and prim is not None:
+                on_close = (self.env.scene[prim].data.root_pos_w[0]
+                            .detach().cpu().numpy().copy())
+
+            # The approach and the descent are the two moves that knock the target, so they are
+            # the two that re-aim. Everything after the jaws close has a fixed target and is
+            # driven open-loop, which is what it should be.
+            if observe is not None and step.action in ("above", "down") and prim is not None \
+                    and step.pose is not None:
+                steps = (TRACK_TRAVEL_STEPS if step.action == "above"
+                         else TRACK_DESCEND_STEPS)
+                result = self.track(
+                    observe=lambda p=prim: observe(p),
+                    target_z=float(np.asarray(step.pose, dtype=float)[2]),
+                    steps=steps, action=step.action, grip=step.grip,
+                    aim=(float(step.pose[0]), float(step.pose[1])))
+                tracked[prim] = tracked.get(prim, 0) + 1
+                out.tracked += 1
             else:
-                on_close = None
+                result = self.do(step.action, np.asarray(step.pose, dtype=float), step.grip,
+                                 prim=prim, on_close=on_close, check=check)
 
-            result = self.do(step.action, np.asarray(step.pose, dtype=float), step.grip,
-                             prim=prim, on_close=on_close, check=check)
-
-            # Re-aim once, at the first descent, after the hover that preceded it. This is
-            # the point where the arm has knocked the target and it has finished rolling.
-            if (retarget is not None and not reaimed and step.action == "above"
-                    and index + 1 < len(steps_left) and steps_left[index + 1].action == "down"):
+            # The object has left the camera's view: nothing to re-aim at, so rebuild the plan
+            # and its resolver together.
+            if (retarget is not None and not reaimed and observe is not None
+                    and not result.ok and step.action in ("above", "down")
+                    and index + 1 < len(steps_left)):
                 reaimed = True
-                fresh = retarget(step, resolve(step.target) if (
-                    resolve and step.target is not None) else None)
+                fresh = retarget(step, prim)
                 if fresh:
+                    replacement, resolve = fresh
                     out.reaimed += 1
-                    steps_left = steps_left[:index + 1] + list(fresh)
+                    steps_left = steps_left[:index + 1] + list(replacement)
             if result.grasp == "real":
                 out.real_grasps += 1
             elif result.grasp == "kinematic":

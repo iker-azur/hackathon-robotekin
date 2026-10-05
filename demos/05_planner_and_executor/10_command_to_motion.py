@@ -24,7 +24,7 @@ be stale. Whether the robot noticed is reported, because "it still worked" and "
 are different claims.
 
 **Every placement is checked afterwards.** Perception localises a tray to about 11 mm and the
-cavity leaves less margin than that for a 4 cm ball, so a release can miss. After the arm
+cavity leaves less margin than that for a 3 cm ball, so a release can miss. After the arm
 finishes, the demo looks again and asks whether the object is actually inside. If it is not,
 it replans that one object and tries once more. A demo that only reports what it attempted is
 not reporting whether it worked.
@@ -81,15 +81,45 @@ from command_model_v2.command_model import CommandModel  # noqa: E402
 # ball cannot be handed a cube's name.
 LINK_TOLERANCE_M = 0.035
 
-# How far the arm's own parking sweep may move an object before the demo puts it back.
-# See Robot.park: the sweep is unavoidable and launches a ball 168 mm when the arm comes back
-# from a release over a tray, which is off the table entirely. 25 mm is above the 16.6 mm the
-# sweep costs in the gentlest measured case and well under the 51 mm same-colour gap, so a
-# restore never changes what anything looks like in the image.
-PARK_RESTORE_M = 0.025
+# How far the arm's own parking sweep may move an object before the demo mentions it.
+#
+# Not a restore threshold any more: nothing on the table is put back (see ``Robot.park``).
+# This only decides what is worth a line of output. 5 mm is above the 1.7-3.6 mm of solver
+# jitter a settled ball shows with the arm nowhere near it - measured, closest link 166 mm -
+# and below anything a person would call the ball having moved.
+PARK_REPORT_M = 0.005
 
 # How many times to re-look and retry a placement that did not verify.
 RETRIES = 1
+
+# How many times one object may be attempted inside a multi-object command before the sort
+# moves on without it. Two, not one: the first attempt can fail because the object was knocked
+# into a neighbour's blob, and a second look usually finds it clean. The old behaviour gave up
+# on the whole command after the first stale grasp, so one awkward object cost the other three.
+MAX_PICK_ATTEMPTS = 2
+
+# How far from where it was last seen an object may be and still count as the same object
+# during a tracked approach. A damped ball rolls 33-45 mm when the arm touches it, and the
+# two same-coloured objects in the scene are 90 mm apart, so this sits between the two: wide
+# enough to follow a knock, tight enough not to hand the arm a different object to grab.
+TRACK_LAST_SEEN_M = 0.075
+
+# How much of the frame around the gripper is painted out while the arm is moving. The gripper
+# is about 5 cm across and the top camera measures 747 px/m at the table, so its body is about
+# 37 px wide and this covers it. A larger disc starts eating the object being reached for - a
+# 3 cm ball is only 22 px across - so this is deliberately tight, and the low-altitude rule in
+# ``executor.TRACK_OBSERVE_ABOVE_Z`` is what stops the arm being tracked once it is on top of
+# its own target.
+MASK_RADIUS_PX = 18
+
+# How low the gripper may come before the camera stops being consulted.
+#
+# Below this the gripper is directly over the target and occludes it completely: measured, a
+# blue cube vanished from the frame entirely while the arm was on its way down to it. Rather
+# than fight that, the aim is locked in from the hover and held. The object is 3 cm across and
+# the last 10 cm of a descent lasts a third of a second, so it cannot get far in that time -
+# and the jaws still find it, which the stale-grasp check verifies rather than assumes.
+TRACK_ABOVE_Z = scene_spec.TABLE_TOP_Z + 0.10
 
 # Keys the demo answers itself, so a scripted run and a typed one behave the same.
 QUIT_WORDS = {"q", "quit", "exit", "salir", "salidas"}
@@ -134,7 +164,22 @@ class Robot:
         self.regrasped = 0
         # Commands re-aimed after the arm knocked the target and it finished rolling.
         self.reaimed = 0
+        # Approach and descent moves that re-read the camera while the arm was moving.
+        self.tracked = 0
+        # Placements judged, including the ones inside a multi-object command.
+        self.checked = 0
         self.premise: dict[int, str] = {}
+        # How far the last park sweep moved each loose object, kept so the round's report can
+        # say what the arm did to the table rather than leaving it to be guessed at.
+        self.park_swept: dict[str, float] = {}
+        # Last camera position of each object, used to tell a knocked object from a different
+        # one while tracking. Seeded from the layout and replaced as the camera reports.
+        self.tracked_xy: dict[str, tuple[float, float]] = {
+            i.prim: (i.x, i.y) for i in self.base}
+        # Why the last ``locate`` failed, empty when it succeeded. Reported rather than
+        # swallowed, because "lost the target" has half a dozen causes and only one of them is
+        # "the ball rolled".
+        self.locate_note = ""
         # Always a writer, so the "save this frame" key works whatever --save-every says. With
         # --save-every 0 the counter is set out of reach, so nothing is written until asked.
         self.writer = viewer_module.FrameWriter(
@@ -148,97 +193,82 @@ class Robot:
     # -- the round -------------------------------------------------------------
 
     def park(self) -> None:
-        """Get the arm out of the camera's view, with nothing on the table to knock over.
+        """Get the arm out of the camera's view, and let go of anything it is holding.
 
-        Parking sweeps the arm's forearm across the table and pushes the balls along it.
-        Measured by tools/probe_park_speed.py: 16.6 mm per park from the retreat pose, always
-        in the same direction, and unaffected by how high the arm travels - so it is the
-        elbow's path, not the gripper clearing the objects by more. Four parks in a row walked
-        a ball to x = -3.09 m, off a table spanning x 0.0032 to 0.7032, and an object that has
-        left the table cannot be re-planned for.
+        **Nothing on the table is put back.** An earlier version measured what the sweep
+        moved and restored anything past ``PARK_RESTORE_M``, and that is precisely the
+        behaviour this demo was asked to lose: a ball the arm had just placed somewhere was
+        teleported back to the layout, so the table never reflected what had actually
+        happened. An object is now placed once per round and from then on it is wherever it
+        came to rest.
 
-        The sweep cannot be designed away, so it is watched instead: anything it moves by more
-        than ``PARK_RESTORE_M`` is put back where the scene says it belongs, and the demo says
-        so. Anything already resting inside a tray is left alone - putting that back would
-        undo the round's work.
+        The sweep is still watched, because the arm's forearm genuinely does pass over the
+        near half of the table. It is reported rather than undone: measured with the balls
+        now damped (``isaac_io.BALL_LINEAR_DAMPING``), a park moves them by a millimetre or
+        two, and anything larger than ``PARK_REPORT_M`` is worth saying out loud.
         """
         loose = {i.prim for i in self.layout if not i.container}
 
         # Put down anything still held. A "coge la bola verde" ends with the arm holding it,
         # and parking then drives to y = -0.58 with the ball still in the gripper: measured, it
-        # ended up at y = -0.888, behind the robot and off the table, where perception then
-        # found it as an unclassified green blob. Releasing first is also what a person does.
+        # ended up at y = -0.888, behind the robot and off the table. Releasing first is also
+        # what a person does.
         if self.bot.holding:
             self.say(f"  putting down the {self.bot.holding} it was holding")
             self.bot.drop()
             self.bot.settle(20)
 
         before = {prim: self._xy(prim) for prim in loose}
-        settled = {prim: self._xy(prim) for prim in loose}
-
         self.bot.park()
 
-        trays = [i for i in self.layout if i.container]
+        moved = []
         for prim in sorted(loose):
-            x, y = self._xy(prim)
-            moved = math.dist(settled[prim], (x, y)) * 1000
-            if moved < PARK_RESTORE_M * 1000:  # PARK_RESTORE_M is metres, moved is mm
-                continue
-            if any(self._inside(prim, tray) for tray in trays):
-                continue  # already placed: putting it back would undo the round's work
-            item = next(i for i in self.layout if i.prim == prim)
-            if not self._spot_is_free(item):
-                # Restoring into an occupied spot is worse than not restoring. place_items
-                # writes the pose outright, so an object written inside another is deeply
-                # interpenetrating and PhysX resolves it violently: measured, a ball ejected
-                # to x = -6.9 m, tens of times the length of the table. Leave it where it is
-                # and let perception find it there.
-                self.say(f"  the park sweep moved {prim} {moved:.0f} mm, but its spot is "
-                         f"occupied; leaving it where it is")
-                continue
-            isaac_io.place_items(self.env, [item])
-            self.say(f"  the park sweep moved {prim} {moved:.0f} mm to "
-                     f"({x:+.4f}, {y:+.4f}); put it back")
-
-    def _spot_is_free(self, item, slack: float = 0.005) -> bool:
-        """Is this item's declared spot clear of everything else?"""
-        for other in self.layout:
-            if other.prim == item.prim:
-                continue
-            gap_x = abs(self._xy(other.prim)[0] - item.x) - scene_spec.half_width(item) \
-                - scene_spec.half_width(other)
-            gap_y = abs(self._xy(other.prim)[1] - item.y) - scene_spec.half_depth(item) \
-                - scene_spec.half_depth(other)
-            if max(gap_x, gap_y) < slack:
-                return False
-        return True
+            drift = math.dist(before[prim], self._xy(prim))
+            if drift > PARK_REPORT_M:
+                moved.append(f"{prim} {drift * 1000:.0f} mm")
+        if moved:
+            self.say(f"  the park sweep moved {', '.join(moved)}; leaving them where they are")
+        self.park_swept = {prim: math.dist(before[prim], self._xy(prim)) for prim in loose}
 
     def _xy(self, prim: str) -> tuple[float, float]:
         where = self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy()
         return float(where[0]), float(where[1])
 
     def ensure_on_table(self, prim: str) -> bool:
-        """Put an object back if it has left the working area. True if it had to.
+        """Rescue an object that has left the table altogether. True if it had to.
 
-        The arm does not merely displace what it reaches for, it ejects it: measured, a ball
-        ends up at x = -0.22 on a table whose near edge is x = 0.003, and one at x = -2.1.
-        An object that has rolled off the table cannot be re-aimed at, because there is
-        nothing left on the table to aim at.
+        Deliberately narrow, because the previous version of this was the other half of the
+        "everything goes back where it started" behaviour: it put any object outside the
+        working area back on its square, which undid the round's work for anything that had
+        legitimately been moved.
 
-        This is the same restore ``park`` uses, for the same reason and with the same
-        reporting: the arm's own motion is what moved it, so putting it back is correcting
-        for the robot's action rather than inventing a scene.
+        Now only a genuinely lost object is repaired - one that has left the table's own
+        footprint, where there is no "where it came to rest" left to preserve and nothing
+        for the camera to find. An object that is merely outside the working area is left
+        where it is and said out loud, because the kerb is what is supposed to stop that
+        happening and it is worth knowing when it did not.
         """
-        if self._inside_area(prim):
-            return False
         item = next((i for i in self.layout if i.prim == prim), None)
         if item is None:
             return False
         x, y = self._xy(prim)
+        off_the_table = (x < scene_spec.TABLE_X[0] - 0.02 or x > scene_spec.TABLE_X[1] + 0.02
+                         or y < scene_spec.TABLE_Y[0] - 0.02 or y > scene_spec.TABLE_Y[1] + 0.02)
+        if not off_the_table:
+            return False
         isaac_io.place_items(self.env, [item])
-        self.say(f"  {prim} had rolled off the working area to ({x:+.4f}, {y:+.4f}); "
-                 f"put it back")
+        self.say(f"  {prim} had left the table at ({x:+.4f}, {y:+.4f}); it cannot be seen or "
+                 f"reached from there, so it is back on the table")
         return True
+
+    def outside_the_area(self) -> list[str]:
+        """Loose objects that are out of the working area, reported rather than corrected."""
+        out = []
+        for item in self.layout:
+            if item.container or not self._inside_area(item.prim):
+                out.append(f"{item.prim} ({self._xy(item.prim)[0]:+.3f}, "
+                           f"{self._xy(item.prim)[1]:+.3f})")
+        return out
 
     def _inside_area(self, prim: str, slack: float = 0.02) -> bool:
         """Is this object still somewhere the arm can reach and the camera can see?"""
@@ -282,7 +312,20 @@ class Robot:
         return self.scene
 
     def _mask(self, image, camera):
-        """Blank the gripper out, so an arm in frame cannot be mistaken for an object."""
+        """Paint the gripper out of the frame, so an arm in shot cannot be an object.
+
+        The pixels are set to BLACK, not dimmed. The original version halved the brightness,
+        which changes V and nothing else - and every colour band in ``colors.py`` is keyed on
+        hue and saturation, so a half-bright gripper still matched whatever colour it reflected
+        and the mask removed nothing. Black has zero saturation, so it fails the saturation
+        floor every band applies and cannot be picked up as anything.
+
+        This matters more than it used to. With the arm hovering over the table, a tracked
+        green ball reads as a "cube" and a blue cube disappears from the frame entirely -
+        measured, the log said *"the camera sees no blue at all (it sees cube red, ball red,
+        cube green)"*. The arm was not being mistaken for an object; it was standing in front
+        of them.
+        """
         try:
             pixel = self.bot.gripper_pixel(camera)
         except Exception:  # the arm may not be where we think; masking is best-effort
@@ -292,13 +335,137 @@ class Robot:
         u, v = pixel
         h, w = image.shape[:2]
         u, v = int(round(u)), int(round(v))
-        radius = 46
+        radius = MASK_RADIUS_PX
         out = image.copy()
         y0, y1 = max(0, v - radius), min(h, v + radius)
         x0, x1 = max(0, u - radius), min(w, u + radius)
         if y1 > y0 and x1 > x0:
-            out[y0:y1, x0:x1] = out[y0:y1, x0:x1].max(axis=1, keepdims=True) // 2
+            out[y0:y1, x0:x1] = 0
         return out
+
+    # -- watching one object while the arm moves ---------------------------------
+
+    def locate(self, prim: str, last_xy: tuple[float, float] | None = None,
+               kind_hint: str | None = None):
+        """Where the camera says ``prim`` is right now, as (x, y), or None.
+
+        ``kind_hint`` overrides the object's declared kind when re-identifying it. It is not
+        used while tracking from a plan - there the declared kind is right - but the retry path
+        needs it: a ball that has been dropped somewhere wrong is often read as a "cube" because
+        the gripper is clipping its blob, and a retry that insisted on the kind would refuse to
+        look at the very object it was sent to fix.
+
+        This is the closed loop. The executor calls it every few steps while the arm is moving,
+        and corrects its aim to match, so the jaws arrive where the object is rather than where
+        it was when the plan was made - which on a ball is worth 20-40 cm.
+
+        How the right blob is picked matters as much as that it re-reads the camera. It is
+        matched on the object's own colour and kind, then on closeness to where it was last
+        seen. Matching on the simulator's position would be cheating - that is the answer, not
+        an observation - and matching on colour alone would hand the arm the red ball when it
+        was sent for the red cube, since this scene has two reds of each kind on purpose.
+
+        Each call takes a fresh frame, so the viewer keeps updating during the approach. That is
+        the point of the whole change: on screen you can see the robot following the ball.
+
+        ``self.locate_note`` says why it failed, because "could not find it" with no reason is
+        exactly the kind of message that costs an afternoon: the object may be gone, out of
+        frame, misclassified, or simply further from where it was last seen than anything the
+        arm could have knocked it, and those need four different fixes.
+        """
+        item = next((i for i in self.layout if i.prim == prim), None)
+        if item is None:
+            self.locate_note = f"{prim} is not in this layout"
+            return None
+        seen = self.look("tracking")
+        self.scene = seen
+
+        of_colour = [t for t in seen.objects if not item.color or t.color == item.color]
+        want_kind = kind_hint or item.kind
+        of_kind = [t for t in of_colour if t.kind in ("any", want_kind)]
+        candidates = self._nearest(of_kind, last_xy)
+
+        # The kind is the part of perception that is least reliable, by its own docstring: it
+        # is a second-moment test on a blob about 30 px across, and the arm's own gripper
+        # hovering over the target clips the disc and turns a ball into a "cube". Measured, a
+        # tracked green ball reads as a cube in every frame taken with the arm above it.
+        #
+        # So when nothing matches the kind, colour alone is allowed to carry the match - but
+        # only for a colour that is unique on this table. Green has exactly one object, so
+        # "the green blob" is unambiguous however it is shaped. Red has three, and there a
+        # colour-only match could hand the arm the red cube, so it is refused and the reason is
+        # reported instead.
+        if not candidates:
+            unique = sum(1 for i in self.layout if i.color == item.color) == 1
+            if unique and of_colour:
+                candidates = self._nearest(of_colour, last_xy)
+                if candidates:
+                    self.locate_note = (f"the {item.color} blob read as "
+                                        f"{sorted({t.kind for t in of_colour})}, matched on "
+                                        f"colour alone (it is the only {item.color} thing here)")
+
+        if not candidates:
+            if not self.locate_note:
+                self.locate_note = self._why_lost(prim, item, seen, of_colour, of_kind, last_xy)
+            return None
+        best = min(candidates, key=lambda pair: pair[0])[1]
+        # Corrected for the plane-ray bias, exactly as planner.grasp_pose is: tracking that
+        # aimed at the raw estimate would follow the object to a systematically wrong place,
+        # and the correction is worth 7 mm of a 20 mm grasp budget.
+        self.tracked_xy[prim] = scene_spec.aim_point(best.pos_m)
+        return self.tracked_xy[prim]
+
+    @staticmethod
+    def _nearest(things, last_xy) -> list[tuple[float, object]]:
+        """Things with a measured position, paired with how far they are from the last sighting."""
+        out = []
+        for thing in things:
+            if thing.pos_m is None:
+                continue
+            gap = math.dist(thing.pos_m[:2], last_xy) if last_xy is not None else 0.0
+            if last_xy is not None and gap > TRACK_LAST_SEEN_M:
+                continue
+            out.append((gap, thing))
+        return out
+
+    def _why_lost(self, prim, item, seen, of_colour, of_kind, last_xy) -> str:
+        """The reason a tracked object could not be found, in one line, for the log."""
+        if not of_colour:
+            names = ", ".join(f"{t.kind} {t.color}" for t in seen.objects) or "nothing"
+            return (f"the camera sees no {item.color} at all (it sees {names})")
+        if not of_kind:
+            kinds = ", ".join(sorted({t.kind for t in of_colour}))
+            return (f"the {item.color} blob was classified as {kinds}, not {item.kind}")
+        if last_xy is not None:
+            far = ", ".join(f"({t.pos_m[0]:+.3f}, {t.pos_m[1]:+.3f})" for t in of_kind
+                            if t.pos_m)
+            return (f"the {item.color} {item.kind} is at {far}, more than "
+                    f"{TRACK_LAST_SEEN_M * 1000:.0f} mm from where it was last seen at "
+                    f"({last_xy[0]:+.3f}, {last_xy[1]:+.3f})")
+        return f"no {item.color} {item.kind} blob carried a position"
+
+    def run_plan(self, plan, premise, command):
+        """Run one plan with the arm masked out of perception.
+
+        Masking is switched on automatically rather than left to the ``a`` key, because the
+        frames that most need it are the ones taken while the arm is moving - the whole point of
+        tracking - and nobody watching a demo presses a key to fix a frame they did not know was
+        wrong. With the arm masked, a tracked ball stays a ball for the whole approach; with it
+        unmasked, the hover alone was enough to turn the green ball into a "cube" and delete the
+        blue cube.
+        """
+        was = self.mask_arm
+        self.mask_arm = True
+        try:
+            return self.bot.run(plan, resolve=premise.get, keys=lambda: self.keys(),
+                                retarget=make_retarget(self, command, self.args),
+                                observe=lambda p: self.locate(p, self.tracked_xy.get(p)))
+        finally:
+            self.mask_arm = was
+
+    def observe_for(self, prim: str):
+        """``locate`` as a one-argument callback, remembering where it last saw the object."""
+        return lambda: self.locate(prim, self.tracked_xy.get(prim))
 
     # -- linking perception to the simulator -----------------------------------
 
@@ -403,15 +570,25 @@ class Robot:
             self.say(f"  replanned: {plan.summary} -> {again.summary}")
             plan = again
 
-        # Run it, and if the arm knocked the target away on the way in, look again and plan
-        # again. This is the case that used to be reported as a success: the jaws shut on
-        # empty air, the kinematic fallback picked the object up out of thin air, and the
-        # placement was verified as correct. See GRASP_REACH_M in executor.py for the numbers.
+        if len(plan.picks) >= 2:
+            # A multi-object command goes straight to the one-at-a-time path, WITHOUT
+            # running the combined plan first. That ordering was the bug: this used to run
+            # all 8N steps and only then start re-planning between objects, so the stale
+            # plan - built from one frame and executed after the table has changed under it
+            # - was always the first thing that happened.
+            return self._one_at_a_time(command, plan)
+
+        # Run it, and if the arm knocked the target away on the way in, look again and
+        # plan again. This is the case that used to be reported as a success: the jaws shut
+        # on empty air, the kinematic fallback picked the object up out of thin air, and the
+        # placement was verified as correct. See GRASP_REACH_M in executor.py.
         for attempt in range(1 + self.args.regrasp):
             self.say(f"  {plan.summary}")
-            run = self.bot.run(plan, resolve=premise.get, keys=lambda: self.keys(),
-                             retarget=make_retarget(self, command, self.args))
+            run = self.run_plan(plan, premise, command)
             self.say(f"  {run.summary()}")
+            self.tracked += run.tracked
+            if self.locate_note and run.tracked:
+                self.say(f"  tracking lost the target: {self.locate_note}")
             if run.reaimed:
                 self.reaimed += 1
                 premise = self.premise
@@ -443,8 +620,124 @@ class Robot:
             return True
         return True
 
-    def check(self, plan, premise: dict[int, str]) -> None:
+    @staticmethod
+    def _first_pick_only(plan) -> planner.Plan | None:
+        """A plan cut down to its FIRST pick, whole: pickup AND delivery.
+
+        The boundary is the SECOND ``above`` step, because every pick in every cycle begins with
+        one. That is deliberately not spelled as "cut at ``lift``", which is what an earlier
+        version did and which was wrong for half the plans in this file:
+
+            _grasp_and_hold   above down close lift                        <- lift IS the end
+            _pick_and_place   above down close lift carry lower release retreat
+
+        Cutting at ``lift`` left a pick-and-place with only its first four steps, so the arm
+        picked the object up and then stopped. It was never carried to the tray and never
+        released, which is why every sort reported its objects landing back where they started -
+        85 mm and 128 mm outside the cavity - and only the retry, which builds its own motion,
+        actually placed them.
+
+        Cutting at the second ``above`` is right for both cycles without knowing which one this is,
+        and it leaves the arm at the retreat pose over the tray rather than halfway across the
+        table.
+        """
+        cut = len(plan.steps)
+        seen_above = 0
+        for index, step in enumerate(plan.steps):
+            if step.action == "above":
+                seen_above += 1
+                if seen_above == 2:
+                    cut = index
+                    break
+        steps = list(plan.steps[:cut])
+        if not steps:
+            return None
+        one = planner.Plan(intent=plan.intent)
+        one.steps = steps
+        one.picks = plan.picks[:1]
+        one.places = plan.places[:1]
+        one.unresolved = list(plan.unresolved)
+        one.question = dict(plan.question)
+        one.reply = plan.reply
+        return one
+
+    def _one_at_a_time(self, command, plan) -> bool:
+        """Carry out a multi-object command one object per pass, re-looking in between.
+
+        "separa las piezas por colores" is the case that matters: the plan names four objects
+        and 32 steps of motion, all computed from one frame. A person's answer is not a better
+        plan, it is to sort one thing, look again, and sort the next - and that is what this
+        does, because the world genuinely is different after each placement.
+
+        Re-planning terminates on its own: once an object is inside a tray it is part of that
+        tray's blob and is no longer a loose object, so each pass has one fewer thing to do.
+        The pass count is bounded anyway, in case that assumption is ever wrong.
+
+        A pick that fails does not end the command. It gets ``MAX_PICK_ATTEMPTS`` goes, and then
+        the sort moves on to the next object and says at the end which ones it could not manage.
+        The previous behaviour aborted the whole sort on the first stale grasp, which meant one
+        awkward object cost the other three.
+        """
+        total = len(plan.picks)
+        self.say(f"  {total} objects to move; doing them one at a time and re-looking between")
+        moved: list[str] = []
+        gave_up: list[str] = []
+        attempts: dict[str, int] = {}
+
+        for _ in range(total + 2):
+            self.park()
+            seen = self.look("between objects")
+            premise = self.link(seen)
+            fresh = planner.plan_command(command, seen, offset=self.args.offset)
+            if not fresh.moves:
+                break
+            one = self._first_pick_only(fresh)
+            if one is None:
+                break
+
+            prim = premise.get(one.picks[0]) if one.picks else None
+            self.say(f"  {one.summary}")
+            run = self.run_plan(one, premise, command)
+            self.say(f"  {run.summary()}")
+            self.tracked += run.tracked
+            if self.locate_note and run.tracked:
+                self.say(f"  tracking lost the target: {self.locate_note}")
+
+            # A quit is not a failure to retry: stop the whole command.
+            if run.aborted and not run.stale_grasps:
+                self.say("  stopped early at your request")
+                return True
+
+            missed = self.check(one, premise, announce=False)
+
+            # Three ways to fail, and all three have to count. A stale grasp is the executor
+            # saying the jaws closed on nothing. An abort is the user pressing q. And a miss is
+            # the quiet one: the grasp worked, the object was carried, and the release landed
+            # beside the tray - which looks like success to every other counter in this file.
+            # Counting only the first two is what let a sort loop on one unplaceable object.
+            key = prim or f"thing #{one.picks[0]}"
+            failed = bool(run.stale_grasps or run.aborted or key in missed)
+            if failed:
+                attempts[key] = attempts.get(key, 0) + 1
+                if attempts[key] >= MAX_PICK_ATTEMPTS:
+                    gave_up.append(key)
+                    reason = ("nothing to close on" if run.stale_grasps
+                              else "stopped" if run.aborted else "never landed in a tray")
+                    self.say(f"  giving up on {key} after {attempts[key]} attempt(s): {reason}")
+            else:
+                moved.append(key)
+
+        self.say(f"  sorted {len(moved)} of {total}"
+                 + (f"; could not pick {', '.join(gave_up)}" if gave_up else ""))
+        return True
+
+    def check(self, plan, premise: dict[int, str], announce: bool = True) -> list[str]:
         """Did each object actually end up inside? Re-perceive, and retry once if not.
+
+        Returns the prims still not in a tray after the retry, so a caller that is looping over a
+        multi-object command can count a repeated miss and move on. A grasp that "succeeded" but
+        whose release missed is not a failure the executor can see - the jaws did close on the
+        object - so without this the loop would retry the same placement forever.
 
         Judged from the simulator's own positions, not from a camera frame. An earlier version
         re-looked after the plan and re-linked the scene to decide, and that passed vacuously:
@@ -466,7 +759,11 @@ class Robot:
                 break
             self.missed += len(misses)
             for prim in misses:
-                self.say(f"    not verified: {prim} is not in the tray it was sent to")
+                # Say which of the three tests failed and by how much. "not in the tray" on its
+                # own is the kind of message that sends you looking in the wrong place: a
+                # release that lands beside the tray and one that lands on the rim look
+                # identical in a log, and they have nothing in common.
+                self.say(f"    not verified: {prim} {self._why_not_inside(prim)}")
             self.say("  re-planning the ones that missed")
             for prim in misses:
                 self._retry_one(prim)
@@ -480,9 +777,11 @@ class Robot:
 
         self.park()
         seen = self.look("after the plan")
-        self.say(f"  camera sees {len(seen.objects)} object(s) and "
-                 f"{len(seen.containers)} container(s); "
-                 f"{len(plan.picks) - len(misses)}/{len(plan.picks)} placement(s) in a tray")
+        if announce:
+            self.say(f"  camera sees {len(seen.objects)} object(s) and "
+                     f"{len(seen.containers)} container(s); "
+                     f"{len(plan.picks) - len(misses)}/{len(plan.picks)} placement(s) in a tray")
+        return misses
 
     def _missed(self, plan, premise: dict[int, str]) -> list[str]:
         """Which picked objects are not inside the container they were sent to."""
@@ -497,6 +796,22 @@ class Robot:
             if tray is None or not self._inside(prim, tray):
                 out.append(prim)
         return out
+
+    def _settled_height(self, item, tray) -> float:
+        """The z an object rests at once it is DOWN in this tray, not perched on the rim.
+
+        ``_inside`` compared against the cavity floor plus half the object's height, which is
+        right for a cube and wrong for a ball in a way that only shows up in the last
+        millimetres. A sphere dropped into a 56 mm cavity settles against the floor at
+        floor + radius, and one that clips the rim perches at rim height - which for this tray is
+        50 mm up. Measured: a ball reported as "30.3 mm from the resting height" was not in the
+        tray at all, it was sitting on the edge, and the old test could only say "not verified".
+
+        So this returns the floor-level rest height, and the z test becomes a comparison against
+        that plus a margin wide enough to accept a ball that has settled slightly off-centre but
+        still well inside.
+        """
+        return scene_spec.TABLE_TOP_Z + tray.floor + item.height / 2.0
 
     def _inside(self, prim: str, tray) -> bool:
         """Is this prim inside this tray, judged by where it actually came to rest?
@@ -522,6 +837,38 @@ class Robot:
                 and abs(float(where[1]) - tray.y) <= half_d
                 and abs(float(where[2]) - rest_z) < 0.006)
 
+    def _why_not_inside(self, prim: str) -> str:
+        """Which of the containment tests failed, and by how much, in one clause.
+
+        A miss has three quite different causes and the log used to call all of them "not in the
+        tray": the object is beside the tray in x, it is beside it in y, or it is on the table
+        rather than down on the cavity floor. The last is the common one and the least obvious -
+        an x-y-only test passes for anything that lands near the rim, which is why ``_inside``
+        checks z at all, and why a log saying only "not verified" sent this demo looking at the
+        wrong axis.
+        """
+        item = next((i for i in self.layout if i.prim == prim), None)
+        tray = self._tray_of(prim)
+        if item is None or tray is None:
+            return "is not in the scene any more"
+        where = self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy()
+        half_w, half_d = tray.inner[0] / 2.0, tray.inner[1] / 2.0
+        rest_z = scene_spec.TABLE_TOP_Z + tray.floor + item.height / 2.0
+        off_x = abs(float(where[0]) - tray.x) - half_w
+        off_y = abs(float(where[1]) - tray.y) - half_d
+        off_z = abs(float(where[2]) - rest_z)
+        if off_x > 0.0 or off_y > 0.0:
+            return (f"came to rest at ({where[0]:+.3f}, {where[1]:+.3f}), "
+                    f"{off_x * 1000:.0f} mm outside the cavity in x and "
+                    f"{off_y * 1000:.0f} mm in y")
+        # off_z rounds to 0 mm here more often than it should not: the miss is computed before
+        # the last settle and re-read after it, so an object balanced on the rim can have
+        # dropped the last millimetre into place in between. Saying "0 mm off" would be
+        # nonsense, so it says which way it went.
+        return (f"is at ({where[0]:+.3f}, {where[1]:+.3f}) and just inside the cavity, but "
+                f"settled {off_z * 1000:.1f} mm from the resting height - it was balanced on "
+                f"the rim")
+
     def _retry_one(self, prim: str) -> bool:
         """Pick one object up again and put it back where it was sent.
 
@@ -545,11 +892,32 @@ class Robot:
 
         self.bot.log(f"    retry {prim} from ({here[0]:+.4f}, {here[1]:+.4f}) to "
                      f"({tray.x:+.4f}, {tray.y:+.4f})")
-        self.bot.do("above", lift, executor_module.OPEN)
-        self.bot.do("down", planner.grasp_pose(thing), executor_module.OPEN)
+        # The approach is closed-loop here too, not only in the main path. This retry used to
+        # drive ``above`` and ``down`` once at a pose computed from the simulator's own
+        # position, which is the one place in this file that is allowed to know the answer and
+        # the one place that most needs the closed loop: the object it is retrying is one that
+        # has just been dropped somewhere wrong, and a fixed descent is what put it there. If
+        # the camera cannot find it, the retry is skipped rather than aimed at a guess.
+        grasp = np.asarray(planner.grasp_pose(thing))
+        self.tracked_xy[prim] = (float(here[0]), float(here[1]))
+        observe = lambda: self.locate(prim, self.tracked_xy.get(prim), kind_hint="any")
+        approach = self.bot.track(observe=observe, target_z=float(lift[2]),
+                                  steps=executor_module.TRACK_DESCEND_STEPS,
+                                  action="above", grip=executor_module.OPEN,
+                                  aim=(float(lift[0]), float(lift[1])))
+        descent = self.bot.track(observe=observe, target_z=float(grasp[2]),
+                                 steps=executor_module.TRACK_DESCEND_STEPS,
+                                 action="down", grip=executor_module.OPEN,
+                                 aim=(float(grasp[0]), float(grasp[1])))
+        if not (approach.ok and descent.ok):
+            self.bot.log(f"      skipped: lost sight of {prim} on the way in")
+            return False
         before = here.copy()
-        result = self.bot.do("lift", lift, executor_module.CLOSE, prim=prim, on_close=before)
+        result = self.bot.do("lift", lift, executor_module.CLOSE, prim=prim, on_close=before,
+                             check="follow")
         self.bot.log(f"      lift: {result.note}")
+        if not result.ok:
+            return False
         self.bot.do("carry", drop + np.array([0, 0, executor_module.ABOVE]),
                     executor_module.CLOSE)
         self.bot.do("lower", drop, executor_module.CLOSE)
@@ -618,17 +986,17 @@ class Robot:
     # -- re-aiming after the arm knocks its own target --------------------------
 
 def make_retarget(robot, command, args):
-    """Build the ``retarget`` callback the executor calls before a descent.
+    """Build the ``retarget`` callback the executor calls when tracking loses the target.
 
-    The arm knocks whatever it reaches for - a ball ends up 157 mm away and rolls for 6.7 s -
-    so descending onto where the object *was* closes the jaws on empty air. The fix is not to
-    stop knocking it, which three separate approaches failed to do (see
-    results/approach_drift.md), but to re-look once the roll has finished and aim at where it
-    ended up.
+    The closed loop in ``Executor.track`` handles the ordinary case: the arm knocks its target
+    a few centimetres and follows it. This handles the one it cannot - the object has left the
+    camera's view, so there is nothing to follow and the plan has to be built again from
+    scratch against a fresh frame.
 
-    Measured to work: with the arm hovering above where the ball used to be, once the ball has
-    stopped, perception still finds it and places it within 14 mm. The hover does not hide it,
-    which was the thing that could have made this impossible.
+    It returns ``(steps, resolve)`` and both matter. A re-planned step's ``target`` is a
+    perception id from the frame taken *here*, not from the one the plan started with, so
+    handing back steps without their resolver makes the next steps aim at whatever object
+    happens to carry that id in the old map.
 
     No parking here, deliberately. Parking is what sweeps the objects in the first place, so
     looking from the hover pose is not a compromise - it is the only place the robot can look
@@ -653,10 +1021,11 @@ def make_retarget(robot, command, args):
             return None
 
         robot.say(f"  re-aimed: {fresh.summary}")
-        robot.premise = robot.link(seen)
+        fresh_premise = robot.link(seen)
+        robot.premise = fresh_premise
         # Drop the fresh plan's leading hover: the arm is already there.
         tail = fresh.steps[1:] if fresh.steps and fresh.steps[0].action == "above" else fresh.steps
-        return tail
+        return tail, fresh_premise.get
 
     return retarget
 
@@ -803,6 +1172,7 @@ def main() -> int:
         robot.say(f"  replanned mid-task  : {robot.replanned}")
         robot.say(f"  regrasp after a stale target : {robot.regrasped}")
         robot.say(f"  re-aimed at a knocked target : {robot.reaimed}")
+        robot.say(f"  moves that re-tracked the target mid-approach : {robot.tracked}")
         failures += robot.missed
         if robot.writer:
             robot.writer.close()

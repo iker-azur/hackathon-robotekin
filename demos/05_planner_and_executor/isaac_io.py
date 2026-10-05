@@ -51,6 +51,45 @@ SETTLE_STILL_M = 0.002
 # plenty for a 1.4 rad elbow move and is not enough for it to drift back.
 ARM_PARK_STEPS = 60
 
+# Damping, and why only for balls.
+# ----------------------------------
+# ``RigidBodyPropertiesCfg()`` with no arguments means zero linear and zero angular damping,
+# which is a legal value and a useless ball. A sphere with neither has no reason to stop
+# rolling: measured on this scene, a 10 cm/s shove sends it 353 mm along a clear stretch of
+# table and it is STILL MOVING after 11.7 s; a 45 cm/s shove sends it 488 mm. That is the
+# whole of "the balls move with anything touching them", and it is a property of the spawn
+# rather than of the planner, so no amount of replanning can answer it.
+#
+# Measured sweep, ``tools/probe_ball_physics.py --section roll``, a 4 cm ball shoved along a
+# clear 58 cm strip of table, distance rolled and time to a stop under 2 mm/s:
+#
+#     linear  angular  friction   10 cm/s   25 cm/s   45 cm/s   residual creep
+#         0        0      0.5        353 mm    488 mm    488 mm    49 mm/s
+#         0        2      0.5        270 mm    368 mm    408 mm    24 mm/s
+#         2        8      0.5        149 mm    163 mm    181 mm     9 mm/s
+#        10       40      0.5         33 mm     37 mm     45 mm    2.6 mm/s
+#        25      100      0.5          9 mm     11 mm     14 mm    0.7 mm/s
+#
+# 10 and 40 are the pick. A shove of any speed the demo can produce moves the ball 33-45 mm:
+# enough that being touched is visibly something, small enough that it stops where it was
+# knocked and stays there. The next setting up, 25 and 100, only travels 9-14 mm, which is
+# closer to a ball glued to the table than to one an arm can reposition.
+#
+# Two knobs that sound like they should help were measured and do not:
+#
+# * **Friction.** Raising it from 0.5 to 1.0 changed the roll to the millimetre at every
+#   damping setting - 33/37/45 mm either way. A rolling ball is not held back by sliding
+#   friction, which is the whole reason it rolls.
+# * **PhysX's own rolling resistance**, ``torsional_patch_radius``. Set to 0.02 it returns
+#   numbers identical to no patch at all, on every run. It is not inert by accident in this
+#   build; it simply does not act on a sphere resting on a plane here.
+#
+# Only balls get damping. A cube rests on a flat face and does not roll, and the docs already
+# measure cubes at 0.0 mm of drift under a park sweep while balls move, so damping the cubes
+# would be a change with nothing to fix behind it.
+BALL_LINEAR_DAMPING = 10.0
+BALL_ANGULAR_DAMPING = 40.0
+
 
 def prepare_runtime(headless: bool) -> None:
     """Start Kit, through demos/01_simulation_basics/env_loader.py.
@@ -93,9 +132,13 @@ def rigid_cfg(item: scene_spec.Item):
     from isaaclab.assets import RigidObjectCfg
     import isaaclab.sim as sim_utils
 
+    rigid_props = (sim_utils.RigidBodyPropertiesCfg(
+        linear_damping=BALL_LINEAR_DAMPING,
+        angular_damping=BALL_ANGULAR_DAMPING)
+        if item.kind == "ball" else sim_utils.RigidBodyPropertiesCfg())
     common = {
         "mass_props": sim_utils.MassPropertiesCfg(mass=0.05),
-        "rigid_props": sim_utils.RigidBodyPropertiesCfg(),
+        "rigid_props": rigid_props,
         "collision_props": sim_utils.CollisionPropertiesCfg(),
         "visual_material": sim_utils.PreviewSurfaceCfg(
             diffuse_color=colors.COLORS[item.color].albedo, roughness=0.7

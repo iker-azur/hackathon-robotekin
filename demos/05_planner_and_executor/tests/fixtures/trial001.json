@@ -1,0 +1,307 @@
+{
+  "schema": "leisaac-demo/perception/scene/1",
+  "source": "isaac:top:trial1",
+  "frame": {
+    "space": "world",
+    "left_axis": [
+      1.0,
+      7.619370060342129e-11
+    ],
+    "front_axis": [
+      7.6193699067801e-11,
+      -1.0
+    ],
+    "robot_xy": [
+      0.3500000238418579,
+      -0.6399999856948853
+    ]
+  },
+  "width": 640,
+  "height": 480,
+  "camera": {
+    "pos_w": [
+      0.375,
+      -0.2199999988079071,
+      0.550000011920929
+    ],
+    "quat_wxyz": [
+      -0.5670398473739624,
+      -0.40590372681617737,
+      -0.37794482707977295,
+      0.6089873909950256
+    ],
+    "matrix": [
+      [
+        403.0438232421875,
+        0.0,
+        320.0
+      ],
+      [
+        0.0,
+        403.0438232421875,
+        240.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "width": 640,
+    "height": 480
+  },
+  "plane_z": 0.0409,
+  "ground_px_per_m": 746.5,
+  "objects": [
+    {
+      "id": 2,
+      "kind": "cube",
+      "color": "red",
+      "centroid_px": [
+        374.353591160221,
+        230.20165745856355
+      ],
+      "bbox_px": [
+        361,
+        216,
+        28,
+        30
+      ],
+      "area_px": 724,
+      "mean_hsv": [
+        1,
+        203,
+        168
+      ],
+      "confidence": 0.349,
+      "source": "segmentation",
+      "pos_m": [
+        0.28388,
+        -0.44099,
+        0.0409
+      ],
+      "pos_m_depth": [
+        0.28866,
+        -0.4294,
+        0.06761
+      ],
+      "elongation": 0.9014,
+      "fill": 0.9803
+    },
+    {
+      "id": 3,
+      "kind": "cube",
+      "color": "blue",
+      "centroid_px": [
+        266.0751445086705,
+        234.91618497109826
+      ],
+      "bbox_px": [
+        254,
+        221,
+        25,
+        29
+      ],
+      "area_px": 692,
+      "mean_hsv": [
+        110,
+        177,
+        203
+      ],
+      "confidence": 0.329,
+      "source": "segmentation",
+      "pos_m": [
+        0.43334,
+        -0.44455,
+        0.0409
+      ],
+      "pos_m_depth": [
+        0.43021,
+        -0.43251,
+        0.0682
+      ],
+      "elongation": 0.8514,
+      "fill": 0.9778
+    },
+    {
+      "id": 4,
+      "kind": "ball",
+      "color": "green",
+      "centroid_px": [
+        210.35967302452315,
+        240.2016348773842
+      ],
+      "bbox_px": [
+        200,
+        230,
+        22,
+        21
+      ],
+      "area_px": 367,
+      "mean_hsv": [
+        68,
+        153,
+        195
+      ],
+      "confidence": 0.233,
+      "source": "segmentation",
+      "pos_m": [
+        0.50953,
+        -0.44209,
+        0.0409
+      ],
+      "pos_m_depth": [
+        0.50289,
+        -0.43113,
+        0.06604
+      ],
+      "elongation": 0.9617,
+      "fill": 0.9996
+    },
+    {
+      "id": 5,
+      "kind": "ball",
+      "color": "red",
+      "centroid_px": [
+        311.5835616438356,
+        227.43287671232878
+      ],
+      "bbox_px": [
+        301,
+        217,
+        22,
+        21
+      ],
+      "area_px": 365,
+      "mean_hsv": [
+        2,
+        182,
+        205
+      ],
+      "confidence": 0.216,
+      "source": "segmentation",
+      "pos_m": [
+        0.37017,
+        -0.45137,
+        0.0409
+      ],
+      "pos_m_depth": [
+        0.37041,
+        -0.44006,
+        0.06578
+      ],
+      "elongation": 0.9547,
+      "fill": 0.9991
+    }
+  ],
+  "containers": [
+    {
+      "id": 0,
+      "kind": "box",
+      "color": "red",
+      "centroid_px": [
+        247.46723891273248,
+        188.93991416309012
+      ],
+      "bbox_px": [
+        219,
+        157,
+        59,
+        66
+      ],
+      "area_px": 3495,
+      "mean_hsv": [
+        1,
+        202,
+        186
+      ],
+      "confidence": 0.389,
+      "source": "segmentation",
+      "pos_m": [
+        0.45871,
+        -0.5189,
+        0.0409
+      ],
+      "pos_m_depth": [
+        0.45359,
+        -0.50058,
+        0.07209
+      ],
+      "inner_rect_m": [
+        0.42556,
+        -0.52355,
+        0.05017,
+        0.04788
+      ],
+      "elongation": 0.9104,
+      "fill": 0.9713,
+      "hollow": true,
+      "footprint_m": [
+        0.41764,
+        -0.53111,
+        0.06601,
+        0.063
+      ],
+      "base_centre_m": [
+        0.45547,
+        -0.51342
+      ]
+    },
+    {
+      "id": 1,
+      "kind": "box",
+      "color": "blue",
+      "centroid_px": [
+        359.26692759295497,
+        186.93502935420744
+      ],
+      "bbox_px": [
+        328,
+        148,
+        59,
+        66
+      ],
+      "area_px": 2555,
+      "mean_hsv": [
+        112,
+        195,
+        181
+      ],
+      "confidence": 0.683,
+      "source": "segmentation",
+      "pos_m": [
+        0.29723,
+        -0.51069,
+        0.0409
+      ],
+      "pos_m_depth": [
+        0.30169,
+        -0.49403,
+        0.07008
+      ],
+      "inner_rect_m": [
+        0.28519,
+        -0.52507,
+        0.04451,
+        0.04697
+      ],
+      "elongation": 0.733,
+      "fill": 0.8893,
+      "hollow": true,
+      "footprint_m": [
+        0.27816,
+        -0.53249,
+        0.05857,
+        0.0618
+      ],
+      "base_centre_m": [
+        0.30354,
+        -0.51471
+      ]
+    }
+  ],
+  "relations": [],
+  "notes": [
+    "looking for: red, green, blue. separable but off by default: yellow, white, black, purple (white and black match the background and the robot's own links; yellow shares its hue band with the wood table; purple has not been through the 20-trial check yet). MEASURED AS NOT SEPARABLE, leave off: orange, pink (orange is 5 hue units from yellow, pink is 11 from red, and saturation separates neither). They stay in COLORS so a command model can still name them. measured candidates to try next: yellow, purple. Add one with --detect."
+  ]
+}

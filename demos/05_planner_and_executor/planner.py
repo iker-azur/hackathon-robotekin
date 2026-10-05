@@ -108,14 +108,20 @@ class Plan:
 def grasp_pose(thing: Thing, offset: tuple[float, float] = (0.0, 0.0)) -> tuple[float, float, float]:
     """Where the gripper body should be to hold ``thing``, in world metres.
 
-    x and y are perception's, plus an optional systematic offset. z is declared: the object's
-    centre sits half its own height above the table.
+    x and y are perception's, corrected for the plane-ray bias and plus an optional extra
+    ``offset``. z is declared: the object's centre sits half its own height above the table.
 
-    A measured correction is applied because the plane-ray estimate has a documented bias -
-    it assumes the blob centroid is on the table, and a blob centroid is on the object's top
-    face. ``calibration.py`` measures the mean residual; pass it as ``offset``.
+    The bias correction is ``scene_spec.aim_point`` and it is not cosmetic. The plane-ray
+    estimate reads a consistent 6.9 mm too far in y, because it casts to the table plane from a
+    centroid that is on the object's top face rather than on the table. Measured residual drops
+    from 10.3-12.5 mm to 4.2-4.8 mm once it is subtracted, and the grasp check allows 20 mm in
+    total - so without the correction a third of the budget is gone before the arm moves. See
+    ``tools/measure_bias.py``.
+
+    ``offset`` is on top of that and is a user knob, for anything this bias cannot explain.
     """
-    x, y = thing.pos_m[0] + offset[0], thing.pos_m[1] + offset[1]
+    x, y = scene_spec.aim_point(thing.pos_m)
+    x, y = x + offset[0], y + offset[1]
     height = OBJECT_HEIGHT.get(thing.kind, DEFAULT_HEIGHT)
     return (x, y, scene_spec.TABLE_TOP_Z + height / 2.0)
 
@@ -123,12 +129,23 @@ def grasp_pose(thing: Thing, offset: tuple[float, float] = (0.0, 0.0)) -> tuple[
 def place_pose(thing: Thing) -> tuple[float, float, float]:
     """Where to release an object over a receptacle, in world metres.
 
-    The receptacle's own ``pos_m``, at a height that clears the rim. NOT its
-    ``inner_rect_m``: that is an estimate, and ``tools/check_trays.py`` measures it wrong by
-    more than the wall thickness on one of the two trays. The cavity size comes from
+    The receptacle's own ``pos_m``, bias-corrected with the tray figures, at a height that clears
+    the rim. NOT its ``inner_rect_m``: that is an estimate, and ``tools/check_trays.py`` measures
+    it wrong by more than the wall thickness on one of the two trays. The cavity size comes from
     ``scene_spec`` instead.
+
+    **Released above the rim, not inside the cavity.** The old height was the cavity floor plus
+    12 mm, which puts the hold point at z = 0.059 - and the tray's rim is at z = 0.091. So the
+    object was released with the jaws *below* the top of the walls it had to clear, and a ball
+    dropped from there catches the rim on the way down and perches on it. Measured: a ball
+    reported as "30.3 mm from the resting height" was sitting on the tray's edge.
+
+    Releasing from just above the rim means the object falls the full depth of the cavity and
+    lands on the floor, which is the only place it can rest that counts as "in the tray".
     """
-    return (thing.pos_m[0], thing.pos_m[1], scene_spec.TABLE_TOP_Z + TRAY_FLOOR + RELEASE_CLEARANCE)
+    x, y = scene_spec.aim_point(thing.pos_m, container=True)
+    rim = scene_spec.TABLE_TOP_Z + _TRAY.height
+    return (x, y, rim + RELEASE_CLEARANCE)
 
 
 def in_workspace(point: tuple[float, float, float]) -> str | None:
