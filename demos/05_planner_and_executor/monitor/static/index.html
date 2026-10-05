@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>leisaac demo 11 - command to motion</title>
+<style>
+  :root {
+    --bg: #10131a;
+    --panel: #181c26;
+    --panel-2: #1f2531;
+    --line: #2b3242;
+    --text: #dfe4ee;
+    --muted: #8b93a7;
+    --idle: #4a5164;
+    --active: #4c9ffe;
+    --ok: #43c07f;
+    --warn: #e0a93a;
+    --fail: #e2604f;
+    --accent: #7f6cf0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.45 "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 14px; margin: 0; letter-spacing: .04em; }
+  header h1 small { color: var(--muted); font-weight: normal; margin-left: 8px; }
+  .pill {
+    padding: 2px 9px; border-radius: 10px; background: var(--panel-2);
+    border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+  }
+  .pill b { color: var(--text); font-weight: 600; }
+  .link { color: var(--active); text-decoration: none; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px;
+         background: var(--idle); vertical-align: middle; }
+  .dot.live { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .dot.dead { background: var(--fail); }
+  main { display: grid; grid-template-columns: 320px 1fr 360px; gap: 12px; padding: 12px;
+         align-items: start; }
+  @media (max-width: 1200px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+          overflow: hidden; }
+  .card > h2 {
+    margin: 0; padding: 8px 12px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--muted); background: var(--panel-2); border-bottom: 1px solid var(--line);
+  }
+  .card > .body { padding: 10px 12px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .row:last-child { margin-bottom: 0; }
+  label.field { display: block; margin-bottom: 8px; }
+  label.field span { display: block; color: var(--muted); margin-bottom: 3px; }
+  input, select, button, textarea {
+    font: inherit; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 5px; padding: 6px 8px; width: 100%;
+  }
+  input[type=checkbox] { width: auto; }
+  button { cursor: pointer; width: auto; background: #263043; }
+  button:hover { background: #2f3b52; }
+  button.primary { background: var(--accent); border-color: #6a5ad8; color: #fff; }
+  button.primary:hover { background: #8b79f5; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 6px; }
+  .stat { background: var(--panel-2); border-radius: 5px; padding: 6px 8px; }
+  .stat .n { font-size: 17px; }
+  .stat .k { color: var(--muted); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+  #frame { width: 100%; display: block; background: #05070b; border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 2px 4px; border-bottom: 1px solid var(--line);
+           font-size: 12px; }
+  th { color: var(--muted); font-weight: 500; }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px;
+            vertical-align: -1px; }
+  #log { height: 260px; overflow-y: auto; font-size: 12px; }
+  #log div { padding: 1px 0; border-bottom: 1px solid #1d222d; white-space: pre-wrap;
+             word-break: break-word; }
+  #log .t { color: var(--idle); }
+  #log .warn { color: var(--warn); }
+  #log .fail { color: var(--fail); }
+  #log .ok { color: var(--ok); }
+  #log .node { color: var(--accent); }
+  .findings { font-size: 12px; max-height: 220px; overflow-y: auto; }
+  .finding { padding: 5px 0; border-bottom: 1px solid var(--line); }
+  .finding .lv { font-size: 10px; letter-spacing: .08em; padding: 1px 5px; border-radius: 3px;
+                 margin-right: 6px; }
+  .finding.fail .lv { background: #40201d; color: var(--fail); }
+  .finding.warn .lv { background: #3a3220; color: var(--warn); }
+  .finding.note .lv { background: #24303f; color: var(--active); }
+  #flow { background: var(--panel); }
+  #flow .body { padding: 0; }
+  svg { display: block; width: 100%; height: auto; }
+  .node-box { cursor: pointer; }
+  .node-box:hover rect { stroke: var(--text); }
+  .node-label { font-size: 11px; fill: var(--text); pointer-events: none; }
+  .node-note { font-size: 10px; fill: var(--muted); pointer-events: none; }
+  .edge { fill: none; stroke: var(--line); stroke-width: 1.5; }
+  .edge.loop { stroke: var(--warn); stroke-dasharray: 4 3; }
+  .edge-label { font-size: 9px; fill: var(--muted); }
+  .gate { padding: 12px; background: #1a2333; border-bottom: 1px solid var(--line); }
+  .gate.waiting { color: var(--warn); }
+  .gate.running { color: var(--ok); }
+  .hidden { display: none !important; }
+  .hint { color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>demo 11 <small>command to motion, on real-world physics, watched live</small></h1>
+  <span class="pill"><span class="dot" id="conn"></span><span id="conn-text">connecting</span></span>
+  <span class="pill">phase <b id="phase">-</b></span>
+  <span class="pill">round <b id="round">-</b></span>
+  <span class="pill">seed <b id="seed">-</b></span>
+  <span class="pill">variant <b id="variant">-</b></span>
+  <span class="pill">verified <b id="verified">0</b></span>
+  <span class="pill">retried <b id="recovered">0</b></span>
+  <span class="pill">missed <b id="missed">0</b></span>
+  <span class="pill" id="mic-pill">voice <b id="mic">off</b></span>
+  <span class="pill"><a class="link" id="raw" href="/api/state" target="_blank">raw json</a></span>
+</header>
+
+<main>
+  <!-- left: setup -->
+  <div>
+    <div class="card">
+      <h2>environment setup</h2>
+      <div class="gate waiting" id="gate">
+        waiting for the environment to start. press <b>start environment</b> below, or run the
+        process with <b>--no-wait-for-start</b>.
+      </div>
+      <div class="body">
+        <label class="field"><span>variant</span>
+          <select id="variant-sel">
+            <option value="contained">contained - working area walled in</option>
+            <option value="open">open - no kerb, the control case</option>
+            <option value="out_of_reach">out_of_reach - two parts beyond the arm</option>
+          </select>
+        </label>
+        <label class="field"><span>camera</span>
+          <select id="camera-sel">
+            <option value="top">top - from the far side, over the arm</option>
+            <option value="side">side - robot's other side</option>
+            <option value="front">front - through the arm, the worst case</option>
+          </select>
+        </label>
+        <div class="row">
+          <label class="field" style="flex:1"><span>rounds</span><input id="rounds" value="1"></label>
+          <label class="field" style="flex:1"><span>seed</span><input id="seed-in" value="0"></label>
+        </div>
+        <div class="row">
+          <button class="primary" id="start">start environment</button>
+          <button id="next">next round</button>
+        </div>
+        <div class="row">
+          <button id="relook">re-look</button>
+          <button id="save">save frame</button>
+          <button id="stop">stop</button>
+        </div>
+        <div class="row">
+          <label style="flex:1"><input type="checkbox" id="voice" checked> listen to the
+            microphone</label>
+        </div>
+        <div class="hint">setup values are read when the environment starts; the buttons above
+          are live once it is running.</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>real-world preflight</h2>
+      <div class="body findings" id="findings"><span class="hint">no findings yet</span></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>round counters</h2>
+      <div class="body stats" id="stats"></div>
+    </div>
+  </div>
+
+  <!-- centre: the flow -->
+  <div class="card" id="flow">
+    <h2>decision path</h2>
+    <div class="body"><svg id="flow-svg" viewBox="0 0 780 1160"></svg></div>
+  </div>
+
+  <!-- right: camera, detections, voice, command, log -->
+  <div>
+    <div class="card">
+      <h2>camera</h2>
+      <div class="body">
+        <img id="frame" alt="latest annotated camera frame">
+        <div class="hint" id="frame-note" style="margin-top:6px">no frame yet</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>what perception sees</h2>
+      <div class="body"><table id="detections"></table></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>command</h2>
+      <div class="body">
+        <div class="row">
+          <input id="cmd" placeholder="pon el cubo rojo en la caja roja" style="flex:1">
+          <button class="primary" id="send">send</button>
+        </div>
+        <div class="row">
+          <button data-cmd="separa las piezas por colores">sort by colour</button>
+          <button data-cmd="pon el cubo rojo en la caja roja">red cube</button>
+          <button data-cmd="coge la bola verde">green ball</button>
+        </div>
+        <div class="hint" id="voice-note">voice off: type a command, or start the process with
+          --voice</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>log</h2>
+      <div class="body"><div id="log"></div></div>
+    </div>
+  </div>
+</main>
+
+<script>
+// One websocket, two message shapes: a JSON snapshot whenever anything changes, and a
+// binary JPEG immediately after a "frame" header. Polling /api/state is the fallback, used
+// until the socket opens, so a browser that blocks websockets still shows something.
+const SVG_NS = "http://www.w3.org/2000/svg";
+const COLORS = { idle: "#4a5164", active: "#4c9ffe", ok: "#43c07f", warn: "#e0a93a",
+                 fail: "#e2604f" };
+const SWATCH = { red: "#c0392b", green: "#27ae60", blue: "#2f6fd0", yellow: "#d8b13a",
+                 purple: "#8e5fd8", cyan: "#37b1c4", white: "#e8e8e8", black: "#303030",
+                 orange: "#e07b39", "": "#888" };
+
+let nodes = {}, edges = [], lastEventSeq = -1, frameUrl = null, ws = null, pollTimer = null;
+let simState = {};
+
+function el(id) { return document.getElementById(id); }
+function text(id, value) { el(id).textContent = value; }
+
+function fmt(metres) {
+  return (metres * 1000).toFixed(0) + " mm";
+}
+
+// ---- the flow diagram -----------------------------------------------------------
+// Laid out from the bus's own node list rather than from markup here, so the picture is
+// whatever the pipeline actually is. The spine runs down the left; the recovery node sits on
+// the right with dashed edges back to the camera and the planner, because that is the part of
+// this system a linear list cannot show.
+function buildFlow(nodeList, edgeList) {
+  const svg = el("flow-svg");
+  svg.textContent = "";
+  const spineX = 16, spineW = 372, nodeH = 52, gap = 34, branchX = 420, branchW = 344;
+  const pos = {};
+  let row = 0;
+  for (const node of nodeList) {
+    const branch = node.id === "recover";
+    pos[node.id] = {
+      x: branch ? branchX : spineX,
+      y: 14 + node.row * (nodeH + gap) - (branch ? 0 : 0),
+      w: branch ? branchW : spineW, h: nodeH
+    };
+    row = Math.max(row, node.row);
+  }
+  const height = 28 + (row + 1) * (nodeH + gap);
+
+  const defs = document.createElementNS(SVG_NS, "defs");
+  defs.innerHTML =
+    '<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" ' +
+    'orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#4a5164"/></marker>' +
+    '<marker id="arrow-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" ' +
+    'markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" ' +
+    'fill="#e0a93a"/></marker>';
+  svg.appendChild(defs);
+  svg.setAttribute("viewBox", `0 0 780 ${height}`);
+
+  for (const [from, to, label] of edgeList) {
+    const a = pos[from], b = pos[to];
+    if (!a || !b) continue;
+    const loop = from === "recover";
+    const path = document.createElementNS(SVG_NS, "path");
+    let d;
+    if (loop) {
+      // out of the right edge, up the right margin, into the target's right edge
+      const x = Math.max(a.x + a.w, b.x + b.w) + 22;
+      d = `M ${a.x + a.w} ${a.y + a.h / 2} H ${x} V ${b.y + b.h / 2} H ${b.x + b.w}`;
+      if (to === "report") d = `M ${a.x + a.w} ${a.y + a.h} V ${b.y + b.h / 2} H ${b.x + b.w}`;
+    } else if (a.x === b.x) {
+      const y = a.y + a.h;
+      const mid = y + gap / 2;
+      d = `M ${a.x + 22} ${y} V ${mid} H ${b.x + 22 + b.w / 2 - 22} V ${b.y}`;
+    } else {
+      const y1 = a.y + a.h / 2, y2 = b.y + b.h / 2;
+      d = `M ${a.x + a.w} ${y1} H ${b.x - 14} V ${y2} H ${b.x}`;
+    }
+    path.setAttribute("d", d);
+    path.setAttribute("class", loop ? "edge loop" : "edge");
+    path.setAttribute("marker-end", loop ? "url(#arrow-loop)" : "url(#arrow)");
+    svg.appendChild(path);
+    if (label) {
+      const t = document.createElementNS(SVG_NS, "text");
+      t.setAttribute("class", "edge-label");
+      const mx = loop ? (a.x + a.w + 26) : (a.x + 26);
+      const my = loop ? ((a.y + b.y) / 2 + a.h / 2) : (a.y + a.h + 12);
+      t.setAttribute("x", mx); t.setAttribute("y", my);
+      t.textContent = label;
+      svg.appendChild(t);
+    }
+  }
+
+  for (const node of nodeList) {
+    const box = pos[node.id];
+    const group = document.createElementNS(SVG_NS, "g");
+    group.setAttribute("class", "node-box");
+    group.dataset.id = node.id;
+    const rect = document.createElementNS(SVG_NS, "rect");
+    rect.setAttribute("x", box.x); rect.setAttribute("y", box.y);
+    rect.setAttribute("width", box.w); rect.setAttribute("height", box.h);
+    rect.setAttribute("rx", 6);
+    rect.setAttribute("fill", "#1f2531");
+    rect.setAttribute("stroke", COLORS.idle);
+    rect.setAttribute("stroke-width", 1.5);
+    const bar = document.createElementNS(SVG_NS, "rect");
+    bar.setAttribute("x", box.x); bar.setAttribute("y", box.y);
+    bar.setAttribute("width", 4); bar.setAttribute("height", box.h);
+    bar.setAttribute("rx", 2); bar.setAttribute("fill", COLORS.idle);
+    const title = document.createElementNS(SVG_NS, "text");
+    title.setAttribute("class", "node-label");
+    title.setAttribute("x", box.x + 14); title.setAttribute("y", box.y + 21);
+    title.textContent = node.title;
+    const note = document.createElementNS(SVG_NS, "text");
+    note.setAttribute("class", "node-note");
+    note.setAttribute("x", box.x + 14); note.setAttribute("y", box.y + 38);
+    note.textContent = truncate(node.detail, Math.floor(box.w / 6.1));
+    const live = document.createElementNS(SVG_NS, "text");
+    live.setAttribute("class", "node-note");
+    live.setAttribute("x", box.x + 14); live.setAttribute("y", box.y + 48);
+    live.textContent = "";
+    group.append(rect, bar, title, note, live);
+    group.addEventListener("click", () => filterLog(node.id));
+    svg.appendChild(group);
+    nodes[node.id] = { rect, bar, note, live, title };
+  }
+}
+
+function truncate(text, limit) {
+  const value = String(text || "");
+  return value.length > limit ? value.slice(0, limit - 1) + "…" : value;
+}
+
+function paintNodes(list) {
+  for (const node of list) {
+    const painted = nodes[node.id];
+    if (!painted) continue;
+    const colour = COLORS[node.state] || COLORS.idle;
+    painted.rect.setAttribute("stroke", colour);
+    painted.bar.setAttribute("fill", colour);
+    painted.rect.setAttribute("stroke-width", node.state === "active" ? 2.5 : 1.5);
+    const note = node.note ? " · " + node.note : "";
+    painted.live.textContent = truncate(node.state + note, Math.floor(
+      (node.id === "recover" ? 344 : 372) / 6.1));
+  }
+}
+
+// ---- panels ---------------------------------------------------------------------
+function paintState(state) {
+  simState = state || {};
+  text("phase", simState.phase ?? "-");
+  text("round", simState.round ?? "-");
+  text("seed", simState.seed ?? "-");
+  text("variant", simState.variant ?? "-");
+  text("verified", simState.verified ?? 0);
+  text("recovered", simState.recovered ?? 0);
+  text("missed", simState.missed ?? 0);
+  text("mic", simState.voice ?? "off");
+  el("mic-pill").style.color = simState.voice === "on" ? "var(--ok)" : "";
+  el("voice-note").textContent = simState.voice_note || (
+    simState.voice === "on" ? "listening for the next utterance" : "voice off");
+  text("frame-note", simState.frame_note || "no frame yet");
+
+  const gate = el("gate");
+  if (simState.phase === "setup") {
+    gate.className = "gate waiting";
+    gate.innerHTML = "environment not started. press <b>start environment</b> below.";
+  } else if (simState.phase === "starting") {
+    gate.className = "gate waiting";
+    gate.textContent = "Isaac is starting. this takes about two minutes on the first run.";
+  } else {
+    gate.className = "gate running";
+    gate.innerHTML = "environment running. commands typed here or spoken are queued " +
+      "until the arm is between moves.";
+  }
+
+  const stats = el("stats");
+  const rows = [
+    ["replanned", simState.replanned], ["regrasp", simState.regrasped],
+    ["re-aimed", simState.reaimed], ["tracked", simState.tracked],
+    ["grasps real", simState.real_grasps], ["grasps refused", simState.refused_grasps],
+    ["drops", simState.drops], ["frames", simState.frames]
+  ];
+  stats.innerHTML = rows.map(([k, v]) =>
+    `<div class="stat"><div class="n">${v ?? 0}</div><div class="k">${k}</div></div>`).join("");
+}
+
+function paintDetections(list) {
+  const table = el("detections");
+  if (!list || !list.length) {
+    table.innerHTML = '<tr><td class="hint">nothing detected</td></tr>';
+    return;
+  }
+  const rows = list.map(t => {
+    const where = t.pos ? `${(t.pos[0] * 1000).toFixed(0)}, ${(t.pos[1] * 1000).toFixed(0)} mm`
+                        : "no position";
+    return `<tr><td><span class="swatch" style="background:${SWATCH[t.color] || "#888"}"></span>` +
+      `${t.color || "?"} ${t.kind}</td><td>${where}</td>` +
+      `<td>${t.prim || ""}</td><td>${t.area ?? ""}px</td></tr>`;
+  });
+  table.innerHTML = `<tr><th>thing</th><th>x, y</th><th>part</th><th>area</th></tr>` +
+    rows.join("");
+}
+
+function paintFindings(list) {
+  const box = el("findings");
+  if (!list || !list.length) { box.innerHTML = '<span class="hint">no findings</span>'; return; }
+  box.innerHTML = list.map(([level, message]) =>
+    `<div class="finding ${level}"><span class="lv">${level}</span>${escape(message)}</div>`)
+    .join("");
+}
+
+function escape(text) {
+  return String(text).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+let logFilter = null;
+function filterLog(nodeId) {
+  logFilter = logFilter === nodeId ? null : nodeId;
+  el("log").innerHTML = "";
+  for (const event of lastEvents) appendEvent(event, true);
+}
+
+let lastEvents = [];
+function appendEvent(event, force) {
+  if (event.seq <= lastEventSeq && !force) return;
+  lastEventSeq = Math.max(lastEventSeq, event.seq);
+  lastEvents.push(event);
+  if (lastEvents.length > 400) lastEvents.shift();
+  if (logFilter && event.node !== logFilter) return;
+  const box = el("log");
+  const stamp = new Date((event.t || 0) * 1000).toLocaleTimeString();
+  const lines = String(event.message ?? "").split("\n");
+  lines.forEach((line, index) => {
+    const div = document.createElement("div");
+    div.className = event.level || "info";
+    const head = (index === 0)
+      ? `<span class="t">${stamp}</span> ${event.node ? `<span class="node">${event.node}</span> ` : ""}`
+      : "";
+    div.innerHTML = head + escape(line);
+    box.appendChild(div);
+  });
+  box.scrollTop = box.scrollHeight;
+}
+
+function onFrame(jpeg, meta) {
+  if (frameUrl) URL.revokeObjectURL(frameUrl);
+  frameUrl = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
+  el("frame").src = frameUrl;
+  if (meta && meta.note) text("frame-note", meta.note);
+}
+
+// ---- transport ------------------------------------------------------------------
+function applySnapshot(snap) {
+  if (!snap || snap.type === "frame") return;
+  if (snap.nodes) { if (!Object.keys(nodes).length) buildFlow(snap.nodes, snap.edges || []);
+                    paintNodes(snap.nodes); }
+  if (snap.state) paintState(snap.state);
+  if (snap.state && snap.state.detections !== undefined) paintDetections(snap.state.detections);
+  if (snap.state && snap.state.findings !== undefined) paintFindings(snap.state.findings);
+  for (const event of snap.events || []) appendEvent(event, false);
+}
+
+function connect() {
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${scheme}://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => {
+    setConn(true);
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  };
+  ws.onclose = () => { setConn(false); setTimeout(connect, 1500); startPolling(); };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (message) => {
+    if (typeof message.data === "string") {
+      const parsed = JSON.parse(message.data);
+      if (parsed.type === "frame") { pendingFrame = parsed; return; }
+      applySnapshot(parsed);
+    } else if (pendingFrame) {
+      onFrame(new Uint8Array(message.data), pendingFrame.meta);
+      pendingFrame = null;
+    }
+  };
+}
+let pendingFrame = null;
+
+function setConn(live) {
+  const dot = el("conn");
+  dot.className = "dot " + (live ? "live" : "dead");
+  text("conn-text", live ? "live" : "polling");
+}
+
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(async () => {
+    try {
+      applySnapshot(await (await fetch("/api/state")).json());
+      const image = await fetch("/api/frame.jpg");
+      if (image.ok) onFrame(await image.arrayBuffer(), null);
+    } catch (_) { /* the process may be between frames */ }
+  }, 1000);
+}
+
+function post(path, body) {
+  return fetch(path, { method: "POST", headers: { "content-type": "application/json" },
+                       body: JSON.stringify(body) }).then(r => r.json()).catch(() => null);
+}
+
+el("start").onclick = async () => {
+  await post("/api/env", { action: "start", variant: el("variant-sel").value,
+                           camera: el("camera-sel").value, rounds: Number(el("rounds").value),
+                           seed: Number(el("seed-in").value),
+                           voice: el("voice").checked });
+};
+el("next").onclick = () => post("/api/env", { action: "next" });
+el("relook").onclick = () => post("/api/env", { action: "relook" });
+el("save").onclick = () => post("/api/env", { action: "save" });
+el("stop").onclick = () => post("/api/env", { action: "stop" });
+el("send").onclick = () => {
+  const input = el("cmd");
+  if (input.value.trim()) { post("/api/command", { text: input.value.trim() }); input.value = ""; }
+};
+el("cmd").addEventListener("keydown", e => { if (e.key === "Enter") el("send").click(); });
+for (const button of document.querySelectorAll("button[data-cmd]")) {
+  button.onclick = () => { el("cmd").value = button.dataset.cmd; el("send").click(); };
+}
+
+fetch("/api/state").then(r => r.json()).then(applySnapshot).then(startPolling);
+connect();
+</script>
+</body>
+</html>

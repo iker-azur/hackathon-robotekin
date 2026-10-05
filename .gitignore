@@ -34,3 +34,4 @@ demos/04_perception/out/
 .idea/
 .DS_Store
 Thumbs.db
+demos/05_planner_and_executor/out11/
