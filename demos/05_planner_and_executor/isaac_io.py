@@ -390,6 +390,37 @@ def place_items(env, items: list[scene_spec.Item]) -> None:
     _rest(env, items)
 
 
+def capture_rgb(env, name: str) -> tuple[np.ndarray, CameraModel]:
+    """One rendered frame as BGR plus its camera, and deliberately no depth.
+
+    ``capture`` reads both buffers, and the depth half is a per-frame cost the dashboard's live
+    picture does not want: a GPU-to-CPU copy of a 640x480 buffer and then ``astype("float64")``,
+    which turns 307200 pixels into 2.4 MB of doubles for numbers the caller is going to
+    downscale to 384 px wide and JPEG. ``capture``'s docstring explains the render/read ordering
+    that has to be kept; this is that same sequence with the depth branch taken out.
+
+    It exists for ``cam_pump``, which runs *inside* the executor's motion loops - that is, between
+    two physics steps - at up to ``--cam-fps`` times a second. Anything it does not need is a
+    stall the arm pays for to put a thumbnail on a screen. Perception still gets the depth it
+    actually measures with, because it calls ``capture``.
+    """
+    sensor = env.scene[name]
+    env.sim.render()
+    sensor.update(env.physics_dt, force_recompute=True)
+
+    rgb = sensor.data.output["rgb"][0, ..., :3].detach().cpu().numpy()
+    bgr = rgb[..., ::-1].copy()  # the annotator gives RGB, OpenCV wants BGR
+    height, width = sensor.data.image_shape
+    camera = CameraModel(
+        pos_w=sensor.data.pos_w[0].detach().cpu().numpy().tolist(),
+        quat_wxyz=sensor.data.quat_w_world[0].detach().cpu().numpy().tolist(),
+        matrix=sensor.data.intrinsic_matrices[0].detach().cpu().numpy().tolist(),
+        width=width,
+        height=height,
+    )
+    return bgr, camera
+
+
 def capture(env, name: str) -> tuple[np.ndarray, np.ndarray | None, CameraModel]:
     """Render one frame from a camera sensor and read it as numpy.
 
