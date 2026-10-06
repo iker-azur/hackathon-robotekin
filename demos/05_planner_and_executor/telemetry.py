@@ -63,48 +63,48 @@ class Node:
 
 
 FLOW: tuple[Node, ...] = (
-    Node("setup", "Environment setup",
-         "variant, seed, camera, real materials, preflight", 0),
-    Node("input", "Command",
-         "spoken or typed, from the dashboard or the terminal", 1),
-    Node("understand", "Command model",
-         "sentence to intent, items and destination", 2),
-    Node("capture", "Camera",
-         "render one frame and read the sensor buffers", 3),
-    Node("perceive", "Perception",
-         "colour blobs to kinds, areas and table positions", 4),
-    Node("link", "Link",
-         "each perceived blob matched to the part it is", 5),
-    Node("ground", "Grounding",
-         "resolve the reference, ask when it is ambiguous, refuse what is out of reach", 6),
-    Node("plan", "Planning",
-         "poses and jaw commands, plus what could not be planned", 7),
-    Node("execute", "Execution",
-         "step by step, re-aiming from the camera while the arm moves", 8),
-    Node("verify", "Verification",
-         "did the part come to rest inside the tray it was sent to", 9),
-    Node("recover", "Retry / re-plan",
-         "re-look and try again, or refuse to fake a grasp", 10),
-    Node("report", "Report",
-         "verified, retried, missed, and what the round cost", 11),
+    Node("setup", "Entorno",
+         "variante, semilla, cámara, materiales reales, pre-vuelo", 0),
+    Node("input", "Comando",
+         "hablado o escrito, desde el panel o el terminal", 1),
+    Node("understand", "Clasificación",
+         "la frase pasa a intención, piezas y destino", 2),
+    Node("capture", "Cámara",
+         "renderiza un fotograma y lee los sensores", 3),
+    Node("perceive", "Percepción",
+         "de manchas de color a tipos, áreas y posiciones en la mesa", 4),
+    Node("link", "Enlace",
+         "cada mancha asociada con la pieza que es", 5),
+    Node("ground", "Resolución",
+         "resuelve la referencia, pregunta cuando hay ambigüedad, se niega a lo que no alcanza", 6),
+    Node("plan", "Plan",
+         "poses y órdenes de las mandíbulas, más lo que no se pudo planear", 7),
+    Node("execute", "Ejecución",
+         "paso a paso, re-apuntando con la cámara mientras el brazo se mueve", 8),
+    Node("verify", "Verificación",
+         "¿quedó la pieza dentro de la caja a la que se le envió?", 9),
+    Node("recover", "Reintento",
+         "re-mirar y probar otra vez, o negarse a fingir una sujeción", 10),
+    Node("report", "Informe",
+         "verificados, con reintento, fallidos, y lo que costó la ronda", 11),
 )
 
 # (from, to, label). The spine plus the two edges that make the recovery loop a loop.
 EDGES: tuple[tuple[str, str, str], ...] = (
     ("setup", "input", ""),
-    ("input", "understand", "sentence"),
-    ("understand", "capture", "look"),
-    ("capture", "perceive", "frame"),
-    ("perceive", "link", "blobs"),
-    ("link", "ground", "parts"),
-    ("ground", "plan", "targets"),
-    ("plan", "execute", "steps"),
-    ("execute", "verify", "motion"),
-    ("verify", "recover", "not inside"),
-    ("recover", "capture", "re-look"),
+    ("input", "understand", "frase"),
+    ("understand", "capture", "mirar"),
+    ("capture", "perceive", "fotograma"),
+    ("perceive", "link", "manchas"),
+    ("link", "ground", "piezas"),
+    ("ground", "plan", "objetivos"),
+    ("plan", "execute", "pasos"),
+    ("execute", "verify", "movimiento"),
+    ("verify", "recover", "no dentro"),
+    ("recover", "capture", "re-mirada"),
     ("recover", "plan", "re-plan"),
-    ("recover", "report", "gave up"),
-    ("verify", "report", "all inside"),
+    ("recover", "report", "rendido"),
+    ("verify", "report", "todas dentro"),
 )
 
 SPINE = tuple(node.id for node in FLOW)
@@ -121,6 +121,12 @@ class Bus:
     def __init__(self, history: int = 400):
         self._lock = threading.RLock()
         self._seq = 0
+        # Bumped by ``_wake``, so by every outbound call there is: a state merge and a camera
+        # frame move it just as much as a log line does. ``_seq`` cannot serve as the dashboard's
+        # "has anything changed" test, because it only counts log lines - two snapshots with the
+        # same ``_seq`` can still be different pictures, and the dashboard repainting on a
+        # signature that ignores that leaves stale numbers on screen.
+        self._rev = 0
         self._events: deque[dict] = deque(maxlen=history)
         self._nodes: dict[str, dict] = {
             node.id: {"id": node.id, "title": node.title, "detail": node.detail,
@@ -133,7 +139,8 @@ class Bus:
         self._frame: tuple[int, bytes, dict] | None = None
         # Unbounded on purpose. A command a person typed must never be dropped because the arm
         # is halfway through a pick; the demo drains it when it is ready.
-        self._commands: queue.Queue[str] = queue.Queue()
+        self._commands: queue.Queue[tuple[str, str]] = queue.Queue()
+        self._last_command_source = ""
         self._controls: queue.Queue[dict] = queue.Queue()
         self._gate = threading.Event()
 
@@ -204,6 +211,7 @@ class Bus:
         with self._lock:
             return {
                 "seq": self._seq,
+                "rev": self._rev,
                 "t": time.time(),
                 "nodes": [dict(box) for box in self._nodes.values()],
                 "edges": [list(edge) for edge in EDGES],
@@ -213,19 +221,51 @@ class Bus:
 
     # -- inbound ---------------------------------------------------------------
 
-    def submit(self, text: str) -> None:
-        """Queue a command from the dashboard."""
+    def submit(self, text: str, source: str = "dashboard") -> None:
+        """Queue a command, and say where it came from.
+
+        The queued sentence is published as state as well, because the browser has no other way
+        to know it was heard: the page sends the text, the HTTP call returns, and from that
+        moment the command is invisible until the robot's own loop gets round to it. Measured,
+        that wait is the whole of "I typed it and nothing happened". So the panel shows what is
+        sitting in the queue from the moment it arrives, which is also what tells somebody that
+        a second command typed while the first is running is not lost.
+
+        ``source`` exists because the terminal reads on its own thread (see
+        ``MonitoredRobot._terminal_reader``) and lands in this same queue, so the robot can no
+        longer tell the two apart by where it read them.
+        """
         text = (text or "").strip()
         if text:
-            self._commands.put(text)
+            self._commands.put((text, source))
+            self.set_state(queued=text, queued_from=source)
+
+    def command_source(self) -> str:
+        """Where the command ``take_command`` last returned came from."""
+        return self._last_command_source
+
+    def control_pending(self) -> bool:
+        """Is a control queued? Answers without consuming it.
+
+        ``Queue.empty`` is only a snapshot, which is all that is wanted here: the caller uses
+        this to decide whether it is safe to block on something else without swallowing a
+        request the browser made.
+        """
+        return not self._controls.empty()
 
     def take_command(self, timeout: float | None = None) -> str | None:
-        """The next queued command, or None if none arrived in time."""
+        """The next queued command, or None if none arrived in time.
+
+        The origin is remembered rather than returned, because every caller wants the sentence
+        and only the log wants to know which of the three inputs it came from.
+        """
         try:
-            return self._commands.get(timeout=timeout) if timeout else \
-                self._commands.get_nowait()
+            text, source = (self._commands.get(timeout=timeout) if timeout else
+                            self._commands.get_nowait())
         except queue.Empty:
             return None
+        self._last_command_source = source
+        return text
 
     def send_control(self, action: str, **params) -> None:
         """Queue a control action: re-look, next round, save frame, stop."""
@@ -273,7 +313,14 @@ class Bus:
                 self._hooks.remove(hook)
 
     def _wake(self) -> None:
+        """Notify the listeners that something changed, and stamp the change.
+
+        Every outbound method ends here, so this is the one place that has to know a change
+        happened - which is what makes ``_rev`` an honest "is this snapshot different from the
+        last one" answer for the dashboard, including for the changes that add no log line.
+        """
         with self._lock:
+            self._rev += 1
             hooks = list(self._hooks)
         for hook in hooks:
             try:

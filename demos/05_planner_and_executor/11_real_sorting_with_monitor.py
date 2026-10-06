@@ -52,11 +52,13 @@ as ``q`` in the terminal does.
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib.util
 import math
 import random
 import sys
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -384,6 +386,21 @@ class StrictExecutor(executor_module.Executor):
         # aperture over the part, and descents where it stopped making progress (a joint limit).
         self.corrected = 0
         self.correcting = True
+        # Set by demo 11's robot: called mid-motion to publish a live frame. Kept as a plain
+        # attribute rather than a hook list because there is exactly one camera on this bench.
+        self.frame_hook = None
+        # Parts measured ungraspable during this command: the geometry at the moment the jaws
+        # shut said they cannot be held by anything (on their edge, wider than the aperture).
+        # The demo's own loop re-plans from a fresh look every pass, so without this set the
+        # same part is re-picked every pass of the sort and tips itself worse each time -
+        # measured, five attempts, five refusals, nothing sorted. Consumed by the robot's
+        # ``before_plan``, which takes these parts out of the fresh scene.
+        self.impossible: set[str] = set()
+        # Refusals by part within the current command. A part that was refused twice stops
+        # being re-planned: the measured behaviour of a marginal grip is that each attempt
+        # tips the part further off its face, so attempt three is not a second chance but
+        # the mechanism of the failure itself.
+        self.failures: dict[str, int] = {}
         # Geometry read at the end of the last ``close``, which is the last instant at which the
         # part and the jaws are in the same place.
         self.at_close = None
@@ -411,6 +428,8 @@ class StrictExecutor(executor_module.Executor):
             kwargs["steps"] = CLOSE_SETTLE_STEPS
         try:
             result = super().do(*args, **kwargs)
+            if self.frame_hook is not None:
+                self.frame_hook()
             if args and args[0] == "close" and result.ok:
                 # Measured here because this is the last moment before the lift: afterwards the arm
                 # has risen 75 mm and any geometry read later describes where the gripper *is*,
@@ -420,6 +439,16 @@ class StrictExecutor(executor_module.Executor):
         except GraspRefused:
             action = args[0] if args else kwargs.get("action", "?")
             self.refused += 1
+            prim = kwargs.get("prim")
+            geometry = self.at_close or self.part_geometry(prim)
+            if prim:
+                self.failures[prim] = self.failures.get(prim, 0) + 1
+                if geometry is not None and geometry.get("fits") is False:
+                    # Not a marginal miss: the part's footprint across the jaws is wider
+                    # than the aperture allows, so no attempt of any force can hold it.
+                    # Recorded so the re-planning loop does not spend the rest of the
+                    # command on it.
+                    self.impossible.add(prim)
             return executor_module.StepResult(
                 action=action, ok=False, grasp="stale",
                 note=(f"the jaws closed and the part was not held - friction did not carry it. "
@@ -643,6 +672,8 @@ class StrictExecutor(executor_module.Executor):
                                                  f"{corrections} correction(s), so this pose is "
                                                  f"outside what the arm can hold it at - the "
                                                  f"jaws cannot reach it from here")
+                if self.frame_hook is not None:
+                    self.frame_hook()
                 self.current = torch.tensor([[command[0], command[1], z]], device=self.device)
                 self.env.step(self._action(self.current, grip))
 
@@ -702,31 +733,50 @@ class ModelSpy:
     def parse(self, text: str, *args, **kwargs) -> dict:
         self._bus.node("understand", telemetry.ACTIVE, text)
         command = self._model.parse(text, *args, **kwargs)
+        # The dashboard's classification card wants the whole verdict, not a summary string:
+        # intent, what to act on (each item's kind and colour, and its own destination when the
+        # sentence gave one), the shared destination and the sort key. ``place`` on the command
+        # is what the sentence as a whole was aiming at, ``sort_by`` what a sort ordered by.
+        self._bus.set_state(classification={
+            "intent": command.get("intent"),
+            "items": [{"kind": item.get("kind"), "color": item.get("color"),
+                       "count": item.get("count"), "place": item.get("place")}
+                      for item in command.get("items", [])],
+            "place": command.get("place"),
+            "sort_by": command.get("sort_by"),
+        })
         items = " ".join(str(item.get("kind")) for item in command.get("items", []))
         self._bus.node("understand", telemetry.OK,
-                       f"{command.get('intent')} [{items.strip() or 'no items'}]")
+                       f"{command.get('intent')} [{items.strip() or 'sin piezas'}]")
         return command
 
 
 # Every robot that wants to hear about planning. The wrapper is installed once, the first time a
 # robot is built, and is a plain delegation around ``planner.plan_command``.
 _PLAN_SPIES: list = []
+# Robots that may rewrite the scene a plan is built from (each one in turn). Separate registry
+# from the spies so a robot that only reads never has to know about the one that writes.
+_PLAN_FILTERS: list = []
 
 
 def install_plan_spy() -> None:
-    """Let demo 11 see every plan demo 10 builds, without editing ``planner``.
+    """Let demo 11 see - and shape - every plan demo 10 builds, without editing ``planner``.
 
     Monkeypatching a shared module is normally the wrong answer, and it is the right one here for
     two reasons: demo 11 owns this process (demo 10 is loaded into it, not the reverse), and the
     alternative - reimplementing ``handle`` - would duplicate the single piece of this system
-    that is hardest to get right. The wrapper does nothing but call through and tell the robots.
+    that is hardest to get right. The wrapper filters the scene first (parts measured
+    ungraspable), does nothing else, then calls through and tells the robots.
     """
     if getattr(planner.plan_command, "_demo11_spy", False):
         return
     original = planner.plan_command
 
     def spy(command, scene, offset=(0.0, 0.0)):
-        plan = original(command, scene, offset)
+        shaped = scene
+        for robot in list(_PLAN_FILTERS):
+            shaped = robot.before_plan(command, shaped, offset)
+        plan = original(command, shaped, offset)
         for robot in list(_PLAN_SPIES):
             robot.on_plan(plan)
         return plan
@@ -781,6 +831,27 @@ GRASP_ENVELOPE_X = (0.27, 0.33)
 # envelope on a third of rounds - and a part outside it is a part the arm cannot hold.
 DEFAULT_SPREAD_M = 0.010
 
+# The live camera feed between annotated looks. Measured, the re-aim sightings during a descent
+# already publish an annotated frame every ``LOOK_EVERY`` steps; between those, and during
+# moves without a tracking target, the picture used to go stale. The pump simply renders and
+# publishes a downscaled raw frame whenever the previous one is older than 1/fps - a raw frame
+# costs a render, not a perception pass.
+#
+# Three, not five, and the reason is that this runs between two physics steps. Every published
+# frame is one ``sim.render()`` the arm pays for in wall-clock time, and a descent is short: at
+# 3 fps a typical descent gets several frames, at 5 the render starts costing more than the
+# picture is worth. The dashboard's own ``fps`` readout shows what the chosen rate really
+# delivers, so this is a default to change rather than a rule - ``--cam-fps 0`` turns it off.
+CAM_FPS_DEFAULT = 3.0
+FRAME_PUMP_WIDTH = 384
+FRAME_PUMP_QUALITY = 70
+
+# After how many refused picks a part stops being planned again within the same command.
+# Demo 10 gives every object 2 go(s) in the sort loop; this is the same budget seen from the
+# executor's side, and it is what stops the third attempt - the one the refusal log measured
+# tipping the part further off its face - from happening at all.
+MAX_PICK_FAILURES = 2
+
 
 def clamp_layout(items, work_x=DEFAULT_WORK_X, half_width_fn=None) -> list:
     """Move every loose part's x into ``work_x``, keeping its order and leaving trays alone.
@@ -823,6 +894,15 @@ class MonitoredRobot(load_demo10().Robot):
         self.advance = False
         self.quit = False
         self.web_input = bool(args.web) and not sys.stdin.isatty()
+        # The thread that reads typed commands, if there is a terminal to read. Started from
+        # ``main`` once the start gate is open, so it never competes with
+        # ``enter_starts_the_run`` for the same stdin.
+        self.keyboard = None
+        # A raw frame between the annotated looks, so the picture moves at something a person
+        # reads as live while the arm travels. 0 disables the pump entirely.
+        self.cam_fps = float(getattr(args, "cam_fps", 0.0) or 0.0)
+        self._last_pump = 0.0
+        self._plan_n = 0
         super().__init__(env, sensor, args, viewer=viewer, model=model)
         # Its own out/ folder: these frames are annotated for the dashboard and saved on
         # request, and mixing them into demo 10's would make either run's folder a mixture.
@@ -830,10 +910,13 @@ class MonitoredRobot(load_demo10().Robot):
             HERE / "out11", every=args.save_every if args.save_every > 0 else 10 ** 9)
         self.bot = StrictExecutor(env, log=self.say, allow_kinematic=args.allow_kinematic)
         self.bot.log = self._step_logged
+        self.bot.frame_hook = self.cam_pump if self.cam_fps > 0.0 else None
         self.model = ModelSpy(model, bus)
         install_plan_spy()
         if self not in _PLAN_SPIES:
             _PLAN_SPIES.append(self)
+        if self not in _PLAN_FILTERS:
+            _PLAN_FILTERS.append(self)
 
     # -- output ----------------------------------------------------------------
 
@@ -881,6 +964,59 @@ class MonitoredRobot(load_demo10().Robot):
                                                               else "info"))
         return rows
 
+    def before_plan(self, command, scene, offset) -> object:
+        """Remove parts measured ungraspable from this pass's scene, and say so in Spanish.
+
+        The refusal log measured the pattern this avoids: a part that ends up on its edge
+        presents more across the jaws than they can ever open, every retry tips it further,
+        and the command's whole budget is spent on it - measured, five attempts, five
+        refusals, nothing sorted. So, once a descent's close-time geometry says the grip is
+        impossible, the part leaves the fresh scene and the command re-plans around it. The
+        set is cleared per command in ``handle``: between commands the park sweep moves
+        things, and a part that lies flat again is graspable again.
+        """
+        impossible = getattr(self.bot, "impossible", None) or set()
+        failures = getattr(self.bot, "failures", None) or {}
+        prims = set(impossible) | {p for p, n in failures.items()
+                                   if n >= MAX_PICK_FAILURES}
+        if not prims or scene is None:
+            return scene
+        fresh = copy.deepcopy(scene)
+        keep = []
+        dropped = []
+        for thing in fresh.objects:
+            if thing.pos_m is None:
+                keep.append(thing)
+                continue
+            prim = self._prim_of(thing)
+            if prim in prims:
+                dropped.append(prim)
+                continue
+            keep.append(thing)
+        if not dropped:
+            return scene
+        fresh.objects = keep
+        reasons = [
+            (f"{prim} de canto, sin ninguna fuerza posible entre las mordazas"
+             if prim in impossible else
+             f"{prim} tras {failures.get(prim, 0)} sujeción(es) fallidas")
+            for prim in dropped]
+        self.say("  demo 11: " + "; ".join(reasons) +
+                 "; se sacan del plan de esta pasada y el comando sigue con lo demás")
+        return fresh
+
+    def _prim_of(self, thing) -> str | None:
+        """The known part a perceived blob is standing on, matched by position as ``link`` does."""
+        tolerance = getattr(getattr(self, "demo10", None), "LINK_TOLERANCE_M", 0.05)
+        best, best_gap = None, tolerance
+        for item in self.layout:
+            if item.container:
+                continue
+            gap = math.dist(thing.pos_m[:2], (item.x, item.y))
+            if gap < best_gap:
+                best, best_gap = item, gap
+        return best.prim if best else None
+
     def on_plan(self, plan) -> None:
         """Report what grounding and planning decided, from the plan itself.
 
@@ -897,8 +1033,36 @@ class MonitoredRobot(load_demo10().Robot):
             self.bus.node("ground", telemetry.OK,
                           f"{len(plan.picks)} pick(s) resolved to {len(plan.places)} "
                           f"destination(s)")
-        if plan.moves:
-            self.bus.node("plan", telemetry.OK, plan.summary)
+        # A plan that did not move still has something to say in the plan card - a question or
+        # an unresolved reference is what the plan is that round - so both shapes publish.
+        note = ""
+        if plan.question:
+            line = next(iter(plan.question.values()))
+            note = f"pregunta: {line}"
+        elif plan.unresolved:
+            note = "; ".join(plan.unresolved)
+        if plan.moves or note:
+            self._publish_plan(plan, note=note)
+
+    def _publish_plan(self, plan, note: str = "", increment: bool = True) -> None:
+        """The plan the dashboard decides with, as data rather than prose.
+
+        Published on every plan build (initial or re-planned, via ``on_plan``) and again when
+        execution starts, because ``_release_adjusted`` may have raised the release heights
+        after the last build - the picture must show the plan that will actually be run.
+        """
+        if increment:
+            self._plan_n += 1
+        self.bus.set_state(plan={
+            "n": self._plan_n,
+            "intent": getattr(plan, "intent", ""),
+            "note": note,
+            "picks": [str(pick) for pick in getattr(plan, "picks", [])],
+            "steps": [{"action": step.action, "note": step.note,
+                       "pose": None if step.pose is None else
+                       [float(v) for v in step.pose]}
+                      for step in plan.steps],
+        })
 
     # -- perception ------------------------------------------------------------
 
@@ -943,8 +1107,46 @@ class MonitoredRobot(load_demo10().Robot):
             ok, encoded = cv2.imencode(".jpg", self.shown,
                                        [int(cv2.IMWRITE_JPEG_QUALITY), FRAME_JPEG_QUALITY])
             if ok:
-                self.bus.put_frame(encoded.tobytes(), {"note": note})
+                self.bus.put_frame(encoded.tobytes(), {"note": note, "annotated": True})
         except Exception:  # noqa: BLE001 - encoding is a convenience, never a requirement
+            return
+
+    def cam_pump(self) -> None:
+        """A raw frame while the arm moves, throttled to ``cam_fps``.
+
+        The annotated frames come only from ``look()``, which is a whole perception pass on
+        top of the render - several hundred milliseconds the descent does not owe the camera.
+        The pump is the cheap one: render, read the sensor buffer, downscale, encode, publish.
+        It is called from inside the executor's own motion loops and from ``keys()``, always on
+        the main thread where rendering is allowed, and never raises.
+
+        **This is the most expensive thing the dashboard asks the simulator to do, so it is
+        built to ask for as little as possible.** ``isaac_io.capture_rgb`` rather than
+        ``capture``: the depth buffer is a second GPU-to-CPU copy plus a float64 conversion of
+        2.4 MB, for a picture that ends up 384 px wide and JPEG-encoded. The render itself is
+        not optional - there is no new picture without one - which is why the default rate is
+        ``CAM_FPS_DEFAULT`` and not more: a descent is a few hundred steps of Python between
+        physics calls, and spending a render on every twentieth of them is visible as the arm
+        hesitating. ``--cam-fps 0`` turns the pump off and leaves only the annotated looks.
+        """
+        if self.cam_fps <= 0.0:
+            return
+        now = time.monotonic()
+        if now - self._last_pump < 1.0 / self.cam_fps:
+            return
+        self._last_pump = now
+        try:
+            import cv2
+
+            image, _camera = isaac_io.capture_rgb(self.env, self.sensor)
+            height, width = image.shape[:2]
+            small = cv2.resize(image, (FRAME_PUMP_WIDTH,
+                                       max(1, int(FRAME_PUMP_WIDTH * height / width))))
+            ok, encoded = cv2.imencode(".jpg", small,
+                                       [int(cv2.IMWRITE_JPEG_QUALITY), FRAME_PUMP_QUALITY])
+            if ok:
+                self.bus.put_frame(encoded.tobytes(), {"note": "en vivo", "annotated": False})
+        except Exception:  # noqa: BLE001 - a lost frame must never stop a descent
             return
 
     def link(self, seen):
@@ -1000,6 +1202,7 @@ class MonitoredRobot(load_demo10().Robot):
 
     def run_plan(self, plan, premise, command):
         plan = self._release_adjusted(plan)
+        self._publish_plan(plan, note="", increment=False)
         for step in plan.steps:
             pose = "" if step.pose is None else " ".join(f"{v:+.3f}" for v in step.pose)
             self.bus.log(f"    plan: {step.action:<8} {step.note:<34} {pose}", node="plan")
@@ -1022,8 +1225,21 @@ class MonitoredRobot(load_demo10().Robot):
         return run
 
     def _retry_one(self, prim: str) -> bool:
+        """One masked retry: the arm is painted out of the frame for the whole approach.
+
+        Without the mask the retry kept losing its own target - measured, the log repeatedly
+        said "lost sight of {prim} on the way in" for a part the camera had just seen, because
+        the unmasked gripper clipped its blob from above and the tracker refused the sighting.
+        ``run_plan`` masks for its own descents; the retry is driven from outside that, so it
+        has to do it itself.
+        """
         self.bus.node("recover", telemetry.ACTIVE, f"re-picking {prim}")
-        done = super()._retry_one(prim)
+        was = getattr(self, "mask_arm", False)
+        self.mask_arm = True
+        try:
+            done = super()._retry_one(prim)
+        finally:
+            self.mask_arm = was
         self.bus.node("recover", telemetry.OK if done else telemetry.FAIL,
                       f"{prim} {'re-placed' if done else 'could not be re-placed'}")
         return done
@@ -1055,6 +1271,10 @@ class MonitoredRobot(load_demo10().Robot):
         if text.lower() in self.demo10.QUIT_WORDS:
             self.quit = True
             return False
+        # A new command is a new chance for parts that failed last time: the park sweep moves
+        # things down between commands, and a part lying flat is a part the jaws can hold.
+        self.bot.impossible.clear()
+        self.bot.failures.clear()
         telemetry.reset_nodes(self.bus)
         self.bus.node("input", telemetry.ACTIVE, text)
         self.bus.set_state(phase="command", command=text)
@@ -1063,33 +1283,88 @@ class MonitoredRobot(load_demo10().Robot):
     def ask(self) -> str:
         """One command, from the browser, the microphone or the keyboard - in that order.
 
-        The browser is polled first and briefly, because a person watching a demo in a browser
-        should not have to guess whether the robot is listening. With ``--web`` and no terminal
-        (a service, a container, ``--no-viewer`` under a scheduler) the wait is on the browser
-        alone and is therefore also how ``q`` and "next round" get through with no keyboard at
-        all.
+        All three arrive through one queue, so this only ever waits: the browser and the
+        microphone are polled, and the keyboard is read on its own thread by
+        ``_terminal_reader``. The reason is a measurement, and the shape of the bug is that
+        nothing was ever *lost* - it was simply never looked at.
+
+        *It quit the run instead of waiting.* ``take_command(timeout=None)`` means "do not
+        block" in ``Bus``, so with no terminal to fall back on, one empty poll returned the
+        literal string ``"quit"`` - which ``handle`` reads as the quit word and stops the run.
+        A dashboard-only deployment could therefore never wait for a command: the moment the
+        person finished reading the setup sheet and had not typed yet, the demo ended.
+
+        *A browser command waited behind the keyboard.* The 0.2 s poll came first and then the
+        robot fell straight through to ``input()``, which blocks until a key is pressed. So a
+        sentence typed in the browser sat in the queue until somebody also pressed Enter in the
+        terminal - measured, ``ask`` returned the terminal's own answer while the browser's
+        command was still waiting. With ``--voice`` the wait was the length of the recording,
+        which is why the browser is checked again after the microphone.
+
+        Either way the page showed no sign of any of it, which is what made it read as a broken
+        server rather than as a slow one.
         """
-        text = self.bus.take_command(timeout=WEB_COMMAND_POLL_S)
-        if text:
-            self.bus.node("input", telemetry.ACTIVE, f"from the dashboard: {text}")
+        if not self.web_input and self.voice is None and self.keyboard is None:
+            # No dashboard, no microphone and no keyboard reader: the only way in is the
+            # terminal, read synchronously here.
+            text = super().ask()
+            self.bus.set_state(command_src="terminal")
             return text
 
         if self.voice is not None:
-            self.bus.node("input", telemetry.ACTIVE, "listening")
+            self.bus.node("input", telemetry.ACTIVE, "escuchando")
             self.say("  listening...")
             heard = self.voice.listen()
             self.bus.log(f"  heard: {heard}" if heard else "  heard nothing")
             if heard:
                 self.bus.node("input", telemetry.OK, heard)
+                self.bus.set_state(command_src="voice")
                 return heard
 
-        if self.web_input:
-            self.bus.set_state(phase="waiting", voice_note="waiting for a command in the browser")
-            self.bus.node("input", telemetry.ACTIVE, "waiting for the browser")
-            text = self.bus.take_command(timeout=None)
-            return text or "quit"
+        return self._wait_for_command()
 
-        return super().ask()
+    def _wait_for_command(self) -> str:
+        """Block until a command arrives from anywhere, and say where it came from.
+
+        With no keyboard and no microphone this is the only place a command can come from, so it
+        is a real wait: a timed poll that gave up was read as ``"quit"`` and ended the run.
+
+        The panel's other buttons are answered here rather than left to ``keys()``, because
+        ``keys()`` only runs between two executor steps and there are no steps to run while this
+        loop is waiting. ``next round`` returns an empty sentence, which ``handle`` ignores and
+        the round loop then sees as ``advance``; ``stop`` returns the quit word, the same one
+        the keyboard uses. Controls are only taken when one is actually queued, so nothing is
+        swallowed by the wait.
+        """
+        self.bus.set_state(phase="waiting")
+        if self.web_input:
+            self.bus.set_state(voice_note="hay una orden esperando en el panel")
+        self.bus.node("input", telemetry.ACTIVE,
+                      "esperando al panel" if self.web_input else "esperando una orden")
+        while True:
+            text = self.bus.take_command(timeout=WEB_COMMAND_POLL_S)
+            if text:
+                source = self.bus.command_source()
+                where = {"terminal": "el terminal", "voice": "la voz"}.get(source, "el panel")
+                self.bus.node("input", telemetry.ACTIVE, f"desde {where}: {text}")
+                self.bus.set_state(command_src=source, queued="", phase="command")
+                return text
+            if not self.bus.control_pending():
+                continue
+            control = self.bus.take_control() or {}
+            action = str(control.get("action") or "")
+            if action == "stop":
+                self.bus.log("  el panel ha pedido parar", level="warn")
+                return "quit"
+            if action == "next":
+                self.bus.log("  el panel ha pedido la siguiente ronda")
+                self.advance = True
+                # An empty sentence is a no-op for ``handle``, which returns to the round loop
+                # and finds ``advance`` set. Anything else here would run a command nobody asked
+                # for just to get out of the wait.
+                return ""
+            self.bus.log(f"  el panel ha pedido {action!r} mientras esperaba una orden; "
+                         f"se atiende en el siguiente paso", level="warn")
 
     def keys(self) -> set[str]:
         """Viewer keys, plus anything the dashboard asked for.
@@ -1100,6 +1375,7 @@ class MonitoredRobot(load_demo10().Robot):
         are safe to perform between two steps.
         """
         pressed = set(super().keys())
+        self.cam_pump()
         while True:
             control = self.bus.take_control()
             if control is None:
@@ -1138,6 +1414,64 @@ class MonitoredRobot(load_demo10().Robot):
 # --------------------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------------------
+
+
+def apply_start_params(args, bus: telemetry.Bus) -> None:
+    """Take the variant/camera/rounds/seed the dashboard chose, by overriding the CLI.
+
+    The start button sends its settings along with the go-ahead, and the loop waiting on
+    ``wait_start`` drains the controls on its side, so ``keys()`` never sees the start request
+    twice. Only known fields are applied: an unknown key must be a bug in the dashboard, not a
+    silent ``setattr`` on the argument namespace.
+    """
+    params = {}
+    while True:
+        control = bus.take_control()
+        if control is None:
+            break
+        if control.get("action") == "start":
+            params = control.get("params") or {}
+    for key in ("variant", "camera", "rounds", "seed"):
+        if key in params:
+            try:
+                setattr(args, key, type(getattr(args, key))(params[key]))
+            except (TypeError, ValueError):
+                bus.log(f"  the dashboard's {key} = {params[key]!r} is not a valid value",
+                        level="warn")
+
+
+def _terminal_reader(bus: telemetry.Bus) -> threading.Thread | None:
+    """Read typed commands on their own thread, into the same queue as the browser.
+
+    **Without this, a sentence typed in the browser waits for somebody to press Enter in the
+    terminal.** ``ask`` used to poll the bus for 0.2 s and then fall through to ``input()``, and
+    ``input()`` blocks until a key is pressed - so in a run started from a terminal, which is the
+    usual way to start it, the browser's command sat in the queue indefinitely. Measured: with
+    the browser command queued, ``ask`` still returned the terminal's own answer. From the
+    browser that is indistinguishable from a server that dropped it.
+
+    So the keyboard is read here instead, on a daemon thread, and everything arrives at
+    ``ask`` through one queue. ``enter_starts_the_run`` already uses this pattern for the same
+    reason and with the same property: a daemon thread blocked in ``input()`` does not hold up
+    interpreter shutdown. Nothing is started when there is no terminal - ``web_input`` covers
+    that case and ``ask`` waits on the dashboard there.
+    """
+    if not sys.stdin.isatty():
+        return None
+
+    def read() -> None:
+        while True:
+            try:
+                line = input("> ")
+            except (EOFError, KeyboardInterrupt):
+                bus.submit("quit", source="terminal")
+                return
+            if line.strip():
+                bus.submit(line, source="terminal")
+
+    thread = threading.Thread(target=read, name="terminal-commands", daemon=True)
+    thread.start()
+    return thread
 
 
 def enter_starts_the_run(bus: telemetry.Bus) -> threading.Thread | None:
@@ -1208,6 +1542,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-wait-for-start", dest="wait_for_start", action="store_false",
                         default=True,
                         help="start Isaac immediately instead of waiting for the dashboard")
+    parser.add_argument("--cam-fps", type=float, default=CAM_FPS_DEFAULT, metavar="FPS",
+                        help="raw live frames between annotated looks, published while the arm "
+                             "moves (0 = annotated looks only). Each one is a render the "
+                             "simulation does between two physics steps, so this trades the "
+                             "picture against how fast the arm actually moves")
     parser.add_argument("--start-timeout", type=float, default=0.0, metavar="S",
                         help="give up waiting for the dashboard after S seconds (0 = wait for "
                              "ever)")
@@ -1284,6 +1623,7 @@ def main() -> int:
         print("  waiting for the start command there, or press Enter here", flush=True)
         enter_starts_the_run(bus)
         bus.wait_start(timeout=args.start_timeout or None)
+        apply_start_params(args, bus)
 
     # The command model before the simulator, and the microphone with it. Loading a model after
     # Isaac takes 0xC0000005 inside gliner2's from_pretrained, and two heavy native libraries
@@ -1355,6 +1695,10 @@ def main() -> int:
         if args.variant == "out_of_reach":
             robot.base = layout
         robot.voice = listener
+        # The keyboard joins the same queue as the browser, read on its own thread. Started
+        # here, after the start gate: ``enter_starts_the_run`` has already had stdin to itself
+        # and two threads calling ``input()`` is not a thing to do on purpose.
+        robot.keyboard = _terminal_reader(bus) if not args.text else None
         bus.set_state(phase="ready", sim="running")
         bus.node("setup", telemetry.OK, f"Isaac running; variant {args.variant}, camera "
                                         f"{args.camera}")
@@ -1394,6 +1738,8 @@ def main() -> int:
                 if queue is not None and not queue:
                     break
                 text = queue.pop(0) if queue is not None else robot.ask()
+                if queue is not None:
+                    bus.set_state(command_src="script")
                 if text:
                     robot.say(f"\n> {text}")
                 if not robot.handle(text):
