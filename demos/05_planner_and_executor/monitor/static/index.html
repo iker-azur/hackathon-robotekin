@@ -1,318 +1,445 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>leisaac demo 11 - command to motion</title>
+<title>demo 11 - del comando al movimiento</title>
 <style>
   :root {
-    --bg: #10131a;
-    --panel: #181c26;
-    --panel-2: #1f2531;
-    --line: #2b3242;
-    --text: #dfe4ee;
-    --muted: #8b93a7;
-    --idle: #4a5164;
-    --active: #4c9ffe;
-    --ok: #43c07f;
-    --warn: #e0a93a;
-    --fail: #e2604f;
-    --accent: #7f6cf0;
+    --bg: #10131a; --panel: #181c26; --panel-2: #1f2531; --line: #2b3242;
+    --text: #dfe4ee; --muted: #8b93a7; --idle: #4a5164; --active: #4c9ffe;
+    --ok: #43c07f; --warn: #e0a93a; --fail: #e2604f; --accent: #7f6cf0;
   }
   * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 13px/1.45 "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
-  }
-  header {
-    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
-    position: sticky; top: 0; z-index: 10;
-  }
+  html, body { height: 100%; overflow: hidden; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 13px/1.45 "SF Mono", "Cascadia Mono", Consolas, monospace;
+         display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+           background: var(--panel); border-bottom: 1px solid var(--line); flex: 0 0 auto; }
   header h1 { font-size: 14px; margin: 0; letter-spacing: .04em; }
   header h1 small { color: var(--muted); font-weight: normal; margin-left: 8px; }
-  .pill {
-    padding: 2px 9px; border-radius: 10px; background: var(--panel-2);
-    border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
-  }
+  .pill { padding: 2px 9px; border-radius: 10px; background: var(--panel-2);
+          border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
   .pill b { color: var(--text); font-weight: 600; }
-  .link { color: var(--active); text-decoration: none; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px;
          background: var(--idle); vertical-align: middle; }
   .dot.live { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
   .dot.dead { background: var(--fail); }
-  main { display: grid; grid-template-columns: 320px 1fr 360px; gap: 12px; padding: 12px;
-         align-items: start; }
-  @media (max-width: 1200px) { main { grid-template-columns: 1fr; } }
+  main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 1fr 400px;
+         gap: 10px; padding: 10px; }
+  .col { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-          overflow: hidden; }
-  .card > h2 {
-    margin: 0; padding: 8px 12px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
-    color: var(--muted); background: var(--panel-2); border-bottom: 1px solid var(--line);
-  }
-  .card > .body { padding: 10px 12px; }
+          display: flex; flex-direction: column; min-height: 0; }
+  .card > h2 { margin: 0; padding: 7px 12px; font-size: 11px; letter-spacing: .1em;
+               text-transform: uppercase; color: var(--muted); background: var(--panel-2);
+               border-bottom: 1px solid var(--line); flex: 0 0 auto;
+               display: flex; justify-content: space-between; align-items: center; }
+  .card > .body { padding: 10px 12px; overflow-y: auto; min-height: 0; }
   .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
   .row:last-child { margin-bottom: 0; }
-  label.field { display: block; margin-bottom: 8px; }
+  label.field { display: block; margin-bottom: 8px; min-width: 110px; flex: 1; }
   label.field span { display: block; color: var(--muted); margin-bottom: 3px; }
-  input, select, button, textarea {
-    font: inherit; color: var(--text); background: var(--panel-2);
-    border: 1px solid var(--line); border-radius: 5px; padding: 6px 8px; width: 100%;
-  }
-  input[type=checkbox] { width: auto; }
+  input, select, button { font: inherit; color: var(--text); background: var(--panel-2);
+                          border: 1px solid var(--line); border-radius: 5px; padding: 6px 8px;
+                          width: 100%; }
   button { cursor: pointer; width: auto; background: #263043; }
   button:hover { background: #2f3b52; }
   button.primary { background: var(--accent); border-color: #6a5ad8; color: #fff; }
   button.primary:hover { background: #8b79f5; }
-  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 6px; }
-  .stat { background: var(--panel-2); border-radius: 5px; padding: 6px 8px; }
-  .stat .n { font-size: 17px; }
-  .stat .k { color: var(--muted); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
-  #frame { width: 100%; display: block; background: #05070b; border-radius: 6px; }
+  button.mic.on { background: var(--fail); border-color: #b04a3c; color: #fff; }
+  #frame { width: 100%; display: block; background: #05070b; border-radius: 6px;
+           aspect-ratio: 16/9; object-fit: contain; }
   table { width: 100%; border-collapse: collapse; }
   td, th { text-align: left; padding: 2px 4px; border-bottom: 1px solid var(--line);
-           font-size: 12px; }
+           font-size: 12px; vertical-align: top; }
   th { color: var(--muted); font-weight: 500; }
   .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px;
             vertical-align: -1px; }
-  #log { height: 260px; overflow-y: auto; font-size: 12px; }
+  #log { height: 140px; overflow-y: auto; font-size: 12px; }
   #log div { padding: 1px 0; border-bottom: 1px solid #1d222d; white-space: pre-wrap;
              word-break: break-word; }
   #log .t { color: var(--idle); }
-  #log .warn { color: var(--warn); }
-  #log .fail { color: var(--fail); }
-  #log .ok { color: var(--ok); }
-  #log .node { color: var(--accent); }
-  .findings { font-size: 12px; max-height: 220px; overflow-y: auto; }
-  .finding { padding: 5px 0; border-bottom: 1px solid var(--line); }
+  #log .warn { color: var(--warn); } #log .fail { color: var(--fail); }
+  #log .ok { color: var(--ok); }   #log .node { color: var(--accent); }
+  .finding { padding: 4px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
   .finding .lv { font-size: 10px; letter-spacing: .08em; padding: 1px 5px; border-radius: 3px;
                  margin-right: 6px; }
   .finding.fail .lv { background: #40201d; color: var(--fail); }
   .finding.warn .lv { background: #3a3220; color: var(--warn); }
   .finding.note .lv { background: #24303f; color: var(--active); }
-  #flow { background: var(--panel); }
-  #flow .body { padding: 0; }
-  svg { display: block; width: 100%; height: auto; }
+  .gate { padding: 9px 12px; background: #1a2333; border-bottom: 1px solid var(--line);
+          flex: 0 0 auto; }
+  .gate.waiting { color: var(--warn); } .gate.running { color: var(--ok); }
+  .hint { color: var(--muted); font-size: 11px; font-weight: normal; letter-spacing: 0;
+          text-transform: none; }
+  .hidden { display: none !important; }
+
+  /* --- la ruta de decisión, con todo el mapa y el camino iluminado --- */
+  #route { flex: 1 1 auto; }
+  #route .body { padding: 0; }
+  svg#flow-svg { width: 100%; height: 100%; min-height: 0; display: block; }
   .node-box { cursor: pointer; }
   .node-box:hover rect { stroke: var(--text); }
   .node-label { font-size: 11px; fill: var(--text); pointer-events: none; }
-  .node-note { font-size: 10px; fill: var(--muted); pointer-events: none; }
-  .edge { fill: none; stroke: var(--line); stroke-width: 1.5; }
-  .edge.loop { stroke: var(--warn); stroke-dasharray: 4 3; }
-  .edge-label { font-size: 9px; fill: var(--muted); }
-  .gate { padding: 12px; background: #1a2333; border-bottom: 1px solid var(--line); }
-  .gate.waiting { color: var(--warn); }
-  .gate.running { color: var(--ok); }
-  .hidden { display: none !important; }
-  .hint { color: var(--muted); font-size: 11px; }
+  .node-note { font-size: 9.5px; fill: var(--muted); pointer-events: none; }
+  .edge { fill: none; stroke: #232936; stroke-width: 1.5; }
+  .edge-travelled { stroke: var(--active); }
+  .edge-loop { stroke: var(--warn); stroke-dasharray: 4 3; }
+  .edge-travelled-loop { stroke: var(--fail); stroke-dasharray: 4 3; }
+  .edge-label { font-size: 8.5px; fill: var(--muted); }
+  .edge-label.lit { fill: var(--active); }
+  /* contenido HTML vivo dentro de las cajas del mapa */
+  foreignObject { overflow: visible; }
+  .fo { box-sizing: border-box; width: 100%; height: 100%; padding: 0; margin: 0;
+        font: 12px/1.45 "SF Mono", "Cascadia Mono", Consolas, monospace; color: var(--text);
+        overflow: hidden; }
+  .fo.scroll { overflow-y: auto; }
+  .fo .big { font-size: 13.5px; line-height: 1.4; word-break: break-word; }
+
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; font-size: 11.5px;
+          border-radius: 11px; background: var(--panel-2); border: 1px solid var(--line);
+          color: var(--muted); white-space: nowrap; }
+  .chip .to { color: inherit; font-size: 11px; opacity: .75; }
+  .chip.sel { border-color: var(--accent); color: var(--text);
+              box-shadow: 0 0 7px rgba(124, 108, 240, .28); }
+  .chip.has { border-color: #2c5541; }
+  .chip .present { width: 6px; height: 6px; border-radius: 50%; background: var(--ok);
+                   flex: 0 0 auto; }
+  .chip.target { border-color: var(--ok); color: var(--text); }
+  .big { font-size: 14px; line-height: 1.45; word-break: break-word; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 10px;
+           border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+           margin-right: 5px; }
+  .badge.ok { color: var(--ok); border-color: #2c5541; }
+  .pasos td { font-size: 11.5px; padding: 1px 4px; }
+  .pasos .acc { color: var(--accent); white-space: nowrap; }
+  .pasos .pose { color: var(--muted); white-space: nowrap; }
+  #plan-steps { max-height: 96px; overflow-y: auto; display: block; }
+  #plan-cmd { margin-top: 4px; color: var(--muted); }
 </style>
 </head>
 <body>
 <header>
-  <h1>demo 11 <small>command to motion, on real-world physics, watched live</small></h1>
-  <span class="pill"><span class="dot" id="conn"></span><span id="conn-text">connecting</span></span>
-  <span class="pill">phase <b id="phase">-</b></span>
-  <span class="pill">round <b id="round">-</b></span>
-  <span class="pill">seed <b id="seed">-</b></span>
-  <span class="pill">variant <b id="variant">-</b></span>
-  <span class="pill">verified <b id="verified">0</b></span>
-  <span class="pill">retried <b id="recovered">0</b></span>
-  <span class="pill">missed <b id="missed">0</b></span>
-  <span class="pill" id="mic-pill">voice <b id="mic">off</b></span>
-  <span class="pill"><a class="link" id="raw" href="/api/state" target="_blank">raw json</a></span>
+  <h1>demo 11 <small>del comando al movimiento, con física real</small></h1>
+  <span class="pill"><span class="dot" id="conn"></span><span id="conn-text">conectando</span></span>
+  <span class="pill">fase <b id="phase">-</b></span>
+  <span class="pill">ronda <b id="round">-</b></span>
+  <span class="pill">semilla <b id="seed">-</b></span>
+  <span class="pill">verificados <b id="verified">0</b></span>
+  <span class="pill">con reintento <b id="recovered">0</b></span>
+  <span class="pill">fallidos <b id="missed">0</b></span>
 </header>
 
 <main>
-  <!-- left: setup -->
-  <div>
-    <div class="card">
-      <h2>environment setup</h2>
-      <div class="gate waiting" id="gate">
-        waiting for the environment to start. press <b>start environment</b> below, or run the
-        process with <b>--no-wait-for-start</b>.
-      </div>
+  <!-- columna izquierda: únicamente la ruta de decisión -->
+  <div class="col">
+    <div class="card" id="route">
+      <h2>ruta de decisión
+        <span class="hint">el mapa completo; el camino que se recorre se enciende</span></h2>
       <div class="body">
-        <label class="field"><span>variant</span>
-          <select id="variant-sel">
-            <option value="contained">contained - working area walled in</option>
-            <option value="open">open - no kerb, the control case</option>
-            <option value="out_of_reach">out_of_reach - two parts beyond the arm</option>
-          </select>
-        </label>
-        <label class="field"><span>camera</span>
-          <select id="camera-sel">
-            <option value="top">top - from the far side, over the arm</option>
-            <option value="side">side - robot's other side</option>
-            <option value="front">front - through the arm, the worst case</option>
-          </select>
-        </label>
-        <div class="row">
-          <label class="field" style="flex:1"><span>rounds</span><input id="rounds" value="1"></label>
-          <label class="field" style="flex:1"><span>seed</span><input id="seed-in" value="0"></label>
-        </div>
-        <div class="row">
-          <button class="primary" id="start">start environment</button>
-          <button id="next">next round</button>
-        </div>
-        <div class="row">
-          <button id="relook">re-look</button>
-          <button id="save">save frame</button>
-          <button id="stop">stop</button>
-        </div>
-        <div class="row">
-          <label style="flex:1"><input type="checkbox" id="voice" checked> listen to the
-            microphone</label>
-        </div>
-        <div class="hint">setup values are read when the environment starts; the buttons above
-          are live once it is running.</div>
+        <div class="hint" id="paint-error" style="padding:0 10px 4px"></div>
+        <svg id="flow-svg" viewBox="0 0 1160 900" preserveAspectRatio="xMidYMin meet"></svg>
       </div>
-    </div>
-
-    <div class="card" style="margin-top:12px">
-      <h2>real-world preflight</h2>
-      <div class="body findings" id="findings"><span class="hint">no findings yet</span></div>
-    </div>
-
-    <div class="card" style="margin-top:12px">
-      <h2>round counters</h2>
-      <div class="body stats" id="stats"></div>
     </div>
   </div>
 
-  <!-- centre: the flow -->
-  <div class="card" id="flow">
-    <h2>decision path</h2>
-    <div class="body"><svg id="flow-svg" viewBox="0 0 780 1160"></svg></div>
-  </div>
-
-  <!-- right: camera, detections, voice, command, log -->
-  <div>
-    <div class="card">
-      <h2>camera</h2>
+  <!-- columna derecha: cámara, percepción, comando y el entorno -->
+  <div class="col">
+    <div class="card" style="flex:0 0 auto;max-height:40%">
+      <h2>cámara <span class="hint" id="fps"></span></h2>
       <div class="body">
-        <img id="frame" alt="latest annotated camera frame">
-        <div class="hint" id="frame-note" style="margin-top:6px">no frame yet</div>
+        <img id="frame" alt="último fotograma de la cámara">
+        <div class="hint" id="frame-note" style="margin-top:5px">sin fotograma todavía</div>
       </div>
     </div>
 
-    <div class="card" style="margin-top:12px">
-      <h2>what perception sees</h2>
-      <div class="body"><table id="detections"></table></div>
+    <div class="card" style="flex:0 0 auto;max-height:24%">
+      <h2>lo que ve la percepción</h2>
+      <div class="body" style="padding-top:6px;padding-bottom:4px"><table id="detections"></table></div>
     </div>
 
-    <div class="card" style="margin-top:12px">
-      <h2>command</h2>
+    <div class="card" style="flex:0 0 auto">
+      <h2>comando</h2>
       <div class="body">
         <div class="row">
           <input id="cmd" placeholder="pon el cubo rojo en la caja roja" style="flex:1">
-          <button class="primary" id="send">send</button>
+          <button class="primary" id="send">enviar</button>
+          <button class="mic" id="mic" title="grabar y transcribir">&#127897;</button>
         </div>
         <div class="row">
-          <button data-cmd="separa las piezas por colores">sort by colour</button>
-          <button data-cmd="pon el cubo rojo en la caja roja">red cube</button>
-          <button data-cmd="coge la bola verde">green ball</button>
+          <button data-cmd="separa las piezas por colores">separar por colores</button>
+          <button data-cmd="pon el cubo rojo en la caja roja">cubo rojo</button>
+          <button data-cmd="coge la bola verde">bola verde</button>
         </div>
-        <div class="hint" id="voice-note">voice off: type a command, or start the process with
-          --voice</div>
+        <div class="hint" id="mic-note" style="margin-top:4px">la voz se graba aquí y se transcribe
+          en el servidor (faster-whisper); el texto cae en la casilla para enviarlo o
+          corregirlo primero.</div>
+        <div class="hint" id="queued-note" style="margin-top:4px"></div>
       </div>
     </div>
 
-    <div class="card" style="margin-top:12px">
-      <h2>log</h2>
-      <div class="body"><div id="log"></div></div>
+    <div class="card" style="flex:0 0 auto">
+      <h2>entorno <span class="hint" id="variant-tag"></span></h2>
+      <div class="gate waiting" id="gate">
+        el simulador no ha arrancado. pulsa <b>iniciar entorno</b> aquí abajo.
+      </div>
+      <div class="body">
+        <div class="row">
+          <label class="field" style="flex:1"><span>variante</span>
+            <select id="variant-sel">
+              <option value="contained">recinto - zona de trabajo con kerb</option>
+              <option value="open">abierto - sin kerb, el caso de control</option>
+              <option value="out_of_reach">fuera de alcance - dos piezas lejos del brazo</option>
+            </select>
+          </label>
+          <label class="field" style="flex:1"><span>cámara</span>
+            <select id="camera-sel">
+              <option value="top">cenital - sobre el brazo</option>
+              <option value="side">lateral - el otro lado del robot</option>
+              <option value="front">frontal - a través del brazo, el peor caso</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <label class="field"><span>rondas</span><input id="rounds" value="1"></label>
+          <label class="field"><span>semilla</span><input id="seed-in" value="0"></label>
+        </div>
+        <div class="row">
+          <button class="primary" id="start">iniciar entorno</button>
+          <button id="next">siguiente ronda</button>
+          <button id="relook">re-mirada</button>
+        </div>
+        <div class="row">
+          <button id="save">guardar fotograma</button>
+          <button id="stop">parar</button>
+        </div>
+        <div class="hint" style="margin-top:4px">la configuración se lee al iniciar el entorno;
+          los botones de arriba actúan en caliente.</div>
+        <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:6px">
+          <div class="who">pre-vuelo</div>
+          <div class="findings" id="findings"><span class="hint">sin avisos todavía</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="flex:1 1 auto;min-height:110px">
+      <h2>registro</h2>
+      <div class="body" style="padding-top:6px;padding-bottom:6px"><div id="log"></div></div>
     </div>
   </div>
 </main>
 
 <script>
-// One websocket, two message shapes: a JSON snapshot whenever anything changes, and a
-// binary JPEG immediately after a "frame" header. Polling /api/state is the fallback, used
-// until the socket opens, so a browser that blocks websockets still shows something.
+// Un websocket, dos clases de mensaje: una foto de estado JSON cada vez que cambia algo, y un
+// JPEG binario inmediatamente después de su cabecera "frame". El sondeo de /api/state es el
+// recurso de reserva, hasta que el socket se abre.
 const SVG_NS = "http://www.w3.org/2000/svg";
 const COLORS = { idle: "#4a5164", active: "#4c9ffe", ok: "#43c07f", warn: "#e0a93a",
                  fail: "#e2604f" };
 const SWATCH = { red: "#c0392b", green: "#27ae60", blue: "#2f6fd0", yellow: "#d8b13a",
                  purple: "#8e5fd8", cyan: "#37b1c4", white: "#e8e8e8", black: "#303030",
-                 orange: "#e07b39", "": "#888" };
+                 orange: "#e07b39", pink: "#d36ba0", "": "#888" };
+const SRC_ES = { voice: "voz", dashboard: "panel", web: "panel", terminal: "teclado",
+                 script: "guion", text: "guion" };
 
-let nodes = {}, edges = [], lastEventSeq = -1, frameUrl = null, ws = null, pollTimer = null;
-let simState = {};
+// ---- el vocabulario completo del clasificador ------------------------------------
+// Todas las opciones que el modelo puede elegir, tal y como las define
+// command_model_v2, para que la tarjeta las muestre TODAS y encienda la elegida.
+const INTENT_ALL = [
+  ["pick_and_place", "recoger y colocar"], ["pick", "recoger"], ["give", "dar"],
+  ["sort", "separar"], ["clear", "vaciar"], ["sequence", "secuencia"],
+  ["stop", "parar"], ["repeat", "repetir"], ["cancel", "cancelar"],
+  ["answer_yes", "s\u00ed"], ["answer_no", "no"], ["answer_value", "un valor"],
+  ["question", "pregunta"], ["greeting", "saludo"], ["off_topic", "charla"],
+  ["not_doable", "no se puede"]];
+const KIND_ALL = [["ball", "bola"], ["cube", "cubo"], ["any", "pieza"], ["other", "otro"]];
+const COLOR_ALL = ["red", "green", "blue", "yellow", "orange", "white", "black", "purple",
+                   "pink"];
+const COLOR_ES = { red: "rojo", green: "verde", blue: "azul", yellow: "amarillo",
+                   orange: "naranja", white: "blanco", black: "negro", purple: "morado",
+                   pink: "rosa" };
+const PLACE_ALL = [["basket", "cesto"], ["box", "caja"], ["tray", "bandeja"],
+                   ["table", "mesa"], ["left", "izquierda"], ["right", "derecha"],
+                   ["other", "otro"], ["none", "ninguno"]];
+const SORT_ALL = [["color", "por color"], ["kind", "por tipo"], ["none", "sin ordenar"]];
+const COUNT_ALL = [["1", "uno"], ["2", "dos"], ["3", "tres"], ["4", "cuatro"], ["5", "cinco"],
+                   ["all", "todos"]];
+
+let nodes = {}, edgeEls = [], lastEventSeq = -1, frameUrl = null, ws = null,
+    pollTimer = null, lastEvents = [], stageFilter = null, frameTimes = [], litPaths = new Set(),
+    litPathsHits = 0;
 
 function el(id) { return document.getElementById(id); }
-function text(id, value) { el(id).textContent = value; }
 
-function fmt(metres) {
-  return (metres * 1000).toFixed(0) + " mm";
+// Escribir en un id que no existe no puede ser lo que detenga un panel. Esta función se usa en
+// casi todas las tarjetas, y una sola llamada equivocada -`text("plan-n", ...)` cuando la caja
+// del plan no declaraba ese id- lanzaba antes de que se pintara el resto de esa tarjeta: la
+// tabla de pasos, la nota y las piezas quedaban en blanco para siempre, sin decir nada. Ahora
+// avisa una vez por id y sigue.
+const missingIds = new Set();
+function text(id, value) {
+  const node = el(id);
+  if (!node) {
+    if (!missingIds.has(id)) {
+      missingIds.add(id);
+      console.warn("el panel no tiene ningun elemento con id=" + id);
+    }
+    return;
+  }
+  node.textContent = value;
+}
+function esc(t) {
+  return String(t).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 }
 
-// ---- the flow diagram -----------------------------------------------------------
-// Laid out from the bus's own node list rather than from markup here, so the picture is
-// whatever the pipeline actually is. The spine runs down the left; the recovery node sits on
-// the right with dashed edges back to the camera and the planner, because that is the part of
-// this system a linear list cannot show.
+// ---- el mapa de la ruta: se dibuja entero al recibir la primera foto de estado, y el
+// camino recorrido por el comando en curso se ilumina de azul (y el re-intento en rojo).
+// Las cajas vivas: el comando, la clasificación y el plan viven DENTRO del mapa, en su propia
+// caja del flujo, crecidas para acoger su contenido (HTML embebido con foreignObject).
+const CONTENT_H = { input: 92, understand: 262, plan: 190 };
+
+function contentMarkup(nodeId) {
+  // Cada caja con contenido lleva ademas un `#note-<id>`: es donde vive la nota viva de la
+  // etapa. Las cajas SIN contenido reciben en su lugar un `<text>` SVG. Ver `buildFlow`: sin
+  // ese `<text>` la nota no tenia donde escribirse, y `paintNodes` la escribia igual - con lo
+  // que reventaba en la segunda caja del diagrama y dejaba las otras diez congeladas.
+  if (nodeId === "input") {
+    return { scroll: false, html: `<div style="margin-bottom:3px">` +
+      `<span class="badge" id="cmd-src">oro</span>` +
+      `<span class="hint" id="note-input"></span></div>` +
+      `<div class="big" id="cmd-text">esperando un comando&hellip;</div>` };
+  }
+  if (nodeId === "understand") {
+    return { scroll: true, html: `<div class="hint" id="note-understand"></div>` +
+      `<div class="opt-row"><span class="tag">intenci&oacute;n</span>
+      <div class="chips" id="row-intent"></div></div>` +
+      `<div class="opt-row"><span class="tag">pieza</span>` +
+      `<div class="chips" id="row-kind"></div></div>` +
+      `<div class="opt-row"><span class="tag">color</span>` +
+      `<div class="chips" id="row-color"></div></div>` +
+      `<div class="opt-row"><span class="tag">cu&aacute;ntos</span>` +
+      `<div class="chips" id="row-count"></div></div>` +
+      `<div class="opt-row"><span class="tag">destino</span>` +
+      `<div class="chips" id="row-place"></div></div>` +
+      `<div class="opt-row"><span class="tag">orden por</span>` +
+      `<div class="chips" id="row-sort"></div></div>` +
+      `<div class="opt-row"><span class="tag">en la mesa</span>` +
+      `<div class="chips" id="row-desk"></div></div>` +
+      `<div class="hint" id="cls-warn" style="margin-top:3px"></div>` };
+  }
+  if (nodeId === "plan") {
+    return { scroll: true, html: `<div><span class="badge" id="plan-n"></span>` +
+      `<span class="hint" id="note-plan"></span></div>` +
+      `<table class="pasos" id="plan-steps"></table>` +
+      `<div class="hint" id="plan-nota"></div>` +
+      `<div class="hint" id="plan-cmd"></div>` };
+  }
+  return null;
+}
+
+// Reparto del lienzo: 1180 unidades de ancho para aprovechar la columna, en bandas.
+// A: entorno + comando en la misma fila; B: clasificación a todo lo ancho; C: la cadena
+// de percepción en horizontal; D: plan / ejecución / verificación con reintento al lado;
+// E: el informe. El re-intento es un raíl a la derecha con sus dos retornos.
+const BAND = { A: 16, B: 156, C: 456, D: 604, E: 760, rail: 640 };
+const GEO = {
+  setup:      { x: 16,   y: BAND.A, w: 250,  h: 64 },
+  input:      { x: 296,  y: BAND.A, w: 848,  h: 110 },
+  understand: { x: 16,   y: BAND.B, w: 1128, h: 290 },
+  capture:    { x: 16,   y: BAND.C, w: 232,  h: 108 },
+  perceive:   { x: 272,  y: BAND.C, w: 250,  h: 108 },
+  link:       { x: 546,  y: BAND.C, w: 232,  h: 108 },
+  ground:     { x: 802,  y: BAND.C, w: 342,  h: 108 },
+  plan:       { x: 16,   y: BAND.D, w: 420,  h: 240 },
+  execute:    { x: 452,  y: BAND.D, w: 214,  h: 120 },
+  verify:     { x: 690,  y: BAND.D, w: 214,  h: 120 },
+  recover:    { x: 928,  y: BAND.rail, w: 216, h: 190 },
+  report:     { x: 452,  y: BAND.E, w: 452,  h: 64 },
+};
+
 function buildFlow(nodeList, edgeList) {
   const svg = el("flow-svg");
   svg.textContent = "";
-  const spineX = 16, spineW = 372, nodeH = 52, gap = 34, branchX = 420, branchW = 344;
+  nodes = {}; edgeEls = [];
   const pos = {};
-  let row = 0;
+  let bottom = 0;
   for (const node of nodeList) {
-    const branch = node.id === "recover";
-    pos[node.id] = {
-      x: branch ? branchX : spineX,
-      y: 14 + node.row * (nodeH + gap) - (branch ? 0 : 0),
-      w: branch ? branchW : spineW, h: nodeH
-    };
-    row = Math.max(row, node.row);
+    const geo = GEO[node.id];
+    if (!geo) continue;
+    pos[node.id] = { ...geo };
+    bottom = Math.max(bottom, geo.y + geo.h);
   }
-  const height = 28 + (row + 1) * (nodeH + gap);
+  const VIEW_W = 1160, VIEW_H = bottom + 24;
+  svg.setAttribute("viewBox", `0 0 ${VIEW_W} ${VIEW_H}`);
 
   const defs = document.createElementNS(SVG_NS, "defs");
   defs.innerHTML =
     '<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" ' +
-    'orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#4a5164"/></marker>' +
-    '<marker id="arrow-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" ' +
+    'orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#232936"/></marker>' +
+    '<marker id="arrow-lit" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" ' +
     'markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" ' +
-    'fill="#e0a93a"/></marker>';
+    'fill="#4c9ffe"/></marker>';
   svg.appendChild(defs);
-  svg.setAttribute("viewBox", `0 0 780 ${height}`);
 
   for (const [from, to, label] of edgeList) {
     const a = pos[from], b = pos[to];
     if (!a || !b) continue;
     const loop = from === "recover";
-    const path = document.createElementNS(SVG_NS, "path");
-    let d;
-    if (loop) {
-      // out of the right edge, up the right margin, into the target's right edge
-      const x = Math.max(a.x + a.w, b.x + b.w) + 22;
-      d = `M ${a.x + a.w} ${a.y + a.h / 2} H ${x} V ${b.y + b.h / 2} H ${b.x + b.w}`;
-      if (to === "report") d = `M ${a.x + a.w} ${a.y + a.h} V ${b.y + b.h / 2} H ${b.x + b.w}`;
-    } else if (a.x === b.x) {
-      const y = a.y + a.h;
-      const mid = y + gap / 2;
-      d = `M ${a.x + 22} ${y} V ${mid} H ${b.x + 22 + b.w / 2 - 22} V ${b.y}`;
+    let d, lx, ly;
+    if (loop && to === "capture") {
+      // el retorno del reintento sube por el carril derecho y entra por arriba
+      const rail = VIEW_W - 6;
+      d = `M ${a.x + a.w} ${a.y + a.h / 2} H ${rail} V 451 H ${b.x + b.w / 2} V ${b.y}`;
+      lx = rail + 4; ly = 620; lx = VIEW_W - 70; ly = 620;
+    } else if (loop && to === "plan") {
+      // el re-plan rodea la banda D por debajo y entra por el fondo del plan
+      d = `M ${a.x + a.w / 2} ${a.y + a.h} V 858 H ${b.x + b.w / 2} V ${b.y + b.h}`;
+      lx = 700; ly = 852;
+    } else if (a.x === b.x && a.w === b.w) {
+      const middle = a.y + a.h + (b.y - a.y - a.h) / 2;
+      d = `M ${a.x + 22} ${a.y + a.h} V ${middle} H ${a.x + 22 + (b.w - 44) / 2} V ${b.y}`;
+      lx = a.x + 30; ly = middle + 3;
+    } else if (a.y < b.y + b.h && a.y + a.h > b.y) {
+      // la misma banda: flecha recta de lado a lado, a la altura compartida
+      const lineY = (Math.max(a.y, b.y) + Math.min(a.y + a.h, b.y + b.h)) / 2;
+      if (a.x < b.x) {
+        d = `M ${a.x + a.w} ${lineY} H ${b.x}`;
+      } else {
+        d = `M ${a.x} ${lineY} H ${b.x + b.w}`;
+      }
+      lx = (a.x < b.x ? a.x + a.w + 6 : b.x + b.w + 6); ly = lineY - 5;
+    } else if (b.y > a.y + a.h) {
+      // la banda de abajo: cae por el centro de a, cruza en el hueco y baja a b por arriba
+      const midY = (a.y + a.h + b.y) / 2;
+      d = `M ${a.x + a.w / 2} ${a.y + a.h} V ${midY} H ${b.x + b.w / 2} V ${b.y}`;
+      lx = a.x + a.w / 2 + 6; ly = midY + 3;
     } else {
-      const y1 = a.y + a.h / 2, y2 = b.y + b.h / 2;
-      d = `M ${a.x + a.w} ${y1} H ${b.x - 14} V ${y2} H ${b.x}`;
+      // b por encima: sale por arriba de a, cruza sobre la fila y baja a b
+      const midY = (b.y + b.h + a.y) / 2;
+      d = `M ${a.x + a.w / 2} ${a.y} V ${midY} H ${b.x + b.w / 2} V ${b.y + b.h}`;
+      lx = a.x + a.w / 2 + 6; ly = midY - 4;
     }
+    const path = document.createElementNS(SVG_NS, "path");
     path.setAttribute("d", d);
-    path.setAttribute("class", loop ? "edge loop" : "edge");
-    path.setAttribute("marker-end", loop ? "url(#arrow-loop)" : "url(#arrow)");
+    path.setAttribute("class", "edge");
+    path.setAttribute("marker-end", "url(#arrow)");
     svg.appendChild(path);
-    if (label) {
-      const t = document.createElementNS(SVG_NS, "text");
-      t.setAttribute("class", "edge-label");
-      const mx = loop ? (a.x + a.w + 26) : (a.x + 26);
-      const my = loop ? ((a.y + b.y) / 2 + a.h / 2) : (a.y + a.h + 12);
-      t.setAttribute("x", mx); t.setAttribute("y", my);
-      t.textContent = label;
-      svg.appendChild(t);
+    let labelEl = null;
+    if (label && lx !== undefined) {
+      labelEl = document.createElementNS(SVG_NS, "text");
+      labelEl.textContent = label;
+      labelEl.classList.add("edge-label");
+      labelEl.setAttribute("x", lx); labelEl.setAttribute("y", ly);
+      svg.appendChild(labelEl);
     }
+    edgeEls.push({ from, to, el: path, loop, text: labelEl });
   }
 
   for (const node of nodeList) {
     const box = pos[node.id];
+    if (!box) continue;
     const group = document.createElementNS(SVG_NS, "g");
     group.setAttribute("class", "node-box");
     group.dataset.id = node.id;
@@ -329,135 +456,313 @@ function buildFlow(nodeList, edgeList) {
     bar.setAttribute("rx", 2); bar.setAttribute("fill", COLORS.idle);
     const title = document.createElementNS(SVG_NS, "text");
     title.setAttribute("class", "node-label");
-    title.setAttribute("x", box.x + 14); title.setAttribute("y", box.y + 21);
+    title.setAttribute("x", box.x + 14); title.setAttribute("y", box.y + 20);
     title.textContent = node.title;
-    const note = document.createElementNS(SVG_NS, "text");
-    note.setAttribute("class", "node-note");
-    note.setAttribute("x", box.x + 14); note.setAttribute("y", box.y + 38);
-    note.textContent = truncate(node.detail, Math.floor(box.w / 6.1));
-    const live = document.createElementNS(SVG_NS, "text");
-    live.setAttribute("class", "node-note");
-    live.setAttribute("x", box.x + 14); live.setAttribute("y", box.y + 48);
-    live.textContent = "";
-    group.append(rect, bar, title, note, live);
-    group.addEventListener("click", () => filterLog(node.id));
+    const markup = contentMarkup(node.id);
+    let live = null, host = null;
+    group.append(rect, bar, title);
+    if (markup) {
+      // caja viva: el título arriba y su contenido HTML debajo, dentro de la propia caja.
+      // El div vive en el namespace XHTML y se construye aparte: innerHTML sobre un nodo
+      // de SVG es la parte que algunos navegadores no parsean bien.
+      title.setAttribute("y", box.y + 19);
+      const XHTML_NS = "http://www.w3.org/1999/xhtml";
+      const inner = document.createElementNS(XHTML_NS, "div");
+      inner.className = "fo" + (markup.scroll ? " scroll" : "");
+      inner.innerHTML = markup.html;
+      // La nota viva de una caja con contenido vive dentro de su propio markup, en un
+      // `#note-<id>`. Sin esto `live` se quedaba en null para estas cajas y `paintNodes`
+      // reventaba al escribir en el, dejando el resto del diagrama sin pintar nunca.
+      host = inner.querySelector("#note-" + node.id);
+      const fo = document.createElementNS(SVG_NS, "foreignObject");
+      fo.setAttribute("x", box.x + 12); fo.setAttribute("y", box.y + 26);
+      fo.setAttribute("width", box.w - 24);
+      fo.setAttribute("height", (CONTENT_H[node.id] || 0));
+      fo.appendChild(inner);
+      group.appendChild(fo);
+    } else {
+      const note = document.createElementNS(SVG_NS, "text");
+      note.setAttribute("class", "node-note");
+      note.setAttribute("x", box.x + 14); note.setAttribute("y", box.y + 37);
+      note.textContent = node.detail;
+      live = document.createElementNS(SVG_NS, "text");
+      live.setAttribute("class", "node-note");
+      live.setAttribute("x", box.x + 14); live.setAttribute("y", box.y + 49);
+      group.append(note, live);
+    }
+    group.addEventListener("click", () => {
+      stageFilter = stageFilter === node.id ? null : node.id;
+      for (const other of document.querySelectorAll(".node-box")) {
+        const painted = nodes[other.dataset.id];
+        if (painted) painted.rect.setAttribute("stroke-width",
+          other.dataset.id === stageFilter ? 3 : (painted.wid || 1.5));
+      }
+      el("log").innerHTML = "";
+      for (const event of lastEvents) appendEvent(event, true);
+    });
     svg.appendChild(group);
-    nodes[node.id] = { rect, bar, note, live, title };
+    nodes[node.id] = { rect, bar, live: live || host, title, wid: 1.5 };
   }
 }
 
-function truncate(text, limit) {
-  const value = String(text || "");
-  return value.length > limit ? value.slice(0, limit - 1) + "…" : value;
+function truncate(value, limit) {
+  const word = String(value || "");
+  return word.length > limit ? word.slice(0, limit - 1) + "\u2026" : word;
 }
 
 function paintNodes(list) {
+  let sawInputActive = false;
+  for (const node of list) {
+    if (node.id === "input" && node.state === "active" && (node.hits || 0) > litPathsHits) {
+      sawInputActive = true;
+    }
+  }
+  if (sawInputActive) litPaths.clear();
   for (const node of list) {
     const painted = nodes[node.id];
     if (!painted) continue;
     const colour = COLORS[node.state] || COLORS.idle;
+    if (node.state !== "idle") litPaths.add(node.id);
     painted.rect.setAttribute("stroke", colour);
     painted.bar.setAttribute("fill", colour);
-    painted.rect.setAttribute("stroke-width", node.state === "active" ? 2.5 : 1.5);
-    const note = node.note ? " · " + node.note : "";
-    painted.live.textContent = truncate(node.state + note, Math.floor(
-      (node.id === "recover" ? 344 : 372) / 6.1));
+    painted.wid = node.state === "active" ? 2.5 : 1.5;
+    if (stageFilter !== node.id) painted.rect.setAttribute("stroke-width", painted.wid);
+    painted.rect.setAttribute("fill", node.state === "active" ? "#222a3a" : "#1f2531");
+    // `live` no existe en toda caja: la tiene el <text> de las cajas sin contenido y el
+    // `#note-<id>` de las que lo tienen, pero si una de las dos se llegara a pintar sin ella,
+    // esto no puede ser lo que Detenga el repintado del resto del diagrama.
+    if (painted.live) {
+      painted.live.textContent = truncate(node.state === "idle" ? "" : node.note, 60);
+    }
+  }
+  litPathsHits = Math.max(litPathsHits, ...list.map(n => n.hits || 0));
+  // las aristas: encendidas cuando sus dos extremos ya se han recorrido en este comando
+  for (const edge of edgeEls) {
+    const lit = litPaths.has(edge.from) && litPaths.has(edge.to);
+    edge.el.setAttribute("class", "edge " + (lit ? (edge.loop
+      ? "edge-travelled-loop" : "edge-travelled") : (edge.loop ? "edge-loop" : "")));
+    edge.el.setAttribute("marker-end", lit ? "url(#arrow-lit)" : "url(#arrow)");
+    if (edge.text) edge.text.classList.toggle("lit", lit);
   }
 }
 
-// ---- panels ---------------------------------------------------------------------
-function paintState(state) {
-  simState = state || {};
-  text("phase", simState.phase ?? "-");
-  text("round", simState.round ?? "-");
-  text("seed", simState.seed ?? "-");
-  text("variant", simState.variant ?? "-");
-  text("verified", simState.verified ?? 0);
-  text("recovered", simState.recovered ?? 0);
-  text("missed", simState.missed ?? 0);
-  text("mic", simState.voice ?? "off");
-  el("mic-pill").style.color = simState.voice === "on" ? "var(--ok)" : "";
-  el("voice-note").textContent = simState.voice_note || (
-    simState.voice === "on" ? "listening for the next utterance" : "voice off");
-  text("frame-note", simState.frame_note || "no frame yet");
+// ---- las filas de opciones ----------------------------------------------------------
+function optionChips(rowId, options, chosen, present) {
+  const box = el(rowId);
+  box.innerHTML = (options || []).map(([value, label]) => {
+    const selected = (chosen || []).includes(String(value));
+    const visible = present && present[value];
+    return `<span class="chip${selected ? " sel" : ""}${visible ? " has" : ""}"` +
+      ` data-value="${esc(value)}">${visible && !selected ? '<span class="present"></span>' : ""}` +
+      `${esc(label)}</span>`;
+  }).join("");
+}
 
-  const gate = el("gate");
-  if (simState.phase === "setup") {
-    gate.className = "gate waiting";
-    gate.innerHTML = "environment not started. press <b>start environment</b> below.";
-  } else if (simState.phase === "starting") {
-    gate.className = "gate waiting";
-    gate.textContent = "Isaac is starting. this takes about two minutes on the first run.";
+function paintCommand(state) {
+  // What the robot is holding and has not started yet. This is the server's own queue, not the
+  // optimistic note the send button writes, so it survives a reload and it is the answer to
+  // "did it get there?". The robot clears it the moment it picks the sentence up.
+  const queued = (state.queued || "").trim();
+  const from = state.queued_from === "terminal" ? "del terminal"
+             : state.queued_from === "voice" ? "de la voz" : "del panel";
+  if (el("queued-note")) text("queued-note", queued ? `en cola (${from}): ${queued}` : "");
+  const sentence = state.command;
+  if (sentence == null || !el("cmd-text")) return;
+  el("cmd-text").textContent = sentence;
+  el("cmd-src").textContent = SRC_ES[state.command_src] || state.command_src || "agente";
+}
+
+function countLabel(value) {
+  if (value === "all") return "all";
+  if (value === "one" || value === 1) return "1";
+  return value === undefined || value === null ? null : String(value);
+}
+
+function paintClassification(cls) {
+  if (!el("row-intent")) return;
+  const nothing = !cls;
+  const picked = nothing ? {} : cls;
+  const items = picked.items || [];
+  const detections = (window.state || {}).detections || [];
+  const plan = (window.state || {}).plan || {};
+  const targets = new Set((plan.picks || []).map(String));
+
+  const kinds = items.map(i => String(i.kind || "")).filter(Boolean);
+  const colors = items.map(i => String(i.color || "")).filter(Boolean);
+  const counts = items.map(i => countLabel(i.count)).filter(Boolean);
+  const places = [];
+  if (picked.place) places.push(String(picked.place.kind || ""));
+  for (const item of items) if (item.place) places.push(String(item.place.kind || ""));
+  const sortKey = picked.sort_by && picked.sort_by !== "none" ? [picked.sort_by] : ["none"];
+
+  const deskKinds = new Set(detections.map(d => String(d.kind || "")));
+  const deskColors = new Set(detections.map(d => String(d.color || "")).filter(Boolean));
+
+  optionChips("row-intent", INTENT_ALL,
+    nothing ? [] : [String(picked.intent || "")], null);
+  optionChips("row-kind", KIND_ALL, kinds,
+    deskKinds.size ? Object.fromEntries([...deskKinds].map(k => [k, true])) : null);
+  const colorPresent = {};
+  for (const color of COLOR_ALL) colorPresent[color] = deskColors.has(color);
+  optionChips("row-color", COLOR_ALL.map(c => [c, COLOR_ES[c]]), colors,
+    detections.length ? colorPresent : null);
+
+  const countPresent = {};
+  if (detections.length) {
+    const groups = {};
+    for (const d of detections) {
+      const key = `${d.kind}|${d.color}`;
+      groups[key] = (groups[key] || 0) + 1;
+    }
+    const groupCounts = Object.values(groups);
+    countPresent["1"] = true;
+    countPresent["all"] = groupCounts.some(n => n >= 2);
+    for (const value of ["2", "3", "4", "5"]) {
+      countPresent[value] = groupCounts.some(n => Number(value) <= n);
+    }
+  }
+  optionChips("row-count", COUNT_ALL, counts, detections.length ? countPresent : null);
+
+  const containers = detections.filter(d => d.container);
+  const placePresent = {};
+  if (containers.length) {
+    for (const [kind] of PLACE_ALL) {
+      placePresent[kind] = containers.some(c => String(c.kind || "") === kind);
+    }
+  }
+  optionChips("row-place", PLACE_ALL, places, containers.length ? placePresent : null);
+
+  optionChips("row-sort", SORT_ALL, nothing ? [] : sortKey.map(String), null);
+
+  // la fila "en la mesa": lo que la percepción ve ahora, con el objetivo del plan marcado
+  const desk = el("row-desk");
+  if (!detections.length) {
+    desk.innerHTML = '<span class="hint">sin fotograma todav\u00eda</span>';
   } else {
-    gate.className = "gate running";
-    gate.innerHTML = "environment running. commands typed here or spoken are queued " +
-      "until the arm is between moves.";
+    desk.innerHTML = detections.map(d => {
+      const color = d.color ? `<span class="swatch" style="background:${SWATCH[d.color] || "#888"}"></span>` : "";
+      const isTarget = targets.has(String(d.prim || ""));
+      return `<span class="chip${isTarget ? " target" : ""}">` +
+        `${color}${esc(d.kind || "?")}${d.color ? ` ${esc(COLOR_ES[d.color] || d.color)}` : ""}` +
+        `${isTarget ? ` <span class="to">&larr; objetivo</span>` : ""}</span>`;
+    }).join("");
   }
 
-  const stats = el("stats");
-  const rows = [
-    ["replanned", simState.replanned], ["regrasp", simState.regrasped],
-    ["re-aimed", simState.reaimed], ["tracked", simState.tracked],
-    ["grasps real", simState.real_grasps], ["grasps refused", simState.refused_grasps],
-    ["drops", simState.drops], ["frames", simState.frames]
-  ];
-  stats.innerHTML = rows.map(([k, v]) =>
-    `<div class="stat"><div class="n">${v ?? 0}</div><div class="k">${k}</div></div>`).join("");
+  const warnings = (picked.unresolved || []).concat(picked.question ? [picked.question] : []);
+  el("cls-warn").innerHTML = warnings.length ? esc(warnings.join(" | ")) : "";
+}
+
+function paintPlan(plan) {
+  if (!el("plan-steps")) return;
+  if (!plan) {
+    el("plan-steps").innerHTML = '<tr><td class="hint">sin plan todav&iacute;a: manda un comando' +
+      '</td></tr>';
+    el("plan-nota").textContent = "";
+    el("plan-cmd").textContent = "";
+    return;
+  }
+  text("plan-n", plan.n ? `versi\u00f3n ${plan.n}` : "");
+  const table = el("plan-steps");
+  const progress = (window.state || {}).progress || "";
+  const rows = (plan.steps || []).map(step => {
+    const pose = step.pose && step.pose.length
+      ? `${step.pose.map(v => (v * 1000).toFixed(0)).join(", ")} mm` : "";
+    const now = progress && String(step.action).startsWith(progress)
+      ? '<span class="badge ok">ahora</span>' : "";
+    return `<tr><td class="acc">${esc(step.action)}</td>` +
+      `<td>${now}${esc(step.note || "")}</td><td class="pose">${esc(pose)}</td></tr>`;
+  });
+  table.innerHTML = rows.length
+    ? `<tr><th>acci\u00f3n</th><th>detalle</th><th>pose</th></tr>${rows.join("")}`
+    : '<tr><td class="hint">sin pasos: nada que mover</td></tr>';
+  el("plan-nota").textContent = plan.note || "";
+  el("plan-cmd").textContent = plan.picks && plan.picks.length
+    ? `piezas en el plan: ${plan.picks.join(", ")}` : "";
+  paintClassification(window.state && window.state.classification);
+}
+
+// ---- paneles de siempre ------------------------------------------------------------
+function paintState(state) {
+  window.state = state || {};
+  try {
+    text("phase", state.phase ?? "-");
+    text("round", state.round ?? "-");
+    text("seed", state.seed ?? "-");
+    text("verified", state.verified ?? 0);
+    text("recovered", state.recovered ?? 0);
+    text("missed", state.missed ?? 0);
+    text("variant-tag", state.variant ? `(${state.variant})` : "");
+    text("frame-note", state.frame_note || "sin fotograma todavía");
+
+    const gate = el("gate");
+    if ((state.phase || "setup") === "setup") {
+      gate.className = "gate waiting";
+      gate.innerHTML = "el simulador no ha arrancado. pulsa <b>iniciar entorno</b> abajo.";
+    } else if (state.phase === "starting") {
+      gate.className = "gate waiting";
+      gate.textContent = "Isaac está arrancando; tarda unos dos minutos en la primera ejecución.";
+    } else {
+      gate.className = "gate running";
+      gate.innerHTML = "entorno en marcha: los comandos escritos o hablados aquí encolan hasta " +
+        "que el brazo queda libre.";
+    }
+  } catch (error) { console.error("cabecera/gate:", error); }
+  // Las tarjetas vivas se pintan SIEMPRE: sin comando aún, la clasificación enseña todo el
+  // espacio de opciones sin nada elegido, y el plan su hueco. Si solo se pintaran al llegar
+  // datos, el panel se vería vacío el primer minuto y eso es exactamente lo que parece roto.
+  try { paintCommand(state); } catch (error) { console.error("comando:", error); }
+  try { paintClassification(state.classification); } catch (error) { console.error("clasificación:", error); }
+  try { paintPlan(state.plan); } catch (error) { console.error("plan:", error); }
+  try { if (state.findings !== undefined && el("findings")) paintFindings(state.findings); }
+  catch (error) { console.error("pre-vuelo:", error); }
+  try { if (state.detections !== undefined) paintDetections(state.detections); }
+  catch (error) { console.error("percepción:", error); }
 }
 
 function paintDetections(list) {
   const table = el("detections");
   if (!list || !list.length) {
-    table.innerHTML = '<tr><td class="hint">nothing detected</td></tr>';
+    table.innerHTML = '<tr><td class="hint">nada detectado</td></tr>';
     return;
   }
   const rows = list.map(t => {
     const where = t.pos ? `${(t.pos[0] * 1000).toFixed(0)}, ${(t.pos[1] * 1000).toFixed(0)} mm`
-                        : "no position";
-    return `<tr><td><span class="swatch" style="background:${SWATCH[t.color] || "#888"}"></span>` +
-      `${t.color || "?"} ${t.kind}</td><td>${where}</td>` +
-      `<td>${t.prim || ""}</td><td>${t.area ?? ""}px</td></tr>`;
+                        : "sin posici\u00f3n";
+    const color = t.color ? `<span class="swatch" style="background:${SWATCH[t.color] || "#888"}"></span>` : "";
+    return `<tr><td>${color}${esc(t.kind || "?")} ${esc(t.color || "")}</td>` +
+           `<td>${where}</td><td>${esc(t.prim || "sin pieza")}</td></tr>`;
   });
-  table.innerHTML = `<tr><th>thing</th><th>x, y</th><th>part</th><th>area</th></tr>` +
-    rows.join("");
+  table.innerHTML = `<tr><th>cosa</th><th>x, y</th><th>pieza</th></tr>${rows.join("")}`;
 }
 
 function paintFindings(list) {
   const box = el("findings");
-  if (!list || !list.length) { box.innerHTML = '<span class="hint">no findings</span>'; return; }
+  if (!list || !list.length) { box.innerHTML = '<span class="hint">sin avisos</span>'; return; }
   box.innerHTML = list.map(([level, message]) =>
-    `<div class="finding ${level}"><span class="lv">${level}</span>${escape(message)}</div>`)
+    `<div class="finding ${level}"><span class="lv">${level}</span>${esc(message)}</div>`)
     .join("");
 }
 
-function escape(text) {
-  return String(text).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-}
-
-let logFilter = null;
-function filterLog(nodeId) {
-  logFilter = logFilter === nodeId ? null : nodeId;
-  el("log").innerHTML = "";
-  for (const event of lastEvents) appendEvent(event, true);
-}
-
-let lastEvents = [];
 function appendEvent(event, force) {
   if (event.seq <= lastEventSeq && !force) return;
   lastEventSeq = Math.max(lastEventSeq, event.seq);
   lastEvents.push(event);
   if (lastEvents.length > 400) lastEvents.shift();
-  if (logFilter && event.node !== logFilter) return;
+  if (stageFilter && event.node !== stageFilter) return;
+  // el plan en vivo: la primera palabra de "lift #2 ..." del ejecutor marca el paso en curso
+  if (event.node === "plan" || event.node === "execute") {
+    window.state.progress = String(event.message || "").trim().split(/\s+/)[0] || "";
+    paintPlan(window.state.plan);
+  }
   const box = el("log");
   const stamp = new Date((event.t || 0) * 1000).toLocaleTimeString();
-  const lines = String(event.message ?? "").split("\n");
-  lines.forEach((line, index) => {
+  String(event.message ?? "").split("\n").forEach((line, index) => {
     const div = document.createElement("div");
     div.className = event.level || "info";
-    const head = (index === 0)
+    const head = index === 0
       ? `<span class="t">${stamp}</span> ${event.node ? `<span class="node">${event.node}</span> ` : ""}`
       : "";
-    div.innerHTML = head + escape(line);
+    div.innerHTML = head + esc(line);
     box.appendChild(div);
   });
   box.scrollTop = box.scrollHeight;
@@ -468,28 +773,72 @@ function onFrame(jpeg, meta) {
   frameUrl = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
   el("frame").src = frameUrl;
   if (meta && meta.note) text("frame-note", meta.note);
+  const now = performance.now();
+  frameTimes.push(now);
+  while (frameTimes.length && now - frameTimes[0] > 4000) frameTimes.shift();
+  text("fps", frameTimes.length > 1
+    ? `${(frameTimes.length / ((now - frameTimes[0]) / 1000)).toFixed(1)} fps` : "");
 }
 
-// ---- transport ------------------------------------------------------------------
+// ---- transporte --------------------------------------------------------------------
+
+// Un snapshot que no ha cambiado no se vuelve a pintar. El servidor ya coalesce y limita los
+// envíos, pero repintar el diagrama SVG entero y reconstruir las tablas innerHTML es lo más caro
+// que hace esta página: si un snapshot llega dos veces con el mismo contenido, el segundo no
+// puede costar nada. La firma es `rev`, que el bus incrementa en CUALQUIER cambio (no sólo en un
+// log nuevo), así que un skip aquí nunca puede dejar un dato viejo en pantalla.
+let lastPainted = "";
+let paintFailures = 0;
+
+// Un panel que revienta no puede llevarse por delante la ruta de decisión entera. Antes de
+// estos try/catch, `paintNodes` fallaba en la segunda caja y `paintState` y el registro no se
+// llegaban a pintar nunca: el panel se quedaba congelado con el aspecto de estar vivo, sin
+// decir nada. Ahora cada parte se pinta por separado, el fallo se cuenta y se enseña.
+function safePaint(name, fn) {
+  try { fn(); return true; }
+  catch (error) {
+    paintFailures += 1;
+    console.error("pintado de " + name + ":", error);
+    const box = el("paint-error");
+    if (box) {
+      box.textContent = `una parte del panel no se está pintando (${name}): ${error.message}`;
+    }
+    return false;
+  }
+}
+
 function applySnapshot(snap) {
   if (!snap || snap.type === "frame") return;
-  if (snap.nodes) { if (!Object.keys(nodes).length) buildFlow(snap.nodes, snap.edges || []);
-                    paintNodes(snap.nodes); }
-  if (snap.state) paintState(snap.state);
-  if (snap.state && snap.state.detections !== undefined) paintDetections(snap.state.detections);
-  if (snap.state && snap.state.findings !== undefined) paintFindings(snap.state.findings);
-  for (const event of snap.events || []) appendEvent(event, false);
+  const signature = String(snap.rev ?? snap.seq ?? "");
+  if (signature !== "" && signature === lastPainted) return;
+  lastPainted = signature;
+  if (snap.nodes && !Object.keys(nodes).length) {
+    safePaint("el diagrama", () => buildFlow(snap.nodes, snap.edges || []));
+  }
+  if (snap.nodes) safePaint("la ruta", () => paintNodes(snap.nodes));
+  if (snap.state) safePaint("el estado", () => paintState(snap.state));
+  safePaint("el registro", () => {
+    for (const event of snap.events || []) appendEvent(event, false);
+  });
 }
+
+let reconnectTimer = null;
 
 function connect() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${scheme}://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => {
-    setConn(true);
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  ws.onopen = () => { setConn(true); if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } };
+  // Un solo reconexado. `onerror` llama a close(), que dispara onclose; si además se
+  // reintentara desde onerror, dos temporizadores coexistirían y cada uno abriría su propio
+  // socket, y el servidor empareja cada uno con su propio manejador.
+  ws.onclose = () => {
+    setConn(false);
+    startPolling();
+    if (!reconnectTimer) {
+      reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 1500);
+    }
   };
-  ws.onclose = () => { setConn(false); setTimeout(connect, 1500); startPolling(); };
   ws.onerror = () => ws.close();
   ws.onmessage = (message) => {
     if (typeof message.data === "string") {
@@ -505,9 +854,8 @@ function connect() {
 let pendingFrame = null;
 
 function setConn(live) {
-  const dot = el("conn");
-  dot.className = "dot " + (live ? "live" : "dead");
-  text("conn-text", live ? "live" : "polling");
+  el("conn").className = "dot " + (live ? "live" : "dead");
+  text("conn-text", live ? "en vivo" : "sondeando");
 }
 
 function startPolling() {
@@ -517,7 +865,7 @@ function startPolling() {
       applySnapshot(await (await fetch("/api/state")).json());
       const image = await fetch("/api/frame.jpg");
       if (image.ok) onFrame(await image.arrayBuffer(), null);
-    } catch (_) { /* the process may be between frames */ }
+    } catch (_) { /* el proceso puede estar entre fotogramas */ }
   }, 1000);
 }
 
@@ -529,21 +877,109 @@ function post(path, body) {
 el("start").onclick = async () => {
   await post("/api/env", { action: "start", variant: el("variant-sel").value,
                            camera: el("camera-sel").value, rounds: Number(el("rounds").value),
-                           seed: Number(el("seed-in").value),
-                           voice: el("voice").checked });
+                           seed: Number(el("seed-in").value) });
 };
 el("next").onclick = () => post("/api/env", { action: "next" });
 el("relook").onclick = () => post("/api/env", { action: "relook" });
 el("save").onclick = () => post("/api/env", { action: "save" });
 el("stop").onclick = () => post("/api/env", { action: "stop" });
-el("send").onclick = () => {
-  const input = el("cmd");
-  if (input.value.trim()) { post("/api/command", { text: input.value.trim() }); input.value = ""; }
+el("send").onclick = async () => {
+  const box = el("cmd");
+  const sentence = box.value.trim();
+  if (!sentence) return;
+  const reply = await post("/api/command", { text: sentence });
+  // Say what happened. The command is queued, not run: the robot is usually mid-pick, so the
+  // page going silent after "enviar" is what made a working queue look like a broken server.
+  if (reply && reply.ok) {
+    box.value = "";
+    text("queued-note", `en cola: ${sentence}`);
+  } else {
+    text("queued-note", (reply && reply.error) || "no se ha podido encolar");
+  }
 };
 el("cmd").addEventListener("keydown", e => { if (e.key === "Enter") el("send").click(); });
 for (const button of document.querySelectorAll("button[data-cmd]")) {
   button.onclick = () => { el("cmd").value = button.dataset.cmd; el("send").click(); };
 }
+
+// --- voz: grabar en el navegador, transcribir en el servidor ------------------------
+// Se graban muestras PCM con un ScriptProcessorNode (obsoleto pero universal), se remuestrean
+// a 16 kHz y se empaquetan en un WAV de PCM 16 bits. faster-whisper consume exactamente eso
+// en el servidor, sin ffmpeg ni códecs en medio.
+let micStream = null, micContext = null, micProcessor = null, micChunks = [], micTimer = null,
+    micRate = 48000;
+
+function wavFrom(samples, rate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const write = (offset, word) => {
+    for (let i = 0; i < word.length; i++) view.setUint8(offset + i, word.charCodeAt(i));
+  };
+  write(0, "RIFF"); view.setUint32(4, 36 + samples.length * 2, true); write(8, "WAVE");
+  write(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true); write(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  samples.forEach((sample, i) => view.setInt16(44 + i * 2, sample * 32767, true));
+  return buffer;
+}
+
+async function toggleMic() {
+  const button = el("mic");
+  if (micProcessor) { stopMic(); return; }
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (error) {
+    text("mic-note", "no hay micr\u00f3fono o se ha denegado el permiso.");
+    return;
+  }
+  micContext = new (window.AudioContext || window.webkitAudioContext)();
+  micRate = micContext.sampleRate;
+  const source = micContext.createMediaStreamSource(micStream);
+  micProcessor = micContext.createScriptProcessor(4096, 1, 1);
+  micProcessor.onaudioprocess = (event) => {
+    micChunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+  };
+  source.connect(micProcessor);
+  micProcessor.connect(micContext.destination);
+  button.classList.add("on"); button.title = "parar la grabaci\u00f3n";
+  text("mic-note", "grabando\u2026 pulsa otra vez para transcribir.");
+  micTimer = setTimeout(stopMic, 8000);
+}
+
+function stopMic() {
+  clearTimeout(micTimer);
+  if (micProcessor) {
+    micProcessor.disconnect(); micProcessor.onaudioprocess = null;
+    micProcessor = null;
+  } else { return; }
+  if (micStream) { micStream.getTracks().forEach(track => track.stop()); micStream = null; }
+  if (micContext) { micContext.close(); micContext = null; }
+  el("mic").classList.remove("on");
+  const rate = 16000;
+  let flat = []; for (const chunk of micChunks) flat.push(...chunk);
+  micChunks = [];
+  if (!flat.length) { text("mic-note", "no se ha grabado nada."); return; }
+  // remuestrear a 16 kHz de forma lineal
+  const ratio = micRate / rate, outLength = Math.floor(flat.length / ratio);
+  const down = new Float32Array(outLength);
+  for (let i = 0; i < outLength; i++) down[i] = flat[Math.floor(i * ratio)] || 0;
+  text("mic-note", "transcribiendo\u2026");
+  fetch("/api/voice", { method: "POST", headers: { "content-type": "audio/wav" },
+                        body: wavFrom(down, rate) })
+    .then(r => r.json())
+    .then(data => {
+      if (data && data.text) {
+        el("cmd").value = data.text;
+        text("mic-note", "transcrito: rev\u00edsalo y pulsa enviar.");
+      } else {
+        text("mic-note", data && data.error ? data.error : "el servidor no ha entendido nada.");
+      }
+    })
+    .catch(() => text("mic-note", "el servidor de voz no ha respondido."));
+}
+el("mic").onclick = toggleMic;
 
 fetch("/api/state").then(r => r.json()).then(applySnapshot).then(startPolling);
 connect();
