@@ -76,6 +76,12 @@ SIGNATURES = (
 )
 
 SUMMARY = re.compile(r"=== summary ===")
+# A demo that is waiting for the dashboard's start button produces no output, and silence is
+# exactly what the stall detector exists to kill. But that silence is EXPECTED in interactive
+# use: the person is reading the panel and deciding. So the watcher suspends both the stall
+# and the cap while the demo is sitting on its gate, and judge-stall only after the
+# environment started (or the process died).
+WAITING = re.compile(r"waiting for the start command there|press Enter here")
 
 
 def fault_in(text: str) -> str:
@@ -148,6 +154,10 @@ def attempt(index: int, argv: list[str], stall: float, cap: float, log_dir: Path
             if size != last_size:
                 last_size = size
                 last_change = time.monotonic()
+            if WAITING.search(log.read_text(encoding="utf-8", errors="replace")[-4000:]):
+                # the child is sitting on its start gate: a person is reading the dashboard
+                # and deciding. Silence here is expected; no stall or cap applies
+                continue
             if time.monotonic() - last_change > stall:
                 kill_tree(process.pid)
                 return "stalled", log, f"no output for {stall:.0f}s"
@@ -174,8 +184,10 @@ def main() -> int:
     passthrough = list(options.args)
     if passthrough and passthrough[0] == "--":
         passthrough = passthrough[1:]
-    if not passthrough:
-        passthrough = ["--no-wait-for-start"]
+    # Nothing is injected by default: the demo's own defaults already do the right thing.
+    # A bare launch serves the dashboard and waits for the start button there (or Enter at
+    # a terminal); a scripted launch has --text, which skips the gate by itself. Pass
+    # --no-wait-for-start yourself if you want Isaac to start with nobody watching the panel.
 
     log_dir = Path(options.log_dir) if options.log_dir else ROOT / "out11" / "runs"
     log_dir.mkdir(parents=True, exist_ok=True)
