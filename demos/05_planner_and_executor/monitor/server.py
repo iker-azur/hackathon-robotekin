@@ -29,14 +29,16 @@ the simulation already has are not replaced by HTTP ordering.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import threading
 import time
+import wave
 import webbrowser
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, Response
 
 import telemetry
 
@@ -51,11 +53,115 @@ DEFAULT_PORT = 8765
 # about it rather than wait.
 READY_TIMEOUT_S = 10.0
 
+# The floor between two pushes on one socket.
+#
+# **This exists because of a measurement, and the number it replaces is the interesting part.**
+# The handler used to wake on an ``asyncio.Event`` that nothing ever cleared, so once the event
+# was set it stayed set: every new waiter returned immediately and the handler re-sent a whole
+# snapshot as fast as the socket would take it. ONE bus change - a person clicking *iniciar
+# entorno*, a single ``bus.node`` call - was enough to start it, and it never stopped. Measured
+# with a client connected and nothing else happening: **2171 snapshots per second**, each one a
+# full JSON copy of the 12-node diagram plus the last 140 log lines.
+#
+# That is not a cosmetic problem, it is the reason the dashboard looked dead and the simulator
+# looked slow, and it was one line of bookkeeping:
+#
+# * the page could not keep up. ``applySnapshot`` repaints the whole SVG diagram and rebuilds
+#   the detection, plan and log tables on every message, so a tab receiving thousands of
+#   identical snapshots a second stops responding - and because the socket backlog grows faster
+#   than the browser drains it, new frames stop arriving too. The dashboard is blank *and* the
+#   machine is at 100% of a core, which reads as "localhost does not work".
+# * the simulator is in the same process. A Python thread spinning on ``json.dumps`` holds the
+#   GIL against the main thread that is between two ``env.step`` calls: measured, a stand-in
+#   physics step went from 40822 to 17259 steps/s, and sustained over six seconds the process
+#   burned 5.97 CPU-seconds in 6.02 seconds of wall clock with a client connected and nothing
+#   being published.
+#
+# So pushes are keyed on a *version counter* rather than on an event that can stay set, and a
+# burst of a hundred bus writes becomes one push rather than a hundred. 20 Hz is far above what
+# the picture changes at - the fastest thing the robot publishes is a camera frame, and the
+# frame pump is 3 - so nothing visible is lost.
+PUSH_MIN_INTERVAL_S = 0.05
 
-def build_app(bus: telemetry.Bus) -> FastAPI:
-    """The ASGI app. Separated from ``serve`` so the tests can drive it without a thread."""
+# The dashboard's own speech-to-text, built the same way demo 10's terminal listener is: one
+# faster-whisper model, loaded lazily and only once, because two copies of a 464 MB model in
+# one process is a way to run out of memory rather than a way to be fast. Recording happens in
+# the browser (it owns the microphone naturally), the server only ever decodes a small WAV.
+STT_MODEL = "small"
+STT_LOCK = threading.Lock()
+STT_CACHE: dict = {}
 
+
+def decode_wav(payload: bytes) -> tuple:
+    """A 16-bit PCM WAV blob -> (float32 samples, sample rate), mono or first channel."""
+    import numpy as np
+
+    with wave.open(io.BytesIO(payload)) as wav:
+        rate = wav.getframerate()
+        channels = wav.getnchannels()
+        width = wav.getsampwidth()
+        frames = wav.readframes(wav.getnframes())
+    if width != 2:
+        return None, rate
+    samples = np.frombuffer(frames, dtype=np.int16).astype("float32") / 32767.0
+    if channels > 1:
+        samples = samples[::channels]
+    return samples, rate
+
+
+def transcribe_wav(payload: bytes, model_name: str = STT_MODEL, language: str | None = None) -> str:
+    """One WAV blob -> one sentence. The model cache is on the machine already."""
+    samples, rate = decode_wav(payload)
+    if samples is None:
+        return ""
+    key = (model_name, language)
+    with STT_LOCK:
+        model = STT_CACHE.get(key)
+        if model is None:
+            from faster_whisper import WhisperModel
+
+            model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            STT_CACHE.clear()
+            STT_CACHE[key] = model
+    segments, _info = model.transcribe(samples, language=language, beam_size=1)
+    return " ".join(segment.text for segment in segments).strip()
+
+
+def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
+    """The ASGI app. Separated from ``serve`` so the tests can drive it without a thread.
+
+    ``stt`` replaces the faster-whisper transcriber (browser WAV bytes -> text): a test should
+    not have to load a real speech model, and a bench that wants a different engine does not
+    have to fork the app.
+    """
     app = FastAPI(title="leisaac demo 11", docs_url=None, redoc_url=None)
+
+    @app.post("/api/voice")
+    async def voice(request: Request) -> dict:
+        """The browser's microphone recording, transcribed.
+
+        One WAV blob in, one sentence out - the text goes back, and the browser puts it in the
+        command box so the person can correct it before sending. Nothing is auto-sent: hearing
+        the model mis-hear the order go straight to a robot arm is worse than one extra click.
+        """
+        payload = await request.body()
+        if not payload:
+            return JSONResponse({"error": "audio vacío"}, status_code=400)
+        model_name = request.query_params.get("model") or STT_MODEL
+        language = request.query_params.get("language") or None
+        if stt is not None:
+            text = stt(payload)
+        else:
+            try:
+                text = transcribe_wav(payload, model_name, language)
+            except ImportError:
+                return JSONResponse(
+                    {"error": "faster-whisper no está instalado en este entorno"},
+                    status_code=503)
+            except Exception as exc:  # noqa: BLE001 - bad audio must answer, not 500
+                return JSONResponse({"error": f"no se pudo transcribir: {exc}"},
+                                    status_code=400)
+        return {"ok": True, "text": text}
 
     @app.get("/")
     def index() -> FileResponse:
@@ -106,6 +212,9 @@ def build_app(bus: telemetry.Bus) -> FastAPI:
             return JSONResponse({"error": "no action"}, status_code=400)
         params = {k: v for k, v in payload.items() if k != "action"}
         if action == "start":
+            # The setup the dashboard chose travels with the go-ahead: the demo is already
+            # past its CLI by the time this button is pressed, so these override its defaults.
+            bus.send_control("start", **params)
             bus.open_start()
             return {"ok": True, "action": "start"}
         bus.send_control(action, **params)
@@ -119,40 +228,88 @@ def build_app(bus: telemetry.Bus) -> FastAPI:
         to change and pushes, the other reads what the browser sent. Polling the bus on a timer
         would either be late or would flood the socket, and the bus knows exactly when
         something changed.
+
+        Two things about the push side are load-bearing and both were bugs first:
+
+        **A connection is answered immediately, without waiting for a change.** The dashboard
+        is meant to be open *before* the simulator starts, and that is exactly when nothing is
+        happening: ``main`` publishes the bench sheet, then waits up to two minutes for somebody
+        to press start. A handler that only spoke when the bus changed left the page blank for
+        all of it, so the one screen that exists to explain the wait showed nothing at all. It
+        read as a server that did not come up. Measured: connecting and receiving nothing for
+        five seconds, with the process healthy and ``/api/state`` answering the whole time.
+
+        **Pushes are keyed on a version counter and rate-limited**, never on an event that can
+        stay set. See ``PUSH_MIN_INTERVAL_S`` for the measurement - 2171 snapshots per second
+        from a single bus change - and for why that made both the page and the simulator look
+        broken. ``pending["v"]`` is bumped by the hook from whichever thread the robot is on,
+        and a push happens only when it differs from what was last sent, so a burst of writes
+        coalesces into one push and a quiet bus produces no pushes at all.
         """
         await websocket.accept()
         loop = asyncio.get_running_loop()
         wake = asyncio.Event()
+        pending = {"v": 0}
 
         def hook() -> None:
             # Called from whichever thread the robot is on - possibly the one inside
-            # ``env.step`` - so the hand-off to the loop has to be explicit.
-            loop.call_soon_threadsafe(wake.set)
+            # ``env.step`` - so the hand-off to the loop has to be explicit. Bumping a counter
+            # is what decides whether a push is due: several changes between two pushes are
+            # then one push rather than several. The event is only a "go and look" knock, so
+            # waking on it when nothing changed is harmless - the loop re-reads the version and
+            # goes back to sleep.
+            loop.call_soon_threadsafe(_bump)
+
+        def _bump() -> None:
+            pending["v"] += 1
+            wake.set()
 
         bus.add_hook(hook)
         reader = asyncio.create_task(_reader(websocket, bus))
-        waiter = asyncio.create_task(wake.wait())
+        sent = -1          # the bus version already pushed; -1 means "nothing yet"
+        last_push = 0.0
         last_frame = 0
         try:
             while True:
-                done, _pending = await asyncio.wait({reader, waiter},
-                                                    return_when=asyncio.FIRST_COMPLETED)
-                if reader in done:
-                    break  # the browser hung up, or sent something malformed
-                waiter.cancel()
-                waiter = asyncio.create_task(wake.wait())
+                version = pending["v"]
+                if version == sent:
+                    # Nothing new. Sleep until either the bus changes or the browser speaks.
+                    # The event is cleared first, because it is only ever *set* and leaving it
+                    # set would make the next waiter return at once - which is the spin this
+                    # loop is written to not have. The version is re-read afterwards so a
+                    # change landing in that window is not lost.
+                    wake.clear()
+                    if pending["v"] != version:
+                        continue
+                    waiter = asyncio.create_task(wake.wait())
+                    done, _pending = await asyncio.wait(
+                        {reader, waiter}, return_when=asyncio.FIRST_COMPLETED)
+                    waiter.cancel()
+                    if reader in done:
+                        break  # the browser hung up, or sent something malformed
+                    continue
+
+                # Something changed. Push at most once per PUSH_MIN_INTERVAL_S: if a push is
+                # not due yet, wait for it and re-read the version, so the writes that arrive
+                # in the meantime cost nothing.
+                due = last_push + PUSH_MIN_INTERVAL_S
+                now = time.monotonic()
+                if sent >= 0 and now < due:
+                    await asyncio.sleep(due - now)
+                    continue
+                sent = pending["v"]
+                last_push = time.monotonic()
                 await websocket.send_json({"type": "snapshot", **bus.snapshot()})
-                seq, jpeg, meta = bus.frame()
-                if jpeg is not None and seq > last_frame:
-                    await websocket.send_json({"type": "frame", "seq": seq, "meta": meta})
+                _seq, jpeg, meta = bus.frame()
+                if jpeg is not None and _seq > last_frame:
+                    await websocket.send_json({"type": "frame", "seq": _seq, "meta": meta})
                     await websocket.send_bytes(jpeg)
-                    last_frame = seq
+                    last_frame = _seq
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
             bus.drop_hook(hook)
-            for task in (reader, waiter):
-                task.cancel()
+            reader.cancel()
 
     return app
 
@@ -187,13 +344,14 @@ async def _reader(websocket: WebSocket, bus: telemetry.Bus) -> None:
 class Monitor:
     """A running dashboard: ``start`` it, read ``url``, ``stop`` it."""
 
-    def __init__(self, bus: telemetry.Bus, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT):
+    def __init__(self, bus: telemetry.Bus, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
+                 stt=None):
         import uvicorn
 
         self.bus = bus
         self.host = host
         self.port = port
-        self.app = build_app(bus)
+        self.app = build_app(bus, stt)
         self.config = uvicorn.Config(self.app, host=host, port=port, log_level="warning",
                                      access_log=False, lifespan="off")
         self.server = uvicorn.Server(self.config)
@@ -240,9 +398,9 @@ class Monitor:
 
 
 def serve(bus: telemetry.Bus, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
-          open_browser: bool = False, announce=lambda _line: None) -> Monitor:
+          open_browser: bool = False, announce=lambda _line: None, stt=None) -> Monitor:
     """Start the dashboard and return it once it is listening."""
-    monitor = Monitor(bus, host, port).start()
+    monitor = Monitor(bus, host, port, stt=stt).start()
     if not monitor.wait_ready():
         announce(f"  the dashboard did not come up on {host}:{port}; is the port in use?")
         return monitor
