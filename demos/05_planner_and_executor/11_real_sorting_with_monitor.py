@@ -55,12 +55,13 @@ import argparse
 import copy
 import importlib.util
 import math
-import random
 import sys
 import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+
+import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -78,7 +79,28 @@ import scene_spec  # noqa: E402
 import telemetry  # noqa: E402
 import viewer as viewer_module  # noqa: E402
 from command_model_v2.command_model import CommandModel  # noqa: E402
-from monitor import server as monitor_server  # noqa: E402
+
+# ``monitor.server`` is imported where it is used, not here. It pulls in fastapi and uvicorn, and
+# measured that is 305 ms of the 440 ms this module costs to import - paid by every test that
+# wants ``StrictExecutor`` or the task list, and by any tool that imports this file for one
+# constant. The dashboard is a separate concern from the robot, and importing a web framework is
+# not something to do to answer "how wide is the gripper".
+#
+#   monitor_server.DEFAULT_HOST   -> the two defaults in build_parser
+#   monitor_server.serve(...)     -> the dashboard in main
+#
+# Both are in `main`'s path already, so nothing pays for this unless the dashboard is used.
+def _monitor_server():
+    """Import the dashboard's server module on demand, and remember it."""
+    global _MONITOR_SERVER
+    if _MONITOR_SERVER is None:
+        from monitor import server
+
+        _MONITOR_SERVER = server
+    return _MONITOR_SERVER
+
+
+_MONITOR_SERVER = None
 
 DEMO10_PATH = HERE / "10_command_to_motion.py"
 
@@ -90,6 +112,10 @@ FRAME_JPEG_QUALITY = 80
 # How long the command wait looks at the browser before falling back to the keyboard. Short
 # enough to feel instant, long enough that a person who is about to type is not fighting it.
 WEB_COMMAND_POLL_S = 0.2
+
+# How many panel controls are carried out between two physics steps. Each relook is a full
+# perception pass, so this bounds the time the simulation waits for the page; the rest queue.
+MAX_CONTROLS_PER_STEP = 2
 
 
 def load_demo10():
@@ -311,6 +337,13 @@ LATERAL_SLACK_M = (real_world.GRIPPER.aperture_m - 0.030) / 2.0
 STALL_IMPROVEMENT = 0.001
 STALL_WINDOW = 6
 
+# The largest move of a sighted object, between two looks, that is still the same object. The
+# closest pair of same-coloured objects in the scene is 64 mm apart centre to centre (demo 10,
+# LINK_TOLERANCE_M's comment), so anything at or beyond that could be the neighbour. A knock
+# larger than this is reported as a lost target and re-planned from a fresh look, rather than
+# followed onto whatever blob is nearest.
+SAME_OBJECT_MAX_SHIFT_M = 0.060
+
 # The lowest gripper-body height at which the tool-centre servo still corrects on a sighting.
 #
 # LOWERED FROM 0.20 TO 0.13 AND PUT BACK. At 0.13 the aperture reaches the part within a few
@@ -362,6 +395,14 @@ class GraspRefused(Exception):
     """Raised instead of picking a part up by writing its pose from the gripper frame."""
 
 
+class _TargetLost(Exception):
+    """Raised inside the executor when a re-target finds nothing: the plan must not continue."""
+
+    def __init__(self, prim):
+        super().__init__(prim)
+        self.prim = prim
+
+
 class StrictExecutor(executor_module.Executor):
     """An executor that will not fake a grasp.
 
@@ -382,6 +423,8 @@ class StrictExecutor(executor_module.Executor):
         self.allow_kinematic = bool(allow_kinematic)
         self.refused = 0
         self.kinematic = 0
+        # Grasps where the part was carried off the table or out of the jaws after the close.
+        self.lost = 0
         # Descents where the tool-centre servo had to correct the commanded pose to keep the
         # aperture over the part, and descents where it stopped making progress (a joint limit).
         self.corrected = 0
@@ -430,6 +473,17 @@ class StrictExecutor(executor_module.Executor):
             result = super().do(*args, **kwargs)
             if self.frame_hook is not None:
                 self.frame_hook()
+            if result.grasp == "lost":
+                # The part left the jaws' reach while the gripper rose. It is not held, so it
+                # must not be carried, lowered or released as if it were. Reported as a failed
+                # grasp: executor.run stops on "stale", and the caller re-plans or fails the task.
+                self.lost += 1
+                prim = kwargs.get("prim")
+                if prim:
+                    self.failures[prim] = self.failures.get(prim, 0) + 1
+                return executor_module.StepResult(
+                    action=result.action, ok=False, grasp="stale",
+                    note=f"la pieza ya no está en las mordazas: {result.note}")
             if args and args[0] == "close" and result.ok:
                 # Measured here because this is the last moment before the lift: afterwards the arm
                 # has risen 75 mm and any geometry read later describes where the gripper *is*,
@@ -524,6 +578,34 @@ class StrictExecutor(executor_module.Executor):
                        "rather than the aim")
         return "[" + ", ".join(parts) + verdict + "] "
 
+    def run(self, plan, resolve=None, keys=lambda: set(), fps=1, retarget=None, observe=None):
+        """``executor.run``, with a failed re-target stopping the plan instead of being ignored.
+
+        The shared executor keeps executing the old steps when ``retarget`` returns nothing - it
+        aims at where the object *was*. Here an empty re-target ends the plan at once, and the
+        result says the target was lost, so the caller re-plans from a fresh look or fails the
+        task. Motion stops where the arm is; nothing is carried or released on the way out.
+        """
+        if retarget is None:
+            return super().run(plan, resolve=resolve, keys=keys, fps=fps, observe=observe)
+
+        def guarded(step, prim):
+            fresh = retarget(step, prim)
+            if not fresh:
+                raise _TargetLost(prim)
+            return fresh
+
+        try:
+            return super().run(plan, resolve=resolve, keys=keys, fps=fps, retarget=guarded,
+                               observe=observe)
+        except _TargetLost as lost:
+            out = executor_module.RunResult()
+            out.stale_grasps = 1
+            out.stale_prims = [lost.prim] if lost.prim else []
+            out.aborted_at = "re-plan: no se encuentra el objeto"
+            self.log(f"  re-plan: no se encuentra el objeto {lost.prim}; se detiene el movimiento")
+            return out
+
     # -- putting the part actually between the pads ----------------------------
 
     def aperture_centre(self) -> tuple[float, float] | None:
@@ -593,7 +675,7 @@ class StrictExecutor(executor_module.Executor):
 
         Two guards, because a servo that cannot converge must say so instead of grinding:
 
-        * a shift larger than ``executor.TRACK_MAX_SHIFT_M`` still counts as lost - that is the
+        * a shift larger than ``SAME_OBJECT_MAX_SHIFT_M`` still counts as lost - that is the
           part being knocked away, not the arm lagging;
         * if the error has not shrunk by ``STALL_IMPROVEMENT`` over ``STALL_WINDOW`` corrections,
           the arm is at a limit and no amount of commanding will move it, so it stops and says so.
@@ -619,8 +701,13 @@ class StrictExecutor(executor_module.Executor):
         largest = 0.0
         lost = 0
         worst = 0.0
-        best_recent = math.inf
+        # The residuals of the last STALL_WINDOW corrections, for this descent only. A stall is a
+        # window of corrections that did not shrink the residual by STALL_IMPROVEMENT across the
+        # window. It is not a comparison against the best value of the whole descent, which
+        # flagged a steadily converging servo as stuck.
+        recent: list[float] = []
         stall_reported = False
+        self.correcting = True
 
         with torch.no_grad():
             for index in range(1, steps + 1):
@@ -643,7 +730,7 @@ class StrictExecutor(executor_module.Executor):
                             lost += 1
                     else:
                         drift = math.dist((float(seen[0]), float(seen[1])), tuple(command))
-                        if drift > executor_module.TRACK_MAX_SHIFT_M:
+                        if drift > SAME_OBJECT_MAX_SHIFT_M:
                             lost += 1
                         else:
                             centre = self.aperture_centre()
@@ -651,27 +738,30 @@ class StrictExecutor(executor_module.Executor):
                                 error = (float(seen[0]) - centre[0], float(seen[1]) - centre[1])
                                 size = math.hypot(*error)
                                 worst = max(worst, size)
-                                if size > 0.0005:  # 0.5 mm: below this it is the arm's own noise
-                                    # Never correct by more than the slack allows. If the arm is
-                                    # at a limit this caps the wild swing a full gain would give.
-                                    step = min(size, LATERAL_SLACK_M * 2.0)
-                                    command[0] += error[0] / size * step
-                                    command[1] += error[1] / size * step
-                                    corrections += 1
-                                    largest = max(largest, size)
-                                    if self.correcting:
-                                        self.corrected += 1
-                                if not stall_reported:
-                                    if size < best_recent - STALL_IMPROVEMENT:
-                                        best_recent = size
-                                    elif corrections >= STALL_WINDOW:
+                                if size > 0.0005 and not stall_reported:  # 0.5 mm: arm's own noise
+                                    recent.append(size)
+                                    del recent[:-STALL_WINDOW]
+                                    if (len(recent) == STALL_WINDOW
+                                            and recent[0] - recent[-1] < STALL_IMPROVEMENT):
+                                        # Stop issuing corrections: an arm at a joint limit obeys
+                                        # every command and goes nowhere. The caller re-plans or
+                                        # fails the task; the servo must not keep pushing.
                                         stall_reported = True
                                         self.correcting = False
                                         self.log(f"      centring stalled: the aperture is still "
                                                  f"{size * 1000:.1f} mm from the part after "
-                                                 f"{corrections} correction(s), so this pose is "
-                                                 f"outside what the arm can hold it at - the "
-                                                 f"jaws cannot reach it from here")
+                                                 f"{corrections} correction(s), and the last "
+                                                 f"{STALL_WINDOW} corrections did not shrink it - "
+                                                 f"the jaws cannot reach it from here")
+                                    else:
+                                        # Never correct by more than the slack allows. If the arm
+                                        # is at a limit this caps the swing a full gain would give.
+                                        step = min(size, LATERAL_SLACK_M * 2.0)
+                                        command[0] += error[0] / size * step
+                                        command[1] += error[1] / size * step
+                                        corrections += 1
+                                        largest = max(largest, size)
+                                        self.corrected += 1
                 if self.frame_hook is not None:
                     self.frame_hook()
                 self.current = torch.tensor([[command[0], command[1], z]], device=self.device)
@@ -709,7 +799,10 @@ class StrictExecutor(executor_module.Executor):
                 gap = math.dist(centre[:2], (float(here3[0]), float(here3[1])))
                 note += (f", aperture {gap * 1000:.1f} mm from the part"
                          f"{' (between the pads)' if gap <= LATERAL_SLACK_M else ' (outside the slack)'}")
-        return executor_module.StepResult(action=action, note=note, ok=lost == 0)
+        if stall_reported:
+            note += ", centrado detenido: la pose no es alcanzable desde aquí"
+        return executor_module.StepResult(action=action, note=note,
+                                          ok=lost == 0 and not stall_reported)
 
 
 # --------------------------------------------------------------------------------------
@@ -744,6 +837,10 @@ class ModelSpy:
                       for item in command.get("items", [])],
             "place": command.get("place"),
             "sort_by": command.get("sort_by"),
+            # The model's own score for each field it decided, so the panel can say which one it
+            # was unsure of instead of only reporting the weakest of them as a single number.
+            "confidences": command.get("confidences") or {},
+            "confidence": command.get("confidence"),
         })
         items = " ".join(str(item.get("kind")) for item in command.get("items", []))
         self._bus.node("understand", telemetry.OK,
@@ -876,6 +973,69 @@ def clamp_layout(items, work_x=DEFAULT_WORK_X, half_width_fn=None) -> list:
     return out
 
 
+class TaskLedger:
+    """One verdict per physical task, for the whole run. This is the only source of the result.
+
+    A later verdict replaces an earlier one, so a task that failed on the first attempt and was
+    then placed counts once, as placed. A task with no verdict is not counted as done. The key is
+    the part's perception-independent name when it resolved, else ``thing #<id>``, which is the
+    same key the executor's own logs use.
+    """
+
+    OK, FAILED = "ok", "failed"
+
+    def __init__(self):
+        self._verdict: dict[str, str] = {}
+        self._label: dict[str, str] = {}
+
+    def record(self, key: str, ok: bool, label: str = "") -> None:
+        self._verdict[key] = self.OK if ok else self.FAILED
+        if label:
+            self._label.setdefault(key, label)
+
+    def verdict(self, key: str) -> str | None:
+        return self._verdict.get(key)
+
+    def counts(self) -> tuple[int, int]:
+        values = list(self._verdict.values())
+        return values.count(self.OK), values.count(self.FAILED)
+
+    def failed_labels(self) -> list[str]:
+        return [self._label.get(key, key) for key, value in self._verdict.items()
+                if value == self.FAILED]
+
+    def status(self, aborted: bool = False) -> str:
+        """SUCCESS, PARTIAL_SUCCESS, FAILED, ABORTED or NO_TASKS, from the verdicts only."""
+        ok, failed = self.counts()
+        if aborted:
+            return "ABORTED"
+        if ok + failed == 0:
+            return "NO_TASKS"
+        if failed == 0:
+            return "SUCCESS"
+        if ok == 0:
+            return "FAILED"
+        return "PARTIAL_SUCCESS"
+
+
+# The user-facing name of each final status, and the exit code a script should see for it.
+STATUS_ES = {"SUCCESS": "Completado", "PARTIAL_SUCCESS": "Completado parcialmente",
+             "FAILED": "Fallido", "ABORTED": "Interrumpido", "NO_TASKS": "Sin tareas"}
+def _short_summary(run) -> str:
+    """The execute box's note: a few words, since the box is small. The full summary is in the log."""
+    if run.aborted:
+        return f"parado en {run.aborted_at.split(' ')[0]}"
+    text = f"{len(run.steps)} pasos, {run.real_grasps} agarre(s)"
+    if run.stale_grasps:
+        text += ", sin pieza"
+    if run.lost_grasps:
+        text += ", pieza perdida"
+    return text
+
+
+EXIT_CODE = {"SUCCESS": 0, "NO_TASKS": 0, "PARTIAL_SUCCESS": 2, "FAILED": 2, "ABORTED": 3}
+
+
 class MonitoredRobot(load_demo10().Robot):
     """``demo10.Robot`` with real physics, a real grip, and a dashboard attached.
 
@@ -903,6 +1063,11 @@ class MonitoredRobot(load_demo10().Robot):
         self.cam_fps = float(getattr(args, "cam_fps", 0.0) or 0.0)
         self._last_pump = 0.0
         self._plan_n = 0
+        # The command's tasks and which are done, keyed by part name so a re-plan recognises
+        # the same task instead of adding a second row for it. Cleared per command in `handle`.
+        self._task_rows: dict[str, dict] = {}
+        # The verdict per task for the whole run; the final result is derived from it alone.
+        self.ledger = TaskLedger()
         super().__init__(env, sensor, args, viewer=viewer, model=model)
         # Its own out/ folder: these frames are annotated for the dashboard and saved on
         # request, and mixing them into demo 10's would make either run's folder a mixture.
@@ -1031,8 +1196,7 @@ class MonitoredRobot(load_demo10().Robot):
             self.bus.node("ground", telemetry.WARN, "; ".join(plan.unresolved))
         else:
             self.bus.node("ground", telemetry.OK,
-                          f"{len(plan.picks)} pick(s) resolved to {len(plan.places)} "
-                          f"destination(s)")
+                          f"{len(plan.picks)} piezas, {len(plan.places)} destinos")
         # A plan that did not move still has something to say in the plan card - a question or
         # an unresolved reference is what the plan is that round - so both shapes publish.
         note = ""
@@ -1058,11 +1222,157 @@ class MonitoredRobot(load_demo10().Robot):
             "intent": getattr(plan, "intent", ""),
             "note": note,
             "picks": [str(pick) for pick in getattr(plan, "picks", [])],
+            "tasks": self.plan_tasks(plan),
             "steps": [{"action": step.action, "note": step.note,
                        "pose": None if step.pose is None else
                        [float(v) for v in step.pose]}
                       for step in plan.steps],
         })
+
+    # -- the task list, and what is already done --------------------------------
+
+    def plan_tasks(self, plan, premise: dict | None = None) -> list[dict]:
+        """This plan's tasks, as the rows a person would call a checklist.
+
+        One row per thing the plan intends to move: "bola roja -> cesta roja". That is the unit
+        ``planner.Task`` records and the unit ``check`` judges, so nothing here is inferred -
+        ``place`` is None for a plain ``pick``, which has nowhere to put the part, and the row
+        says so instead of inventing a destination.
+
+        ``premise`` maps perception ids to part names, and it is what makes the row stable: the
+        ids belong to one frame and change on the next look, while the name does not. So a
+        re-planned task is recognised as the same task rather than added as a second one.
+
+        ``state`` is one of ``doing`` / ``done`` / ``fail`` / ``todo``, and the panel's three icons
+        come from it. A task that `check` measured and did not find in its tray is ``fail``, which
+        is not the same as ``todo``: the second never got attempted, and marking it as failed would
+        be claiming a measurement that was not taken.
+        """
+        rows = []
+        for task in getattr(plan, "tasks", None) or []:
+            part = describe.phrase(task.kind, task.color, 1, self.args.lang, bare=True)
+            where = ""
+            if task.place is not None:
+                where = describe.phrase(task.place_kind, task.place_color, 1,
+                                        self.args.lang, bare=True)
+            rows.append({"key": self._task_key(task, premise),
+                         "part": part, "destination": where,
+                         "label": f"{part} → {where}" if where else part,
+                         # `done` is kept alongside `state` because it is the one flag with
+                         # meaning to anything reading this from outside the panel: `state` says
+                         # HOW it went, `done` says whether it succeeded.
+                         "done": False, "state": "todo"})
+        return rows
+
+    @staticmethod
+    def _task_key(task, premise: dict | None) -> str:
+        """What identifies a task across re-plans and in the ledger: the part's name, else its id.
+
+        The same key the ledger uses (``thing #<id>``), so a task that could not be named from
+        the frame is one task with one verdict, not a row that never matches anything.
+        """
+        prim = (premise or {}).get(task.pick)
+        return prim if prim else f"thing #{task.pick}"
+
+    def _note_tasks(self, plan, premise: dict | None = None) -> None:
+        """Fold this plan's tasks into the command's list, keeping what is already done.
+
+        A multi-object command does not arrive as one plan. ``_one_at_a_time`` re-plans around
+        each object in turn and calls ``check`` after every one, so the plans that get executed
+        hold a single task each - while the plan the person was asked to act on held all of them.
+        The list is therefore accumulated here, keyed by part, rather than replaced by each plan
+        as it runs: otherwise the checklist would show one task at a time and never the whole
+        job, which is the thing being asked for.
+        """
+        for row in self.plan_tasks(plan, premise):
+            previous = self._task_rows.get(row["key"])
+            if previous:
+                # A task that was already settled keeps its verdict: re-planning it is not a new
+                # attempt, and a row that flipped back to "pendiente" because the plan was rebuilt
+                # would say the measurement had been thrown away when it had not.
+                row["done"] = bool(previous.get("done"))
+                row["state"] = previous.get("state", "done" if row["done"] else "todo")
+            self._task_rows[row["key"]] = row
+        self._publish_tasks()
+
+    def _settle_rows(self) -> None:
+        """Show each checklist row with the ledger's verdict for its task, and nothing else.
+
+        A row with no verdict keeps its state. Nothing is ticked here that the ledger does not
+        hold, so the checklist cannot disagree with the final result.
+        """
+        for key, row in self._task_rows.items():
+            verdict = self.ledger.verdict(key)
+            if verdict == TaskLedger.OK:
+                row["done"], row["state"] = True, "done"
+            elif verdict == TaskLedger.FAILED:
+                row["done"], row["state"] = False, "fail"
+        self._publish_tasks()
+
+    def _placement_verdicts(self, plan, premise) -> list[tuple[str, bool, str | None]]:
+        """(task key, placed, part name or None) for each pick, from the simulator's positions.
+
+        Placed only when the object resolved to a known part, its destination resolved to a known
+        tray, and it measured inside that tray. Anything else is not placed - an object that
+        cannot be named from this frame is a failed task, not an unknown one.
+        """
+        out = []
+        for pick_id, place_id in zip(plan.picks, plan.places):
+            prim = premise.get(pick_id)
+            tray_prim = premise.get(place_id)
+            tray = (next((i for i in self.layout if i.prim == tray_prim), None)
+                    if tray_prim else None)
+            placed = prim is not None and tray is not None and self._inside(prim, tray)
+            key = prim if prim else f"thing #{pick_id}"
+            out.append((key, placed, prim))
+        return out
+
+    def _task_label(self, plan, key: str, premise) -> str:
+        """The human-readable objective of a task, for the ledger's failure list."""
+        for task in getattr(plan, "tasks", None) or []:
+            if self._task_key(task, premise) == key:
+                part = describe.phrase(task.kind, task.color, 1, self.args.lang, bare=True)
+                if task.place is None:
+                    return part
+                where = describe.phrase(task.place_kind, task.place_color, 1, self.args.lang,
+                                        bare=True)
+                return f"{part} → {where}"
+        return key
+
+    def _verify_and_retry(self, plan, premise, announce: bool = True) -> list[str]:
+        """Measure every placement, retry each miss once, and record one verdict per task.
+
+        The counters are read from the ledger, so each task adds to them exactly once. A retry
+        counts as recovered only when the object is then measured inside its tray; a retry that
+        did not place it is not a recovery. Returns the task keys that are still not placed.
+        """
+        self.bot.settle()
+        first = self._placement_verdicts(plan, premise)
+        retry = [prim for _key, placed, prim in first if not placed and prim is not None]
+        if retry:
+            self.say("  re-planning the ones that missed")
+        for prim in retry:
+            self._retry_one(prim)
+        self.bot.settle()
+        final = self._placement_verdicts(plan, premise)
+        for _key, placed, prim in final:
+            if placed and prim is not None and prim in retry:
+                self.recovered += 1
+        for key, placed, _prim in final:
+            self.ledger.record(key, placed, self._task_label(plan, key, premise))
+        self.verified, self.missed = self.ledger.counts()
+        self._settle_rows()
+        misses = [key for key, placed, _prim in final if not placed]
+        self.park()
+        seen = self.look("after the plan")
+        if announce:
+            self.say(f"  camera sees {len(seen.objects)} object(s) and "
+                     f"{len(seen.containers)} container(s); "
+                     f"{len(plan.picks) - len(misses)}/{len(plan.picks)} placement(s) in a tray")
+        return misses
+
+    def _publish_tasks(self) -> None:
+        self.bus.set_state(tasks=[dict(row) for row in self._task_rows.values()])
 
     # -- perception ------------------------------------------------------------
 
@@ -1075,9 +1385,11 @@ class MonitoredRobot(load_demo10().Robot):
         at (+0.366, -0.472) or as an unclassified blob.
         """
         self.bus.node("capture", telemetry.ACTIVE, caption or "frame")
+        began = time.perf_counter()
         seen = super().look(caption)
-        note = (f"{len(seen.objects)} object(s), {len(seen.containers)} container(s)"
-                + (f" - {caption}" if caption else ""))
+        self.bus.set_metric("perception_ms", round((time.perf_counter() - began) * 1000, 1))
+        # Corta a propósito: la caja de percepción es pequeña. El motivo va en la caja de cámara.
+        note = f"{len(seen.objects)} objetos, {len(seen.containers)} cestas"
         self.bus.node("perceive", telemetry.WARN if not seen.objects else telemetry.OK, note)
         try:
             mapping = self.link(seen)
@@ -1108,6 +1420,7 @@ class MonitoredRobot(load_demo10().Robot):
                                        [int(cv2.IMWRITE_JPEG_QUALITY), FRAME_JPEG_QUALITY])
             if ok:
                 self.bus.put_frame(encoded.tobytes(), {"note": note, "annotated": True})
+                self.bus.tick("camera")
         except Exception:  # noqa: BLE001 - encoding is a convenience, never a requirement
             return
 
@@ -1146,6 +1459,7 @@ class MonitoredRobot(load_demo10().Robot):
                                        [int(cv2.IMWRITE_JPEG_QUALITY), FRAME_PUMP_QUALITY])
             if ok:
                 self.bus.put_frame(encoded.tobytes(), {"note": "en vivo", "annotated": False})
+                self.bus.tick("camera")
         except Exception:  # noqa: BLE001 - a lost frame must never stop a descent
             return
 
@@ -1192,6 +1506,10 @@ class MonitoredRobot(load_demo10().Robot):
         copy.steps = steps
         copy.picks = list(plan.picks)
         copy.places = list(plan.places)
+        # Raised poses change how the arm gets there, not what it was asked to do, so the task
+        # list comes across untouched. Without this the checklist would empty itself the moment a
+        # release height had to be lifted.
+        copy.tasks = list(plan.tasks)
         copy.unresolved = list(plan.unresolved)
         copy.question = dict(plan.question)
         copy.reply = plan.reply
@@ -1203,12 +1521,24 @@ class MonitoredRobot(load_demo10().Robot):
     def run_plan(self, plan, premise, command):
         plan = self._release_adjusted(plan)
         self._publish_plan(plan, note="", increment=False)
+        # The whole job, before the per-object re-plans start: this is the plan the person asked
+        # for, and it is where the checklist gets all of its rows from.
+        self._note_tasks(plan, premise)
         for step in plan.steps:
             pose = "" if step.pose is None else " ".join(f"{v:+.3f}" for v in step.pose)
             self.bus.log(f"    plan: {step.action:<8} {step.note:<34} {pose}", node="plan")
         self.bus.node("execute", telemetry.ACTIVE, f"{len(plan.steps)} step(s)")
         refused_before = self.bot.refused
         run = super().run_plan(plan, premise, command)
+        if run.stale_grasps:
+            # A grasp that did not hold, or a target that could not be found again, is a failed
+            # attempt at each task in this plan. A later verdict (check) may still settle it as
+            # placed; if none comes - for example when the command runs out of attempts - the
+            # failure stands. A user abort is not a failure and is not recorded here.
+            for pick_id in plan.picks:
+                key = premise.get(pick_id) or f"thing #{pick_id}"
+                self.ledger.record(key, False, self._task_label(plan, key, premise))
+            self._settle_rows()
         if self.bot.refused > refused_before:
             # Demo 10 reports this failure as "the arm knocked the target away before closing",
             # which is the right shape of response - re-look and try again - for the wrong reason.
@@ -1217,7 +1547,7 @@ class MonitoredRobot(load_demo10().Robot):
             self.say("  demo 11: the jaws closed and the part was not held, so it was not "
                      "carried. A real arm drops the part here rather than flying on to the tray.")
         state = telemetry.FAIL if (run.stale_grasps or run.aborted) else telemetry.OK
-        self.bus.node("execute", state, run.summary())
+        self.bus.node("execute", state, _short_summary(run))
         self.bus.set_state(real_grasps=run.real_grasps, tracked=self.tracked,
                            reaimed=self.reaimed, refused_grasps=self.bot.refused,
                            recentred=self.bot.corrected,
@@ -1237,12 +1567,72 @@ class MonitoredRobot(load_demo10().Robot):
         was = getattr(self, "mask_arm", False)
         self.mask_arm = True
         try:
-            done = super()._retry_one(prim)
+            done = self._retry_placed(prim)
         finally:
             self.mask_arm = was
         self.bus.node("recover", telemetry.OK if done else telemetry.FAIL,
                       f"{prim} {'re-placed' if done else 'could not be re-placed'}")
         return done
+
+    def _retry_placed(self, prim: str) -> bool:
+        """Pick one misplaced part up again, with the same steps and the same safety as a pick.
+
+        Demo 10's retry aimed from the simulator's own position, skipped the close, and released
+        at the old height. Here the aim comes from the camera - the same sighting a plan uses -
+        the jaws close and the lift is checked, and the release uses the rim-clearance height the
+        normal path uses. Any step that fails returns False at once; the caller re-verifies the
+        tray either way, so a retry is only ever counted as a recovery when it is measured placed.
+        """
+        item = next((i for i in self.layout if i.prim == prim), None)
+        tray = self._tray_of(prim)
+        if item is None or tray is None:
+            self.say(f"    {prim}: no hay dónde devolverlo")
+            return False
+        seen = self.look("recuperación")
+        premise = self.link(seen)
+        pid = next((key for key, name in premise.items() if name == prim), None)
+        thing = (next((t for t in seen.everything if t.id == pid), None)
+                 if pid is not None else None)
+        if thing is None or thing.pos_m is None:
+            self.say(f"    {prim}: no lo encuentro en la imagen; no se intenta a ciegas")
+            return False
+        grasp = np.asarray(planner.grasp_pose(thing, offset=self.args.offset), dtype=float)
+        lift = grasp + np.array([0.0, 0.0, executor_module.ABOVE])
+        drop = np.asarray(planner.place_pose(self._as_thing(tray, (tray.x, tray.y, tray.z))),
+                          dtype=float)
+        drop_low = drop.copy()
+        drop_low[2] = max(drop[2], real_world.safe_release_z(tray))
+        above_drop = drop_low + np.array([0.0, 0.0, executor_module.ABOVE])
+
+        self.tracked_xy[prim] = (float(thing.pos_m[0]), float(thing.pos_m[1]))
+        observe = lambda: self.locate(prim, self.tracked_xy.get(prim), kind_hint="any")
+        approach = self.bot.track(observe=observe, target_z=float(lift[2]),
+                                  steps=executor_module.TRACK_DESCEND_STEPS, action="above",
+                                  grip=executor_module.OPEN, aim=(float(lift[0]), float(lift[1])))
+        descent = self.bot.track(observe=observe, target_z=float(grasp[2]),
+                                 steps=executor_module.TRACK_DESCEND_STEPS, action="down",
+                                 grip=executor_module.OPEN, aim=(float(grasp[0]), float(grasp[1])))
+        if not (approach.ok and descent.ok):
+            self.say(f"    {prim}: se pierde de vista al acercarse; no se intenta")
+            return False
+        closed = self.bot.do("close", grasp, executor_module.CLOSE, prim=prim, on_close=grasp,
+                             check="reach")
+        if not closed.ok:
+            self.say(f"    {prim}: las mordazas cierran sobre nada")
+            return False
+        before = self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy().copy()
+        lifted = self.bot.do("lift", lift, executor_module.CLOSE, prim=prim, on_close=before,
+                             check="follow")
+        self.bot.log(f"      lift: {lifted.note}")
+        if not lifted.ok:
+            return False
+        self.bot.do("carry", above_drop, executor_module.CLOSE)
+        self.bot.do("lower", drop_low, executor_module.CLOSE)
+        self.bot.drop()
+        self.bot.do("release", drop_low, executor_module.OPEN)
+        self.bot.do("retreat", above_drop, executor_module.OPEN)
+        self.bot.settle()
+        return True
 
     def _one_at_a_time(self, command, plan) -> bool:
         self.bus.set_state(phase="sorting")
@@ -1252,10 +1642,13 @@ class MonitoredRobot(load_demo10().Robot):
     def check(self, plan, premise, announce: bool = True):
         self.bus.node("verify", telemetry.ACTIVE,
                       f"judging {len(plan.picks)} placement(s) against the tray geometry")
-        misses = super().check(plan, premise, announce)
+        misses = self._verify_and_retry(plan, premise, announce)
+        # The verdict per task. `check` has just re-perceived and measured where every part came
+        # to rest, so this is the moment the checklist has an answer: `misses` is the parts that
+        # are not in the tray they were sent to.
         verified = len(plan.picks) - len(misses)
         self.bus.node("verify", telemetry.OK if not misses else telemetry.WARN,
-                      f"{verified}/{len(plan.picks)} inside"
+                      f"{verified}/{len(plan.picks)} dentro"
                       + (f"; missed {', '.join(misses)}" if misses else ""))
         self.bus.set_state(verified=self.verified, recovered=self.recovered,
                            missed=self.missed, replanned=self.replanned,
@@ -1275,6 +1668,10 @@ class MonitoredRobot(load_demo10().Robot):
         # things down between commands, and a part lying flat is a part the jaws can hold.
         self.bot.impossible.clear()
         self.bot.failures.clear()
+        # A new command is a new job: the previous one's checklist has nothing to do with this
+        # one, and leaving it up would claim work that was never asked for.
+        self._task_rows.clear()
+        self._publish_tasks()
         telemetry.reset_nodes(self.bus)
         self.bus.node("input", telemetry.ACTIVE, text)
         self.bus.set_state(phase="command", command=text)
@@ -1342,6 +1739,11 @@ class MonitoredRobot(load_demo10().Robot):
         self.bus.node("input", telemetry.ACTIVE,
                       "esperando al panel" if self.web_input else "esperando una orden")
         while True:
+            # STOP is a flag, checked before anything else on every pass, so it cannot be
+            # consumed behind a queued sentence or control.
+            if self.bus.stop_requested():
+                self.bus.log("  parada solicitada: no se acepta ninguna orden más", level="warn")
+                return "quit"
             text = self.bus.take_command(timeout=WEB_COMMAND_POLL_S)
             if text:
                 source = self.bus.command_source()
@@ -1353,18 +1755,17 @@ class MonitoredRobot(load_demo10().Robot):
                 continue
             control = self.bus.take_control() or {}
             action = str(control.get("action") or "")
-            if action == "stop":
-                self.bus.log("  el panel ha pedido parar", level="warn")
-                return "quit"
             if action == "next":
                 self.bus.log("  el panel ha pedido la siguiente ronda")
                 self.advance = True
+                self.bus.set_command_state(control.get("id", ""), telemetry.SUCCESS)
                 # An empty sentence is a no-op for ``handle``, which returns to the round loop
                 # and finds ``advance`` set. Anything else here would run a command nobody asked
                 # for just to get out of the wait.
                 return ""
-            self.bus.log(f"  el panel ha pedido {action!r} mientras esperaba una orden; "
-                         f"se atiende en el siguiente paso", level="warn")
+            # Everything else is carried out here, now. Nothing is logged as "later" and dropped:
+            # there are no executor steps while this loop waits, so "later" would never come.
+            self._apply_control(control)
 
     def keys(self) -> set[str]:
         """Viewer keys, plus anything the dashboard asked for.
@@ -1375,40 +1776,68 @@ class MonitoredRobot(load_demo10().Robot):
         are safe to perform between two steps.
         """
         pressed = set(super().keys())
+        # keys() runs once per physics step, so its rate is the simulator's loop rate.
+        self.bus.tick("physics")
         self.cam_pump()
-        while True:
+        # STOP first, and always: it is a flag, so it is seen even if the controls below are
+        # busy or there are many of them.
+        if self.bus.stop_requested():
+            self.quit = True
+            pressed.add("q")
+        # A bounded number of controls per step. A burst from the page is spread over the next
+        # steps instead of costing that many perception passes before the arm moves again; the
+        # rest stay queued, in order, and nothing is discarded.
+        for _ in range(MAX_CONTROLS_PER_STEP):
             control = self.bus.take_control()
             if control is None:
                 break
-            action = str(control.get("action") or "")
-            params = control.get("params") or {}
-            if action == "stop":
-                self.bus.log("  the dashboard asked to stop", level="warn")
+            if self._apply_control(control) == "stop":
                 self.quit = True
                 pressed.add("q")
-            elif action == "next":
-                self.bus.log("  the dashboard asked for the next round")
-                self.advance = True
-            elif action == "relook":
-                self.bus.log("  the dashboard asked for a re-look")
-                self.look("dashboard re-look")
-            elif action == "save":
-                if self.shown is None:
-                    self.say("  no frame yet")
-                else:
-                    self.writer.force(self.shown)
-                    self.say(f"  frame saved ({self.writer.written} so far) to "
-                             f"{self.writer.folder}")
-            elif action == "voice":
-                self.bus.log("  voice cannot be switched on mid-run; it is chosen with --voice"
-                             if self.voice is None else
-                             "  the microphone is already listening between commands")
-            elif action == "start":
-                self.bus.open_start()
-            else:
-                self.bus.log(f"  the dashboard asked for {action!r}, which this demo does not "
-                             f"do; parameters were {params}", level="warn")
         return pressed
+
+    def _apply_control(self, control: dict) -> str:
+        """Carry out one control from the panel, and report the outcome on its own command.
+
+        Returns the action, so a caller can react to ``stop`` or ``next``. Every control ends in
+        SUCCESS or FAILED with a reason; none is left RUNNING and none is silently ignored.
+        """
+        action = str(control.get("action") or "")
+        cid = control.get("id", "")
+        params = control.get("params") or {}
+        outcome, note = telemetry.SUCCESS, ""
+        if action == "stop":
+            self.bus.log("  la parada del panel llega al robot", level="warn")
+        elif action == "next":
+            self.bus.log("  el panel pide la siguiente ronda")
+            self.advance = True
+        elif action == "relook":
+            self.bus.log("  el panel pide volver a observar")
+            try:
+                self.look("re-observación del panel")
+            except Exception as exc:  # noqa: BLE001 - reported as the command's failure
+                outcome, note = telemetry.FAILED, f"no se pudo observar: {exc}"
+                self.bus.log(f"  {note}", level="fail")
+        elif action == "save":
+            if self.shown is None:
+                outcome, note = telemetry.FAILED, "todavía no hay imagen"
+            else:
+                self.writer.force(self.shown)
+                self.say(f"  imagen guardada ({self.writer.written} en total) en "
+                         f"{self.writer.folder}")
+        elif action == "voice":
+            outcome = telemetry.FAILED
+            note = ("el micrófono se elige al arrancar con --voice"
+                    if self.voice is None else "el micrófono ya está escuchando")
+            self.bus.log(f"  {note}", level="warn")
+        elif action == "start":
+            self.bus.open_start()
+        else:
+            outcome, note = telemetry.FAILED, f"la demo no sabe hacer {action!r}"
+            self.bus.log(f"  {note}; parámetros {params}", level="warn")
+        if cid:
+            self.bus.set_command_state(cid, outcome, note)
+        return action
 
 
 # --------------------------------------------------------------------------------------
@@ -1425,12 +1854,21 @@ def apply_start_params(args, bus: telemetry.Bus) -> None:
     silent ``setattr`` on the argument namespace.
     """
     params = {}
+    start_id = ""
     while True:
         control = bus.take_control()
         if control is None:
             break
         if control.get("action") == "start":
             params = control.get("params") or {}
+            start_id = control.get("id", "")
+        else:
+            # Before the run exists there is nothing for these to act on. They are answered,
+            # with that reason, rather than taken and forgotten.
+            bus.set_command_state(control.get("id", ""), telemetry.CANCELLED,
+                                  "llegó antes de iniciar el entorno")
+    if start_id:
+        bus.set_command_state(start_id, telemetry.SUCCESS)
     for key in ("variant", "camera", "rounds", "seed"):
         if key in params:
             try:
@@ -1534,6 +1972,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--web", dest="web", action="store_true", default=True,
                         help="serve the dashboard on localhost (default)")
     parser.add_argument("--no-web", dest="web", action="store_false")
+    monitor_server = _monitor_server()
     parser.add_argument("--host", default=monitor_server.DEFAULT_HOST,
                         help="interface to bind; loopback unless you have a reason")
     parser.add_argument("--port", type=int, default=monitor_server.DEFAULT_PORT,
@@ -1601,8 +2040,8 @@ def main() -> int:
 
     monitor = None
     if args.web:
-        monitor = monitor_server.serve(bus, args.host, args.port, open_browser=args.open,
-                                       announce=lambda line: print(line, flush=True))
+        monitor = _monitor_server().serve(bus, args.host, args.port, open_browser=args.open,
+                                          announce=lambda line: print(line, flush=True))
 
     if args.setup_only:
         print("  --setup-only: not starting the simulator. close this window to stop the "
@@ -1617,17 +2056,20 @@ def main() -> int:
     # chosen and the run gets started. With no dashboard there is nobody to press the button, and
     # a scripted run has its own script, so neither waits.
     if args.web and args.wait_for_start and not args.text:
-        bus.set_state(phase="starting")
+        bus.set_state(phase="waiting_start")
         bus.node("setup", telemetry.ACTIVE, "waiting for the dashboard to start the environment")
         print(f"  dashboard: {monitor.url if monitor else '(none: --no-web)'}", flush=True)
         print("  waiting for the start command there, or press Enter here", flush=True)
         enter_starts_the_run(bus)
-        bus.wait_start(timeout=args.start_timeout or None)
+        if not bus.wait_start(timeout=args.start_timeout or None):
+            bus.log("  tiempo de espera agotado: se arranca con la configuración de la línea "
+                    "de órdenes, sin esperar al panel", level="warn")
         apply_start_params(args, bus)
 
     # The command model before the simulator, and the microphone with it. Loading a model after
     # Isaac takes 0xC0000005 inside gliner2's from_pretrained, and two heavy native libraries
     # loading at once did the same thing before that.
+    bus.set_state(phase="loading")
     model = CommandModel()
     listener = None
     if args.voice:
@@ -1644,37 +2086,43 @@ def main() -> int:
     bus.set_state(phase="starting", voice="on" if listener else "off")
     bus.node("setup", telemetry.ACTIVE, "starting Isaac Sim")
     print("  starting Isaac Sim; this takes about two minutes", flush=True)
-    isaac_io.prepare_runtime(headless=args.headless)
+    try:
+        isaac_io.prepare_runtime(headless=args.headless)
 
-    layout = None
-    if args.variant == "out_of_reach":
-        layout = scene_spec.out_of_reach_scene()
-        env, sensor = build_real_env(args.camera, layout, pen=False,
-                                       grip_stiffness=args.grip_stiffness)
-        print("  two parts placed beyond the arm's reach, on purpose:", flush=True)
-        for item in scene_spec.OUT_OF_REACH_ITEMS:
-            print(f"    {item}: "
-                  f"{scene_spec.why_unreachable(*scene_spec.OUT_OF_REACH_ITEMS[item])}",
-                  flush=True)
-    else:
-        env, sensor = build_real_env(args.camera, list(scene_spec.DEFAULT_SCENE),
-                                     pen=args.variant == "contained",
-                                     grip_stiffness=args.grip_stiffness)
-        if args.variant == "contained":
-            print(f"  working area walled in: a {pen_module.PEN_HEIGHT * 100:.1f} cm kerb around "
-                  f"x {scene_spec.WORK_X} y {scene_spec.WORK_Y}", flush=True)
-    env.reset()
-    isaac_io.aim_camera(env, args.camera, sensor)
-    was = set_gripper(env, args.close_command)
-    print(f"  jaws close to {args.close_command:.2f} rad (was {was:.2f} rad, which grips nothing "
-          f"smaller than about 8 cm)", flush=True)
-    _offset = robot_measure(env)
-    if _offset is not None:
-        print(f"  measured tool offset from the gripper body: "
-              f"({_offset[0] * 1000:+.0f}, {_offset[1] * 1000:+.0f}, "
-              f"{_offset[2] * 1000:+.0f}) mm; demo 05's fitted HOLD is "
-              f"({executor_module.HOLD[0] * 1000:+.0f}, {executor_module.HOLD[1] * 1000:+.0f}, "
-              f"{executor_module.HOLD[2] * 1000:+.0f}) mm", flush=True)
+        layout = None
+        if args.variant == "out_of_reach":
+            layout = scene_spec.out_of_reach_scene()
+            env, sensor = build_real_env(args.camera, layout, pen=False,
+                                           grip_stiffness=args.grip_stiffness)
+            print("  two parts placed beyond the arm's reach, on purpose:", flush=True)
+            for item in scene_spec.OUT_OF_REACH_ITEMS:
+                print(f"    {item}: "
+                      f"{scene_spec.why_unreachable(*scene_spec.OUT_OF_REACH_ITEMS[item])}",
+                      flush=True)
+        else:
+            env, sensor = build_real_env(args.camera, list(scene_spec.DEFAULT_SCENE),
+                                         pen=args.variant == "contained",
+                                         grip_stiffness=args.grip_stiffness)
+            if args.variant == "contained":
+                print(f"  working area walled in: a {pen_module.PEN_HEIGHT * 100:.1f} cm kerb around "
+                      f"x {scene_spec.WORK_X} y {scene_spec.WORK_Y}", flush=True)
+        env.reset()
+        isaac_io.aim_camera(env, args.camera, sensor)
+        was = set_gripper(env, args.close_command)
+        print(f"  jaws close to {args.close_command:.2f} rad (was {was:.2f} rad, which grips nothing "
+              f"smaller than about 8 cm)", flush=True)
+        _offset = robot_measure(env)
+        if _offset is not None:
+            print(f"  measured tool offset from the gripper body: "
+                  f"({_offset[0] * 1000:+.0f}, {_offset[1] * 1000:+.0f}, "
+                  f"{_offset[2] * 1000:+.0f}) mm; demo 05's fitted HOLD is "
+                  f"({executor_module.HOLD[0] * 1000:+.0f}, {executor_module.HOLD[1] * 1000:+.0f}, "
+                  f"{executor_module.HOLD[2] * 1000:+.0f}) mm", flush=True)
+
+    except BaseException as exc:
+        bus.set_state(phase="failed", error=f"{type(exc).__name__}: {exc}")
+        bus.log(f"el entorno no ha arrancado: {type(exc).__name__}: {exc}", level="fail")
+        raise
 
     viewer = None
     robot = None
@@ -1705,7 +2153,6 @@ def main() -> int:
         robot.findings()
 
         scripted = list(args.text) * max(1, args.repeat) if args.text else []
-        failures = 0
         stopped = False
 
         for round_index in range(args.rounds):
@@ -1756,35 +2203,44 @@ def main() -> int:
             if viewer is not None and viewer.wants_quit(robot.keys()):
                 break
 
-        robot.say("\n=== summary ===")
-        for label, value in (("placements verified", robot.verified),
-                             ("needed a retry", robot.recovered),
-                             ("never verified", robot.missed),
-                             ("replanned mid-task", robot.replanned),
-                             ("regrasp after a stale target", robot.regrasped),
-                             ("re-aimed at a knocked target", robot.reaimed),
-                             ("moves that re-tracked the target", robot.tracked),
-                             ("grasps refused (no friction hold)", robot.bot.refused),
-                             ("descents re-centred on the part", robot.bot.corrected),
-                             ("grasps carried by hand", robot.bot.kinematic)):
+        # The result comes from the ledger alone: one verdict per task, for the whole run. The
+        # exit code is derived from the same status, so the summary and the process cannot
+        # disagree.
+        status = robot.ledger.status(aborted=stopped)
+        ok_count, failed_count = robot.ledger.counts()
+        robot.say("\n=== resultado ===")
+        robot.say(f"  {STATUS_ES[status]}  ({status})")
+        robot.say(f"  tareas completadas: {ok_count}")
+        robot.say(f"  tareas fallidas:    {failed_count}")
+        for label in robot.ledger.failed_labels():
+            robot.say(f"    - {label}")
+        robot.say("\n=== detalle ===")
+        for label, value in (("colocadas y verificadas", robot.verified),
+                             ("recuperadas tras reintentar", robot.recovered),
+                             ("no verificadas", robot.missed),
+                             ("replanificaciones", robot.replanned),
+                             ("sujeciones rechazadas", robot.bot.refused),
+                             ("pérdidas de objeto tras cerrar", robot.bot.lost),
+                             ("centrados del efector", robot.bot.corrected),
+                             ("sujeciones forzadas (solo simulación)", robot.bot.kinematic)):
             robot.say(f"  {label:<40}: {value}")
-        bus.node("report", telemetry.FAIL if robot.missed else telemetry.OK,
-                 f"{robot.verified} verified, {robot.missed} missed, "
-                 f"{robot.bot.refused} grasp(es) refused")
-        bus.set_state(phase="done", verified=robot.verified, recovered=robot.recovered,
-                      missed=robot.missed, refused_grasps=robot.bot.refused,
+        bus.node("report", telemetry.OK if status in ("SUCCESS", "NO_TASKS") else telemetry.FAIL,
+                 f"{ok_count} ok, {failed_count} fallidas")
+        bus.set_state(phase="done", status=status, verified=robot.verified,
+                      recovered=robot.recovered, missed=robot.missed,
+                      refused_grasps=robot.bot.refused, lost_grasps=robot.bot.lost,
                       kinematic_grasps=robot.bot.kinematic)
         if robot.bot.allow_kinematic:
-            robot.say("  NOTE: --allow-kinematic was on, so some grasps were carried by writing "
-                      "the part's pose. A real arm cannot do that.")
-        failures += robot.missed
+            robot.say("  NOTA: --allow-kinematic estaba activo: algunas piezas se llevaron "
+                      "escribiendo su pose. Un brazo real no puede hacerlo.")
         if robot.writer:
             robot.writer.close()
-        return 2 if failures else 0
+        return EXIT_CODE[status]
     finally:
         if viewer is not None:
             viewer.close()
         env.close()
+        bus.complete_stop()
         bus.set_state(phase="stopped")
         if monitor is not None:
             # Stopped after the simulator, not before: the dashboard is how someone watching a
@@ -1796,12 +2252,16 @@ def _wait_forever(bus: telemetry.Bus) -> None:
     """Block until the dashboard asks to stop, or Ctrl-C."""
     print("  ctrl-c to stop", flush=True)
     try:
-        while True:
+        while not bus.stop_requested():
             control = bus.take_control(timeout=1.0)
-            if control and control.get("action") == "stop":
-                return
+            if control is not None:
+                # Only preparation is running here: nothing can be moved, so a control that
+                # would need the simulator is refused with its reason rather than left pending.
+                bus.set_command_state(control.get("id", ""), telemetry.FAILED,
+                                      "solo se prepara el entorno; no hay robot que lo ejecute")
     except KeyboardInterrupt:
         return
+    bus.complete_stop()
 
 
 if __name__ == "__main__":
