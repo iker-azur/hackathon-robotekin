@@ -127,6 +127,12 @@ def transcribe_wav(payload: bytes, model_name: str = STT_MODEL, language: str | 
     return " ".join(segment.text for segment in segments).strip()
 
 
+def _ack(bus: telemetry.Bus, cid: str, **extra) -> dict:
+    """The answer to a request: its command id, and the state it is in when the answer goes out."""
+    state = bus.command_state(cid) or {}
+    return {"ok": True, "id": cid, "state": state.get("state", ""), **extra}
+
+
 def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
     """The ASGI app. Separated from ``serve`` so the tests can drive it without a thread.
 
@@ -149,11 +155,13 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
             return JSONResponse({"error": "audio vacío"}, status_code=400)
         model_name = request.query_params.get("model") or STT_MODEL
         language = request.query_params.get("language") or None
+        # Transcription is seconds of CPU. It runs in a worker thread, so the event loop - and
+        # with it the live picture and the controls - keeps answering while it works.
         if stt is not None:
-            text = stt(payload)
+            text = await asyncio.to_thread(stt, payload)
         else:
             try:
-                text = transcribe_wav(payload, model_name, language)
+                text = await asyncio.to_thread(transcribe_wav, payload, model_name, language)
             except ImportError:
                 return JSONResponse(
                     {"error": "faster-whisper no está instalado en este entorno"},
@@ -194,15 +202,19 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
         """
         action = str(payload.get("action") or "").strip()
         text = str(payload.get("text") or "").strip()
+        # Every request is answered at once with its id and where it stands. The robot moves it
+        # on (RUNNING, then SUCCESS or FAILED) when it gets to it; the page follows the snapshot.
         if action == "start":
+            cid = bus.send_control("start")
             bus.open_start()
-            return {"ok": True, "action": "start"}
+            return _ack(bus, cid, action="start")
         if text:
-            bus.submit(text)
-            return {"ok": True, "queued": text}
+            cid = bus.submit(text)
+            return _ack(bus, cid, queued=text)
         if action:
-            bus.send_control(action, **{k: v for k, v in payload.items() if k != "action"})
-            return {"ok": True, "queued": action}
+            params = {k: v for k, v in payload.items() if k != "action"}
+            cid = bus.send_control(action, **params)
+            return _ack(bus, cid, queued=action)
         return JSONResponse({"error": "nothing to do: send text or action"}, status_code=400)
 
     @app.post("/api/env")
@@ -214,11 +226,11 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
         if action == "start":
             # The setup the dashboard chose travels with the go-ahead: the demo is already
             # past its CLI by the time this button is pressed, so these override its defaults.
-            bus.send_control("start", **params)
+            cid = bus.send_control("start", **params)
             bus.open_start()
-            return {"ok": True, "action": "start"}
-        bus.send_control(action, **params)
-        return {"ok": True, "queued": action, "params": params}
+            return _ack(bus, cid, action="start", params=params)
+        cid = bus.send_control(action, **params)
+        return _ack(bus, cid, queued=action, params=params)
 
     @app.websocket("/ws")
     async def stream(websocket: WebSocket) -> None:
@@ -247,6 +259,7 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
         coalesces into one push and a quiet bus produces no pushes at all.
         """
         await websocket.accept()
+        bus.add_to_metric("websocket_clients", 1)
         loop = asyncio.get_running_loop()
         wake = asyncio.Event()
         pending = {"v": 0}
@@ -267,6 +280,7 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
         bus.add_hook(hook)
         reader = asyncio.create_task(_reader(websocket, bus))
         sent = -1          # the bus version already pushed; -1 means "nothing yet"
+        sent_events = None  # the last log sequence number pushed; None sends the recent history
         last_push = 0.0
         last_frame = 0
         try:
@@ -299,7 +313,11 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
                     continue
                 sent = pending["v"]
                 last_push = time.monotonic()
-                await websocket.send_json({"type": "snapshot", **bus.snapshot()})
+                # Only the log lines this socket has not been sent yet: the page already holds the
+                # rest, and it deduplicates by sequence number, so a delta is enough.
+                snap = bus.snapshot(events_after=sent_events)
+                await websocket.send_json({"type": "snapshot", **snap})
+                sent_events = snap["seq"]
                 _seq, jpeg, meta = bus.frame()
                 if jpeg is not None and _seq > last_frame:
                     await websocket.send_json({"type": "frame", "seq": _seq, "meta": meta})
@@ -310,6 +328,7 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
         finally:
             bus.drop_hook(hook)
             reader.cancel()
+            bus.add_to_metric("websocket_clients", -1)
 
     return app
 
