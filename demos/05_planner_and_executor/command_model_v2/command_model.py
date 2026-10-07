@@ -393,9 +393,19 @@ class CommandModel:
             items = []
         else:
             sort_filter = []
+        # `confidence` above is the MINIMUM over everything, which is the honest one number for
+        # "how sure was it, overall" - it is the weakest link, not an average. It is also useless
+        # for showing a person *where* the doubt is: a sort at 0.99 and a pick at 0.99 read the
+        # same, and so does a sort at 0.99 whose destination was a guess.
+        #
+        # So the per-task confidences go out too, under `confidences`. They are the model's own
+        # scores for each field it decided, unmodified - the minimum is derived from them rather
+        # than the other way round, so this adds no new judgement and cannot disagree with the
+        # number already published. The dashboard shows them beside each option it selected.
         return {"intent": label["intent"], "items": items, "place": place, "sort_by": label["sort_by"],
                 "sort_filter": sort_filter,
-                "confidence": round(min(confidences), 3)}
+                "confidence": round(min(confidences), 3),
+                "confidences": {task: round(float(value), 3) for task, value in sure.items()}}
 
 
 if __name__ == "__main__":
