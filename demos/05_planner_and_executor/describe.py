@@ -30,6 +30,11 @@ from scene import Scene, Thing
 NOUNS: dict[str, dict[str, tuple]] = {
     "ball": {"es": ("bola", "bolas", "f"), "en": ("ball", "balls"), "eu": ("bola", "bolak")},
     "cube": {"es": ("cubo", "cubos", "m"), "en": ("cube", "cubes"), "eu": ("kubo", "kuboak")},
+    # The receptacle. Perception calls a container "box" (perceive.py: aspect ratio decides), so
+    # without this a destination came out as "objeto rojo" - "a red object" - which is both vague
+    # and wrong about gender, since the tray is what things go *into*. "cesta" is the word a
+    # person uses for it at a bench; feminine, so the adjective agrees with it: "cesta roja".
+    "box": {"es": ("cesta", "cestas", "f"), "en": ("box", "boxes"), "eu": ("kasa", "kasak")},
     "any": {"es": ("objeto", "objetos", "m"), "en": ("object", "objects"), "eu": ("objektu", "objektuak")},
     "other": {"es": ("objeto", "objetos", "m"), "en": ("object", "objects"), "eu": ("objektu", "objektuak")},
 }
