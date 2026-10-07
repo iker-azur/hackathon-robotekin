@@ -81,6 +81,33 @@ class Step:
     note: str = ""
 
 
+@dataclass(frozen=True)
+class Task:
+    """One thing the plan intends: *this* part, going *there*.
+
+    ``Plan.picks`` and ``Plan.places`` are two parallel lists of perception ids, and zipping
+    them pairs the two halves of a cycle. That is enough to execute the plan and to check it,
+    which is all they were for - but it says nothing about *what* the robot was asked to do, so
+    anything that wants to show the plan to a person had to go and re-derive it. The tags in the
+    step notes carry it (``"1 red: carry to #5"``), and parsing those back out is the kind of
+    coupling that breaks the moment a note is reworded.
+
+    So the pairing is recorded where it is decided, as data: the labels are already here, as the
+    kind and colour perception gave, and ``pick``/``place`` are the ids everything else already
+    uses. Nothing about *how* it gets done - that is the steps.
+
+    ``place`` is None for ``pick``, which picks something up and keeps it.
+    """
+
+    tag: str
+    pick: int
+    kind: str
+    color: str | None = None
+    place: int | None = None
+    place_kind: str | None = None
+    place_color: str | None = None
+
+
 @dataclass
 class Plan:
     """What to do about one command, and what could not be done."""
@@ -89,6 +116,7 @@ class Plan:
     steps: list[Step] = field(default_factory=list)
     picks: list[int] = field(default_factory=list)
     places: list[int] = field(default_factory=list)
+    tasks: list[Task] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
     question: dict = field(default_factory=dict)
     reply: str = ""
@@ -179,6 +207,8 @@ def _pick_and_place(plan: Plan, thing: Thing, tray: Thing, offset, tag: str) -> 
     _carry(plan, "lower", drop, CLOSE, tray.id, f"{tag}: lower over #{tray.id}")
     _carry(plan, "release", drop, OPEN, tray.id, f"{tag}: release into #{tray.id}")
     plan.places.append(tray.id)
+    plan.tasks.append(Task(tag, thing.id, thing.kind, thing.color,
+                           tray.id, tray.kind, tray.color))
     _carry(plan, "retreat", above_drop, OPEN, tray.id, f"{tag}: retreat from #{tray.id}")
 
 
@@ -191,6 +221,8 @@ def _grasp_and_hold(plan: Plan, thing: Thing, offset, tag: str) -> None:
     _carry(plan, "close", grasp, CLOSE, thing.id, f"{tag}: close on #{thing.id}")
     _carry(plan, "lift", above, CLOSE, thing.id, f"{tag}: lift #{thing.id} and hold")
     plan.picks.append(thing.id)
+    # `pick` has no destination, so neither has the task.
+    plan.tasks.append(Task(tag, thing.id, thing.kind, thing.color))
 
 
 def _destinations_for_sort(scene: Scene, sort_by: str, filters: list[dict] | None = None):
