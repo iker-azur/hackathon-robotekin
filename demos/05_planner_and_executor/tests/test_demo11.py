@@ -45,6 +45,38 @@ import telemetry  # noqa: E402
 failures: list[str] = []
 checks = 0
 
+# How long a websocket session waits before concluding that nothing more is coming, and how long
+# one read waits for the next message.
+#
+# The read timeout is the one that decides the wall clock: a session ends as soon as a read comes
+# back empty, so this is what each of the three sessions costs. It only has to tell "the frame is
+# on its way" from "there is no frame coming", and the handler writes the snapshot, the frame's
+# header and the JPEG back to back with nothing but the socket write in between - microseconds.
+# 0.25 s is a very large margin for that, and three sessions of it is most of a second saved.
+QUIET_WINDOW_S = 0.5
+QUIET_READ_S = 0.25
+
+# Whether node is known to be missing, so it is looked for once rather than per test.
+#
+# The report itself is NOT cached across tests: the two tests that need the page want different
+# batches replayed into it, so one node process each. What is shared is the loader.
+_CLIENT_UNAVAILABLE = False
+
+
+def dashboard_client_report(page_batches):
+    """The report for these batches, loading the page under node once.
+
+    Returns None when node is not installed, which is the only case in which there is nothing to
+    report - and the caller says so rather than skipping quietly.
+    """
+    global _CLIENT_UNAVAILABLE
+    if _CLIENT_UNAVAILABLE:
+        return None
+    report = run_dashboard_client(page_batches)
+    if report is None:
+        _CLIENT_UNAVAILABLE = True
+    return report
+
 
 def check(condition, message: str) -> None:
     global checks
@@ -514,14 +546,14 @@ def test_the_executor_refuses_to_fake_a_grasp():
         check(False, "StrictExecutor.grab must refuse rather than carry the part by hand")
 
     strict.allow_kinematic = True
+    from unittest import mock
+
     held = []
-    module.executor_module.Executor.grab = lambda self, prim: held.append(prim)
-    try:
+    with mock.patch.object(module.executor_module.Executor, "grab",
+                           lambda self, prim: held.append(prim)):
         strict.grab("cube")
-        check(held == ["cube"] and strict.kinematic == 1,
-              "--allow-kinematic must fall back to demo 10's mechanism and count it")
-    finally:
-        del module.executor_module.Executor.grab
+    check(held == ["cube"] and strict.kinematic == 1,
+          "--allow-kinematic must fall back to demo 10's mechanism and count it")
 
 
 def test_a_part_measured_ungraspable_stops_being_planned():
@@ -597,24 +629,22 @@ def test_the_retry_masks_the_arm():
     sys.modules["demo11_retry"] = module
     spec.loader.exec_module(module)
 
+    from unittest import mock
+
     robot = module.MonitoredRobot.__new__(module.MonitoredRobot)
     robot.bus = telemetry.Bus()
     robot.mask_arm = False
     seen = []
 
-    class Base:
-        def _retry_one(self, prim):
-            seen.append(robot.mask_arm)
-            return prim == "cube_blue"
+    def fake_retry(self, prim):
+        seen.append(self.mask_arm)
+        return True
 
-    module.MonitoredRobot.__bases__[0]._retry_one = lambda self, prim: seen.append(
-        robot.mask_arm) or True
-    try:
-        robot._retry_one("cube_blue")
-        check(seen == [True], "the retry ran with the arm masked")
-        check(robot.mask_arm is False, "and restored the setting afterwards")
-    finally:
-        del module.MonitoredRobot.__bases__[0]._retry_one
+    with mock.patch.object(module.MonitoredRobot, "_retry_placed", fake_retry):
+        result = robot._retry_one("cube_blue")
+    check(seen == [True], "the retry ran with the arm masked")
+    check(robot.mask_arm is False, "and restored the setting afterwards")
+    check(result is True, "and reports what the retry did")
 
 
 def test_the_websocket_answers_immediately_and_does_not_run_away():
@@ -650,19 +680,30 @@ def test_the_websocket_answers_immediately_and_does_not_run_away():
     try:
         check(monitor.wait_ready(15.0), "the dashboard must come up on port 0")
 
-        async def session(trigger):
-            """What one browser sees: what arrives, and when."""
+        async def session(trigger, want=None):
+            """What one browser sees: what arrives, and when.
+
+            ``want`` stops as soon as that many SNAPSHOTS have arrived, so a session that expects
+            one reply does not sit out the whole window waiting to be sure no second one comes.
+            It counts snapshots rather than messages because one push is three messages - the
+            snapshot, the frame's own header, and the JPEG - so counting messages would stop on the
+            frame and never see the snapshot the test is actually asking about.
+
+            The window itself is the guard that matters: it is how "and then it went quiet" becomes
+            a measurement rather than an absence.
+            """
             import websockets
 
             url = f"ws://{monitor.host}:{monitor.port}/ws"
             arrived = []
+            snapshots = 0
             async with websockets.connect(url, open_timeout=10) as socket:
                 if trigger is not None:
                     trigger()
-                deadline = time.monotonic() + 2.0
+                deadline = time.monotonic() + QUIET_WINDOW_S
                 while time.monotonic() < deadline:
                     try:
-                        message = await asyncio.wait_for(socket.recv(), timeout=0.6)
+                        message = await asyncio.wait_for(socket.recv(), timeout=QUIET_READ_S)
                     except asyncio.TimeoutError:
                         break
                     if isinstance(message, bytes):
@@ -670,23 +711,33 @@ def test_the_websocket_answers_immediately_and_does_not_run_away():
                     else:
                         payload = json.loads(message)
                         arrived.append((payload.get("type"), payload.get("seq")))
+                        if payload.get("type") == "snapshot":
+                            snapshots += 1
+                    if want is not None and snapshots >= want:
+                        break
             return arrived
 
-        quiet = asyncio.run(session(None))
+        quiet = asyncio.run(session(None, want=3))
         check(quiet and quiet[0][0] == "snapshot",
               f"a connection must be answered without waiting for a change, got {quiet}")
+        # the JPEG follows the snapshot that announced it, so three messages is the whole exchange
         check(("bytes", 2004) in quiet,
               f"and the picture already published must come with it, got {quiet}")
 
-        after_one = asyncio.run(session(lambda: bus.node("setup", telemetry.OK, "started")))
+        # The connect snapshot plus the one the change causes.
+        after_one = asyncio.run(
+            session(lambda: bus.node("setup", telemetry.OK, "started"), want=2))
         snapshots = [row for row in after_one if row[0] == "snapshot"]
         check(len(snapshots) <= 2,
               f"one change must not turn into a flood; got {len(snapshots)} snapshots")
-        check(len(snapshots) >= 2, "the change itself must still be pushed")
+        check(len(snapshots) == 2,
+              f"the change itself must still be pushed on top of the connect one, got "
+              f"{len(snapshots)}")
 
-        # The spin would show up here as thousands of pushes in the two-second window.
-        burst = asyncio.run(session(lambda: [bus.node("execute", telemetry.ACTIVE, str(i))
-                                             for i in range(100)]))
+        # The spin would show up here as hundreds of pushes inside one floor interval.
+        burst = asyncio.run(
+            session(lambda: [bus.node("execute", telemetry.ACTIVE, str(i))
+                             for i in range(100)], want=3))
         burst_snapshots = [row for row in burst if row[0] == "snapshot"]
         check(len(burst_snapshots) <= 3,
               f"a hundred writes must coalesce into one push, got {len(burst_snapshots)}")
@@ -773,10 +824,20 @@ def test_a_command_typed_in_the_browser_reaches_the_robot():
 
     class Voice:
         def listen(self):
-            time.sleep(0.3)      # a real listen() records for seconds, not milliseconds
+            # A real listen() records for seconds. This only has to be long enough that the
+            # browser command below arrives while the microphone has the floor, and `ask` polls
+            # every WEB_COMMAND_POLL_S, so 0.05 s is inside that window.
+            time.sleep(0.05)
             return ""
 
-    def submit_later(bus, text, delay=0.3):
+    def submit_later(bus, text, delay=0.05):
+        """Queue a command while ``ask`` is already waiting for one.
+
+        The delay is short because ``Queue.get(timeout=...)`` returns the moment something is put,
+        not when the timeout expires. So a submit at 0.05 s is answered at 0.05 s even though the
+        wait asked for 0.2 s - the sleep only has to be long enough to be *during* the wait, not to
+        outlast it. That is the whole difference between this test taking 1.8 s and 0.3 s.
+        """
         def go():
             time.sleep(delay)
             bus.submit(text)
@@ -807,19 +868,19 @@ def test_a_command_typed_in_the_browser_reaches_the_robot():
 
     # Dashboard-only, and the person presses stop while it waits.
     probe = Probe(web_input=True)
-    threading.Timer(0.3, lambda: probe.bus.send_control("stop")).start()
+    threading.Timer(0.05, lambda: probe.bus.send_control("stop")).start()
     check(ask_now(probe) == "quit",
           "the panel's stop must reach ask() even with no executor steps running")
 
     # Dashboard-only, and the person asks for the next round while it waits.
     probe = Probe(web_input=True)
-    threading.Timer(0.3, lambda: probe.bus.send_control("next")).start()
+    threading.Timer(0.05, lambda: probe.bus.send_control("next")).start()
     check(ask_now(probe) == "" and probe.advance,
           "the panel's next round must break the round, not run a command nobody sent")
 
     # With --voice the microphone has the floor for a moment; the browser is checked after it.
     probe = Probe(web_input=False, voice=Voice(), keyboard=True)
-    submit_later(probe.bus, "pon el cubo rojo en la caja roja", delay=0.1)
+    submit_later(probe.bus, "pon el cubo rojo en la caja roja", delay=0.02)
     check(ask_now(probe) == "pon el cubo rojo en la caja roja",
           "a browser command typed during listen() must not be dropped")
 
@@ -900,6 +961,113 @@ def test_the_dashboard_has_no_id_it_writes_to_and_does_not_declare():
           "a panel that fails to paint has to say so instead of going quiet")
 
 
+LONG_NOTE = ("judging 2 placements against the tray geometry and the declared cavity, with a "
+            "very long tail that has to be clipped rather than drawn over the box next to it, "
+            "because that is exactly what used to happen on this page")
+
+
+def _stress_snapshots():
+    """One snapshot carrying LONG_NOTE in the narrowest boxes, to prove it cannot escape them."""
+    bus = telemetry.Bus()
+    for stage in ("capture", "execute", "verify", "ground"):
+        bus.node(stage, telemetry.ACTIVE, LONG_NOTE)
+    bus.set_state(phase="command", command="separa las piezas por colores")
+    return [bus.snapshot()]
+
+
+def test_nothing_can_paint_outside_its_own_box():
+    """No text may escape its panel - the one thing that makes this diagram look broken.
+
+    It was happening three ways, and all three are fixed by putting the text in a div that clips
+    rather than in an SVG ``<text>``, which neither wraps nor clips:
+
+    * a stage's detail was a ``<text>`` at a fixed x, so a long one ran off to the right and was
+      read over the box next to it - which is what the four perception boxes were doing;
+    * a stage's live note was appended to a box with no room for it, so it fell out of the bottom;
+    * an edge label was a ``<text>`` too, and hung out of its gap between boxes.
+
+    What is checked is that the clipping is *declared*: the class is on the element and the
+    containers are ``overflow: hidden``. Whether a browser honours ``-webkit-line-clamp`` is not
+    something this DOM shim can answer, and the declaration is what makes it true in a real one.
+    """
+    page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
+
+    check("foreignObject { overflow: hidden; }" in page,
+          "a foreignObject that can show more than its box is how text escapes")
+    for level in ("clip-1", "clip-2", "clip-3"):
+        check(f".{level}" in page, f"the {level} clipping rule must exist")
+    check("overflow: hidden" in re.search(r"\.fo \{.*?\}", page, re.S).group(0),
+          "the box's own content must clip")
+    # the live note of a plain box, and the note of a box with content, both carry a clip
+    check(re.search(r'<div class="live clip-2" id="live-\$\{node.id\}">', page),
+          "the live note must carry a clipping class")
+    for node_id in ("input", "understand", "plan"):
+        block = page[page.index(f'nodeId === "{node_id}"'):]
+        check("clip-1" in block[:block.index("return null")],
+              f"the {node_id} box's note must be clipped")
+    check("text-overflow: ellipsis" in page,
+          "an edge label that cannot ellipsis will run over the box beside it")
+    # the plan's own rows, one per line
+    tasks = re.search(r"#plan-tasks \.what \{(.*?)\}", page, re.S)
+    check(tasks and "text-overflow: ellipsis" in tasks.group(1),
+          "a task label longer than the plan box must ellipsis, not overflow")
+
+    # And the long notes, from a page loaded once with the stress batch as its only content: the run
+    # itself is irrelevant here, so it is not sent, and a second load of the same page costs
+    # 200 ms to learn the same thing again.
+    report = dashboard_client_report([_stress_snapshots()])
+    if report is None:
+        # Only when node is missing. Not a silent pass: it is a real gap in what was checked.
+        print("  (SKIPPED the long-note half: node is not installed, so the page was never "
+              "loaded and there is nothing to read.)")
+        return
+    check(not report["throws"], f"a long note must not throw: {report['throws']}")
+    check(not [w for w in report["warnings"] if w.startswith("ERROR")],
+          f"a long note must not break a panel: "
+          f"{[w for w in report['warnings'] if w.startswith('ERROR')]}")
+    # The whole note reaches its box; clipping it is the box's business, done in CSS. A note
+    # truncated here instead would mean the data was lost, which is a different failure.
+    for stage in ("capture", "execute", "verify"):
+        check(len(report["notes"][stage]) > 150,
+              f"the long note must reach the {stage} box whole, got "
+              f"{len(report['notes'][stage])} characters")
+
+
+def run_dashboard_client(page_batches):
+    """Load the shipped page once, replay these batches into it, and report what it painted.
+
+    ``page_batches`` is a list of snapshot lists. The first is the run; any others replay into the
+    page as it already stands, without a reload, which is the more realistic case - a page that
+    has already painted has to keep working when more state arrives.
+
+    One node process per call. Spawning node costs ~200 ms and it is the single biggest thing in
+    the suite, so this is only split where a test genuinely needs a different set of batches; the
+    two tests that share the run's own content go through ``dashboard_client_report`` instead, so
+    they still only spawn node between them.
+    """
+    node = shutil.which("node")
+    if node is None:
+        return None
+    page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
+    # COLORS.idle is the colour buildFlow gives every box, so it is the only value "this box has
+    # not been visited yet" can be compared against. Read from the page so it cannot drift.
+    idle = re.search(r'idle:\s*"(#[0-9a-fA-F]{6})"', page)
+    payload = [list(batch) for batch in page_batches]
+    with tempfile.TemporaryDirectory() as folder:
+        dump = Path(folder) / "snapshots.json"
+        # ensure_ascii off, so the file holds the accented Spanish the browser will render
+        dump.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        done = subprocess.run([node, str(ROOT / "tests" / "dashboard_client.js"),
+                               str(ROOT / "monitor" / "static" / "index.html"), str(dump),
+                               idle.group(1) if idle else "#4a5164"],
+                              capture_output=True, text=True, timeout=120)
+    if done.returncode != 0:
+        return {"loadError": done.stderr[-400:], "throws": [], "warnings": [], "nodes": 0,
+                "boxes": 0, "dark": [], "noNote": [], "paintError": "", "layout": {},
+                "gutter": None, "run": {}, "selected": {}, "intentRows": 0, "taskRows": 0}
+    return json.loads(done.stdout)
+
+
 def test_the_dashboard_repaints_the_whole_route_during_a_run():
     """The shipped page's own script, fed a whole run's snapshots, must paint every box.
 
@@ -934,16 +1102,35 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
               ("verify", telemetry.WARN, "1/2 inside; missed cube"),
               ("recover", telemetry.OK, "cube re-placed"),
               ("report", telemetry.OK, "2 verified, 1 missed, 0 grasp(es) refused")]
+    # The task list as the robot publishes it: three rows in the three states the panel shows -
+    # done, measured and missed, and in progress. All three have to be distinguishable.
+    TASKS = [
+        {"key": "ball_red", "part": "bola roja", "destination": "cesta roja",
+         "label": "bola roja \u2192 cesta roja", "done": True, "state": "done"},
+        {"key": "cube", "part": "cubo rojo", "destination": "cesta roja",
+         "label": "cubo rojo \u2192 cesta roja", "done": False, "state": "fail"},
+        {"key": "cube_blue", "part": "cubo azul", "destination": "cesta azul",
+         "label": "cubo azul \u2192 cesta azul", "done": False, "state": "doing"},
+    ]
+
     states = [{"phase": "setup"}, {"phase": "starting"}, {"phase": "ready", "sim": "running"},
               {"phase": "scene", "round": 0},
               {"phase": "command", "command": "separa las piezas por colores",
                "command_src": "dashboard"},
               {"phase": "command", "command": "separa las piezas por colores",
-               "classification": {"intent": "sort",
-                                  "items": [{"kind": "cube", "color": "red", "count": 1,
-                                             "place": "box_red"}]}},
+               "classification": {
+                   "intent": "sort", "sort_by": "color",
+                   "items": [{"kind": "cube", "color": "red", "count": 1,
+                              "place": {"kind": "box", "color": "red"}}],
+                   "place": {"kind": "box", "color": "red"},
+                   # the model's own per-field scores, as `parse` now publishes them
+                   "confidence": 0.742,
+                   "confidences": {"intent": 0.98, "place_kind": 0.91,
+                                   "place_color": 0.742, "sort_by": 0.88}}},
               {"phase": "command", "command": "separa las piezas por colores",
-               "plan": {"n": 1, "intent": "sort", "picks": ["cube"],
+               "tasks": TASKS},
+              {"phase": "command", "command": "separa las piezas por colores",
+               "plan": {"n": 1, "intent": "sort", "picks": ["3"],
                         "steps": [{"action": "above", "note": "above #3",
                                    "pose": [0.3, -0.4, 0.12]}]}},
               {"phase": "done", "verified": 2, "missed": 1}]
@@ -956,22 +1143,14 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
             bus.set_state(**states[index])
         snapshots.append(bus.snapshot())
 
-    page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
-    # COLORS.idle is the colour buildFlow gives every box, so it is the only thing "this box has
-    # not been visited yet" can be compared against. Read from the page so it cannot drift.
-    idle = re.search(r'idle:\s*"(#[0-9a-fA-F]{6})"', page)
-    with tempfile.TemporaryDirectory() as folder:
-        dump = Path(folder) / "snapshots.json"
-        dump.write_text(json.dumps(snapshots), encoding="utf-8")
-        done = subprocess.run([node, str(ROOT / "tests" / "dashboard_client.js"),
-                               str(ROOT / "monitor" / "static" / "index.html"), str(dump),
-                               idle.group(1) if idle else "#4a5164"],
-                              capture_output=True, text=True, timeout=120)
-    check(done.returncode == 0, f"the dashboard's script must load: {done.stderr[:300]}")
-    if done.returncode != 0:
+    node = shutil.which("node")
+    if node is None:
+        print("  (node not found: the dashboard's own script was not exercised)")
         return
-    report = json.loads(done.stdout)
+    report = dashboard_client_report([snapshots, _stress_snapshots()])
 
+    check(not report.get("loadError"), f"the dashboard's script must load: "
+                                       f"{report.get('loadError')}")
     check(report["loadError"] is None, f"the page's script threw while loading: "
                                        f"{report['loadError']}")
     check(not report["throws"],
@@ -989,22 +1168,948 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
     check(not report["noNote"],
           f"every box must show what the robot said at it; these showed nothing: "
           f"{report['noNote']}")
-    check(report["command"] == "separa las piezas por colores",
-          f"the command box must show the sentence, got {report['command']!r}")
-    check(report["planRows"] >= 1,
-          f"the plan card must fill its steps table, got {report['planRows']} rows")
-    check(report["planParts"] and "cube" in report["planParts"],
-          f"the plan card must list the parts, got {report['planParts']!r}")
-    check(report["intentChips"] > 0, "the classification card must offer its options")
-    check(report["logLines"] > 0, "the log must grow as the run publishes")
-    check(report["phase"] == "done", f"the phase pill must follow the run, got "
-                                     f"{report['phase']!r}")
+    run = report["run"]
+    check(run["command"] == "separa las piezas por colores",
+          f"the command box must show the sentence, got {run['command']!r}")
+    check(report["run"]["planRows"] >= 1,
+          f"the plan card must fill its steps table, got {run['planRows']} rows")
+    check(report["cells"]["row-intent"]["total"] > 0,
+          "the classification card must offer its options")
+    check(report["run"]["logLines"] > 0, "the log must grow as the run publishes")
+    check(report["run"]["phase"] == "terminado", f"the phase pill must follow the run, got "
+                                     f"{run['phase']!r}")
+
+    # ---- the layout itself -------------------------------------------------
+    layout = report["layout"]
+    check(all(layout.values()), f"every box must publish its geometry: "
+                                f"{[k for k, v in layout.items() if not v]}")
+
+    # Row A: entorno and command, same size. Row C: the four of the perception chain, same size.
+    # These were the explicit complaint - boxes of different widths on the same row.
+    for row, names in (("A", ["setup", "input"]), ("C", ["capture", "perceive", "link", "ground"])):
+        widths = {round(layout[n]["w"], 1) for n in names}
+        heights = {round(layout[n]["h"], 1) for n in names}
+        check(len(widths) == 1, f"row {row} must have equal widths, got {sorted(widths)}")
+        check(len(heights) == 1, f"row {row} must have equal heights, got {sorted(heights)}")
+        tops = {round(layout[n]["y"], 1) for n in names}
+        check(len(tops) == 1, f"row {row} must be one row, got tops {sorted(tops)}")
+
+    # Nothing may overlap, and the rows must be in the order they were asked for.
+    names = [n for n, v in layout.items() if v]
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            A, B = layout[a], layout[b]
+            overlaps = (A["x"] < B["x"] + B["w"] and B["x"] < A["x"] + A["w"]
+                        and A["y"] < B["y"] + B["h"] and B["y"] < A["y"] + A["h"])
+            check(not overlaps, f"{a} and {b} overlap")
+
+    order = [layout[n]["y"] for n in ("setup", "understand", "capture", "plan", "report")]
+    check(order == sorted(order), f"the five rows must come in order, got {order}")
+
+    # The intention row spans the screen, and so does the report.
+    for name in ("understand", "report"):
+        # the full width is what row A adds up to, measured from the drawn boxes
+        full = layout["setup"]["w"] * 2 + report["gutter"]
+        check(layout[name]["w"] == full,
+              f"{name} must span the full width: {layout[name]['w']} against {full}")
+        check(layout[name]["x"] == layout["setup"]["x"],
+              f"{name} must start at the left margin, got {layout[name]['x']}")
+
+    # The plan is on the left and the loop is to its right.
+    check(layout["plan"]["x"] == layout["execute"]["x"] or
+          layout["plan"]["x"] + layout["plan"]["w"] <= layout["execute"]["x"],
+          "the plan must sit to the left of the loop")
+    for name in ("execute", "verify", "recover"):
+        check(layout[name]["y"] == layout["plan"]["y"],
+              f"{name} must share the plan's row")
+        check(layout[name]["w"] > 100, f"{name} is too narrow to hold a note: "
+                                       f"{layout[name]['w']}")
+
+    # The checklist: one row per task, the finished ones marked, and a count of how far along.
+    run = report["run"]
+    tasks_html = run["tasks"]
+    check(run["taskRows"] == len(TASKS),
+          f"the plan card must list every task, got {run['taskRows']} rows")
+    check(tasks_html.count('class="done"') == 1,
+          f"the one finished task must be marked done: {tasks_html[:200]}")
+    check("1 de 3" in run["tally"],
+          f"the tally, bottom right of the plan, must say how far along it is: {run['tally']!r}")
+    check("1 fallida" in run["tally"],
+          f"and how many failed: {run['tally']!r}")
+    for wanted in ("bola roja", "cesta roja", "cubo azul", "cesta azul"):
+        check(wanted in tasks_html, f"the checklist must show {wanted!r}: {tasks_html[:240]}")
+    # The three states that occurred in this run are three different icons. "Pendiente" has no row
+    # here - nothing is left unstarted once the arm is working on the list - so its empty circle is
+    # checked against the panel's own mark table below rather than against the rendered rows.
+    check("&#10003;" in tasks_html, "a finished task must show a tick")
+    check("&#10007;" in tasks_html, "a task that was measured and missed must show a cross")
+    check("&#9679;" in tasks_html, "the task in progress must show its own icon")
+    check('class="doing"' in tasks_html, "and the row must say it is the one being done")
+    # A pending task is not in this run's data, so its icon is asserted from the marks table
+    # rather than from the rendered rows: nothing here should be *pending* once the arm is working.
+    check("&#9675;" not in tasks_html or 'class="todo"' in tasks_html,
+          "an unstarted task must show the empty circle, not a mark for work in progress")
+    check('class="doing"' in tasks_html and "&#9679;" in tasks_html,
+          "the task in progress must be distinguishable from one that is merely pending")
+    # The four marks exist, and they are four different glyphs: a task the arm is doing, one that
+    # was measured and finished, one that was measured and failed, and one not yet started.
+    panel = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
+    marks = dict(re.findall(r'(\w+):\s*\{ icon: "&#(\d+);", word:', panel))
+    check(len(marks) == 4, f"the panel must define four task marks, got {marks}")
+    check(len(set(marks.values())) == 4,
+          f"and the four marks must be four different glyphs, got {marks}")
+
+    # ---- la intención: tabla, celdas, elección resaltada y probabilidad --------------------
+    check(report["intentRows"] == 7,
+          f"the intention must be a row per field, got {report['intentRows']} rows")
+    check(report["cells"]["row-intent"]["total"] > 0,
+          "the intent row must offer its options as cells")
+
+    # ---- cada opción es una celda de una matriz, no una etiqueta suelta ------------------
+    #
+    # Eran <span> en línea que se envolvían, y eso se leía como una lista corrida: no había forma
+    # de ver qué opciones competían entre sí dentro de un campo. Una celda de matriz es un bloque
+    # con anchura propia dentro de una rejilla, y eso es lo que se comprueba aquí.
+    for row_id, cells in report["cells"].items():
+        if cells["total"]:
+            check(cells["divs"] == cells["total"],
+                  f"every option in {row_id} must be a block cell, not an inline span: {cells}")
+            check(cells["spans"] == 0,
+                  f"{row_id} must have no inline option left over: {cells}")
+    for row_id, cls in report["grids"].items():
+        check("opts" in (cls or ""),
+              f"{row_id} must sit in the option grid, got {cls!r}")
+
+    # and the chosen one is a cell, highlighted, carrying the model's own probability
+    check('class="opt sel"' in run["intentHtml"],
+          f"the chosen option must be highlighted: {run['intentHtml'][:200]}")
+    check("98%" in run["intentHtml"],
+          f"the chosen option must show the model's probability: {run['intentHtml'][:200]}")
+    check("74%" in run["clsOverall"],
+          f"the card must show the overall confidence, got {run['clsOverall']!r}")
+
+
+def test_the_plan_lists_its_tasks_and_ticks_off_the_finished_ones():
+    """One row per thing the plan intends to move, marked with the verdict ``check`` gave.
+
+    A multi-object command is not executed as one plan: ``_one_at_a_time`` re-plans around each
+    object in turn and calls ``check`` after every one, so the plan being run holds a single task
+    while the plan the person asked for held all of them. The list therefore has to be
+    accumulated across the command and keyed by part - a re-plan of a finished task must not add a
+    second row for it, nor un-tick the first one.
+
+    Driven through the real ``MonitoredRobot`` helpers on a stub, with the ``misses`` list
+    ``check`` returns standing in for the simulator's own verdict.
+    """
+    module = load_demo11()
+    module.load_demo10()
+
+    class NS:
+        lang = "es"
+
+    class Stub(module.MonitoredRobot):
+        def __init__(self):                      # the real one needs an Isaac env
+            self.bus = telemetry.Bus()
+            self.args = NS()
+            self._task_rows = {}
+            self._plan_n = 0
+            self.ledger = module.TaskLedger()
+
+    import planner
+    from scene import Scene
+
+    recorded = next((Scene.read(path) for path in sorted((ROOT / "tests" / "fixtures").glob("*.json"))
+                     if len(Scene.read(path).containers) >= 2 and len(Scene.read(path).objects) >= 2),
+                    None)
+    check(recorded is not None, "a recorded scene with two baskets is needed for this")
+    if recorded is None:
+        return
+
+    plan = planner.plan_command({"intent": "sort", "sort_by": "color", "items": [],
+                                 "sort_filter": []}, recorded)
+    check(len(plan.tasks) == len(plan.picks) == len(plan.places),
+          f"a plan must record one task per pick: {len(plan.tasks)} tasks, "
+          f"{len(plan.picks)} picks, {len(plan.places)} places")
+    check(all(task.place is not None for task in plan.tasks),
+          "a sort task has a destination, so none of them may be left without one")
+    check([t.pick for t in plan.tasks] == plan.picks
+          and [t.place for t in plan.tasks] == plan.places,
+          "the tasks must line up with the picks and places they came from")
+
+    names = {0: "box_red", 1: "tray_blue", 2: "cube_blue", 3: "cube", 4: "ball_red",
+             5: "ball_green"}
+    premise = {task.pick: names.get(task.pick, f"thing{task.pick}") for task in plan.tasks}
+    for place in plan.places:
+        premise.setdefault(place, names.get(place, f"tray{place}"))
+
+    robot = Stub()
+
+    def rows():
+        return robot.bus.snapshot()["state"].get("tasks", [])
+
+    def one_of(plan_tasks):
+        """The single-task plan `_one_at_a_time` would run for one object."""
+        sub = planner.Plan(intent="sort")
+        sub.picks = [plan_tasks.pick]
+        sub.places = [plan_tasks.place]
+        sub.tasks = [plan_tasks]
+        return sub
+
+    robot._note_tasks(plan, premise)
+    labels = [row["label"] for row in rows()]
+    check(len(rows()) == len(plan.tasks), f"every task must be listed, got {labels}")
+    check(not any(row["done"] for row in rows()), "nothing is done before the arm has moved")
+    check(all(row["state"] == "todo" for row in rows()),
+          f"nothing is in progress before the arm moves, got {[r['state'] for r in rows()]}")
+    check(all("→" in label for label in labels),
+          f"a task must read as part-then-destination, got {labels}")
+    check(any("bola roja" in label and "cesta roja" in label for label in labels),
+          f"the red ball's task must name both ends, got {labels}")
+
+    # the per-object re-plan must not shrink the list to its own single task
+    sub = one_of(plan.tasks[0])
+    robot._note_tasks(sub, premise)
+    check(len(rows()) == len(plan.tasks),
+          f"a one-object re-plan must not replace the whole job, got {len(rows())} rows")
+
+    robot.ledger.record(robot._task_key(plan.tasks[0], premise), True)
+    robot._settle_rows()
+    check(rows()[0]["done"], "the verified task must be marked done")
+    check(rows()[0]["state"] == "done", "and its state must say it was done")
+    check(sum(1 for row in rows() if row["done"]) == 1,
+          "and only that one")
+
+    # A miss is not a pending task: `check` measured it and found it outside the tray, which is a
+    # different fact from never having tried.
+    last = one_of(plan.tasks[-1])
+    robot._note_tasks(last, premise)
+    robot.ledger.record(robot._task_key(plan.tasks[-1], premise), False)
+    robot._settle_rows()
+    check(not rows()[-1]["done"],
+          f"a part left outside the tray must not be marked done: {rows()[-1]}")
+    check(rows()[-1]["state"] == "fail",
+          f"and it must be marked failed rather than merely pending: {rows()[-1]}")
+    check(sum(1 for row in rows() if row["done"]) == 1, "the earlier task keeps its mark")
+
+    # re-planning a finished task must not add a row or clear the mark
+    robot._note_tasks(sub, premise)
+    check(len(rows()) == len(plan.tasks), f"a re-plan must not duplicate rows, got {len(rows())}")
+    check(rows()[0]["done"], "a re-plan must not un-tick what was already verified")
+    check(rows()[0]["state"] == "done", "and must not drop it back to pending")
+    check(rows()[-1]["state"] == "fail",
+          "nor un-fail one that was measured and missed")
+
+    # a new command starts an empty list
+    robot._task_rows.clear()
+    robot._publish_tasks()
+    check(rows() == [], f"a new command starts with no tasks, got {rows()}")
+
+
+def test_a_receptacle_is_named_not_called_an_object():
+    """``cesta roja``, not ``objeto rojo``.
+
+    Perception calls a container ``box``, and ``describe`` had no noun for it, so every
+    destination came out as "a red object" - vague, and wrong about gender, since a tray is what
+    things go *into* and "objeto" is masculine where the Spanish adjective has to agree.
+    """
+    import describe
+
+    check(describe.phrase("box", "red", 1, "es", bare=True) == "cesta roja",
+          "the receptacle needs its own Spanish noun")
+    check(describe.phrase("box", "red", 1, "es").startswith("una cesta"),
+          "and it is feminine, so it takes 'una'")
+    check(describe.phrase("ball", "red", 1, "es", bare=True) == "bola roja",
+          "the parts keep the nouns they had")
+    check(describe.phrase("cube", "blue", 1, "es", bare=True) == "cubo azul",
+          "including the masculine ones")
+
+
+def test_raising_a_release_height_keeps_the_tasks():
+    """``_release_adjusted`` rebuilds the plan by hand, and must carry the tasks over.
+
+    It copies fields one at a time because it is making a new ``Plan`` with different poses. A
+    field it forgets is a field the plan silently loses, and for the task list that would mean
+    the checklist emptying itself the moment a release height had to be lifted - which is the
+    common case on this bench, since ``clear`` raises most of them.
+    """
+    module = load_demo11()
+    module.load_demo10()
+    import planner
+
+    # real Steps, because `_release_adjusted` rebuilds them with `dataclasses.replace`
+    plan = planner.Plan(intent="sort", picks=[3, 4], places=[0, 1],
+                        tasks=[planner.Task("2 red", 3, "cube", "red", 0, "box", "red"),
+                               planner.Task("1 blue", 4, "ball", "blue", 1, "box", "blue")])
+    plan.steps = [planner.Step("lower", (0.30, -0.43, 0.06)),
+                  planner.Step("release", (0.30, -0.43, 0.06))]
+
+    class Robot(module.MonitoredRobot):
+        def __init__(self):
+            self.layout = []
+            self.release_mode = "clear"
+            self.bus = telemetry.Bus()
+
+    robot = Robot()
+    import scene_spec
+    robot.layout = [item for item in scene_spec.DEFAULT_SCENE if item.container]
+    adjusted = robot._release_adjusted(plan)
+    check(adjusted is not plan, "this plan's releases must actually be raised, or nothing is tested")
+    check(all(step.pose[2] > 0.06 for step in adjusted.steps if step.pose is not None),
+          "the poses must have been lifted")
+    check(len(adjusted.tasks) == len(plan.tasks),
+          f"raising a release height must not drop the tasks: {len(adjusted.tasks)} of "
+          f"{len(plan.tasks)}")
+    check([(t.kind, t.color, t.place) for t in adjusted.tasks]
+          == [(t.kind, t.color, t.place) for t in plan.tasks],
+          "and they must be the same tasks, not new ones")
+
+
+# -- correctness: no hidden failure may read as success -------------------------------------
+#
+# The checks below patch only what they need, with ``unittest.mock.patch`` so the shared classes
+# are restored afterwards. The older tests in this file that assign to a class and ``del`` it
+# are the ones this suite should not copy.
+
+
+def _stub_robot(module, layout, placed):
+    """A MonitoredRobot without an Isaac env: the attributes the verification path reads.
+
+    ``placed(prim)`` says whether the simulator would measure that part inside its tray.
+    """
+    from types import SimpleNamespace
+
+    robot = module.MonitoredRobot.__new__(module.MonitoredRobot)
+    robot.bus = telemetry.Bus()
+    robot.layout = layout
+    robot.args = SimpleNamespace(lang="es", offset=(0.0, 0.0))
+    robot._task_rows = {}
+    robot._plan_n = 0
+    robot.ledger = module.TaskLedger()
+    robot.verified = robot.missed = robot.recovered = 0
+    robot.replanned = robot.regrasped = robot.tracked = robot.reaimed = 0
+    robot.bot = SimpleNamespace(settle=lambda: None, refused=0, corrected=0, kinematic=0,
+                                lost=0)
+    robot.release_mode = "clear"
+    robot.say = lambda text="": None
+    robot.park = lambda: None
+    robot.look = lambda caption="": SimpleNamespace(objects=[], containers=[], everything=[])
+    robot._inside = lambda prim, tray: placed(prim)
+    return robot
+
+
+def test_a_check_counts_each_task_once_and_a_failed_retry_is_not_a_recovery():
+    import planner
+    from types import SimpleNamespace
+
+    module = load_demo11()
+    layout = [SimpleNamespace(prim="tray", container=True)]
+    robot = _stub_robot(module, layout, lambda prim: prim == "a")
+    robot._retry_one = lambda prim: False          # the retry does not put the part back
+    plan = planner.Plan(intent="sort")
+    plan.picks, plan.places = [1, 2, 3], [10, 10, 10]
+    misses = robot.check(plan, {1: "a", 2: "b", 10: "tray"}, announce=False)
+
+    check(robot.ledger.counts() == (1, 2),
+          f"three tasks, one placed: the ledger must say (1, 2), got {robot.ledger.counts()}")
+    check(robot.verified == 1 and robot.missed == 2,
+          f"the counters are read from the ledger: verified={robot.verified} missed={robot.missed}")
+    check(robot.recovered == 0, "a retry that did not place the part is not a recovery")
+    check(sorted(misses) == ["b", "thing #3"], f"misses name the tasks: {misses}")
+
+
+def test_a_successful_retry_is_a_recovery_counted_once():
+    import planner
+    from types import SimpleNamespace
+
+    module = load_demo11()
+    layout = [SimpleNamespace(prim="tray", container=True)]
+    state = {"b": False}
+    robot = _stub_robot(module, layout, lambda prim: prim == "a" or state.get(prim, False))
+
+    def retry(prim):
+        state[prim] = True                          # the retry places it, and it is measured
+        return True
+
+    robot._retry_one = retry
+    plan = planner.Plan(intent="sort")
+    plan.picks, plan.places = [1, 2], [10, 10]
+    robot.check(plan, {1: "a", 2: "b", 10: "tray"}, announce=False)
+
+    check(robot.ledger.counts() == (2, 0), f"both placed: {robot.ledger.counts()}")
+    check(robot.recovered == 1, f"one retry placed a part: recovered={robot.recovered}")
+
+
+def test_a_failed_grasp_is_a_failed_task_and_a_later_placement_replaces_the_verdict():
+    import planner
+    from types import SimpleNamespace
+    from unittest import mock
+
+    module = load_demo11()
+    layout = [SimpleNamespace(prim="tray", container=True)]
+    placed = {"a": False}
+    robot = _stub_robot(module, layout, lambda prim: placed.get(prim, False))
+    plan = planner.Plan(intent="pick")
+    plan.picks, plan.places, plan.steps = [1], [10], []
+    premise = {1: "a", 10: "tray"}
+    refused_run = SimpleNamespace(stale_grasps=1, aborted=False, aborted_at="close", reaimed=0,
+                                  tracked=0, real_grasps=0, kinematic_grasps=0, steps=[],
+                                  lost_grasps=0,
+                                  summary=lambda: "1 stale")
+    with mock.patch.object(module.MonitoredRobot.__bases__[0], "run_plan",
+                           lambda self, plan, premise, command: refused_run):
+        robot.run_plan(plan, premise, "coge la pieza")
+
+    check(robot.ledger.status() == "FAILED",
+          f"one grasp failed and nothing placed must read FAILED, got {robot.ledger.status()}")
+    check(robot.ledger.failed_labels() == ["a"], "the failed task is named")
+
+    placed["a"] = True
+    robot.check(plan, premise, announce=False)
+    check(robot.ledger.status() == "SUCCESS",
+          "a later measured placement replaces the failure, and the result follows it")
+
+
+def test_a_lost_grasp_is_a_failed_grasp_and_is_not_carried():
+    import numpy as np
+    from unittest import mock
+
+    module = load_demo11()
+    sx = module.StrictExecutor.__new__(module.StrictExecutor)
+    sx.allow_kinematic, sx.refused, sx.kinematic, sx.lost = False, 0, 0, 0
+    sx.impossible, sx.failures, sx.at_close, sx.items_by_prim = set(), {}, None, {}
+    sx.frame_hook, sx.log = None, (lambda text: None)
+
+    def parent_do(self, action, pose=None, grip=None, prim=None, **_):
+        return executor_module.StepResult(action=action, note="knocked out of reach", ok=False,
+                                          grasp="lost")
+
+    with mock.patch.object(executor_module.Executor, "do", parent_do):
+        result = sx.do("lift", np.zeros(3), -1.0, prim="cube_a")
+    check(result.ok is False and result.grasp == "stale",
+          f"a lost grasp must stop the plan like a stale one: {result.grasp!r} ok={result.ok}")
+    check(sx.lost == 1 and sx.failures.get("cube_a") == 1,
+          "a lost grasp is counted, and against the part")
+
+
+def test_a_failed_retarget_stops_the_plan_instead_of_running_stale_steps():
+    import planner
+    import numpy as np  # noqa: F401  (kept for the shape the executor expects)
+    from unittest import mock
+
+    module = load_demo11()
+    sx = module.StrictExecutor.__new__(module.StrictExecutor)
+    sx.log = lambda text: None
+    plan = planner.Plan(intent="pick")
+    plan.steps = [planner.Step("above", (0.3, -0.45, 0.25), grip=1.0, target=1)]
+    continued = []
+
+    def parent_run(self, plan, resolve=None, keys=lambda: set(), fps=1, retarget=None,
+                   observe=None):
+        retarget(plan.steps[0], "cube_a")           # the re-plan finds nothing ...
+        continued.append("kept going")              # ... and must not be followed by this
+        return executor_module.RunResult()
+
+    with mock.patch.object(executor_module.Executor, "run", parent_run):
+        out = sx.run(plan, resolve=lambda target: "cube_a", retarget=lambda step, prim: None)
+    check(continued == [], "an empty re-target must end the plan, not carry on with old steps")
+    check(out.stale_grasps == 1 and out.stale_prims == ["cube_a"],
+          f"the plan reports the target as lost, against the part: {out.stale_prims}")
+
+
+def _track_rig(module, aperture_at, observe_at):
+    """A StrictExecutor with only what ``track`` reads, and a stand-in torch for its tensors."""
+    import contextlib
+    import types
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    class FT(np.ndarray):
+        def clone(self):
+            return self.copy()
+
+    fake = types.ModuleType("torch")
+    fake.no_grad = contextlib.nullcontext
+    fake.tensor = lambda data, device=None: np.array(data, dtype=float).view(FT)
+    s = module.StrictExecutor.__new__(module.StrictExecutor)
+    s.current = np.array([[0.30, -0.45, 0.25]], dtype=float).view(FT)
+    s._hold = np.array([[0.007, 0.0, -0.092]], dtype=float)
+    s.device = "cpu"
+    s.env = SimpleNamespace(step=lambda action: None)
+    commands = []
+    s._action = lambda pose, grip: commands.append(float(pose[0][0]))
+    s.frame_hook = None
+    s.log = lambda text: None
+    s.correcting, s.corrected = True, 0
+    s.aperture_centre = aperture_at
+    return s, commands, fake, observe_at
+
+
+def _run_track(module, aperture_at, observe_at):
+    from unittest import mock
+
+    s, commands, fake, observe = _track_rig(module, aperture_at, observe_at)
+    with mock.patch.dict(sys.modules, {"torch": fake}):
+        res = s.track(observe=observe, target_z=0.20, steps=200, aim=(0.30, -0.45))
+    return res, s, commands
+
+
+def test_a_constant_residual_stalls_and_the_servo_stops_correcting():
+    module = load_demo11()
+    part = (0.30, -0.45)
+    res, s, commands = _run_track(module, lambda: (part[0] - 0.020, part[1]),
+                                  lambda: part)
+    check("centrado detenido" in res.note, f"the stall is reported: {res.note}")
+    check(res.ok is False, "a stalled descent is not a clean one")
+    check(s.correcting is False and s.corrected <= module.STALL_WINDOW,
+          f"no corrections after the stall: corrected={s.corrected}")
+    check(commands[-1] == commands[-20],
+          "the commanded pose stops moving once the stall is declared")
+
+
+def test_a_steadily_converging_residual_is_not_a_stall():
+    module = load_demo11()
+    part = (0.30, -0.45)
+    looks = {"k": 0}
+
+    def centre():
+        looks["k"] += 1
+        return (part[0] - max(0.020 - 0.001 * looks["k"], 0.0), part[1])
+
+    res, s, _commands = _run_track(module, centre, lambda: part)
+    check("centrado detenido" not in res.note,
+          f"a residual shrinking by 1 mm per correction is converging, not stuck: {res.note}")
+    check(s.correcting is True, "the servo is still correcting")
+
+
+def test_a_blob_further_than_a_same_object_move_is_not_followed():
+    module = load_demo11()
+    part = (0.30, -0.45)
+    res, s, commands = _run_track(module, lambda: (part[0] - 0.020, part[1]),
+                                  lambda: (part[0] + 0.080, part[1]))
+    check(res.ok is False, "a sighting 80 mm from the command is a different object, so lost")
+    check(s.corrected == 0, "and no correction is made towards it")
+    check(module.SAME_OBJECT_MAX_SHIFT_M < 0.064,
+          "the same-object gate must stay under the closest same-colour pair (64 mm)")
+
+
+def test_the_exit_code_is_the_status_of_the_ledger():
+    module = load_demo11()
+    ledger = module.TaskLedger
+    cases = [
+        ([("a", True), ("b", True)], False, "SUCCESS", 0),
+        ([("a", False)], False, "FAILED", 2),
+        ([("a", True), ("b", False)], False, "PARTIAL_SUCCESS", 2),
+        ([], False, "NO_TASKS", 0),
+        ([("a", True)], True, "ABORTED", 3),
+    ]
+    for records, aborted, status, code in cases:
+        led = ledger()
+        for key, ok in records:
+            led.record(key, ok)
+        check(led.status(aborted=aborted) == status,
+              f"{records} aborted={aborted} must be {status}, got {led.status(aborted=aborted)}")
+        check(module.EXIT_CODE[status] == code, f"{status} must exit {code}")
+
+
+# -- phase 2: one command pipeline, with ids, states and a stop that cannot be lost ---------
+
+
+def test_a_stop_is_never_queued_behind_anything_and_cancels_what_waits():
+    bus = telemetry.Bus()
+    first = bus.submit("separa las piezas por colores")
+    second = bus.submit("coge la bola verde")
+    relook = bus.send_control("relook")
+    stop = bus.send_control("stop")
+
+    check(bus.stop_requested(), "STOP sets its flag at once, whatever is queued")
+    check(bus.take_command(timeout=0.05) is None,
+          "the queued sentences are cancelled, not run after the stop")
+    check(bus.take_control() is None, "and the queued controls are cancelled too")
+    for cid in (first, second, relook):
+        state = bus.command_state(cid)
+        check(state["state"] == telemetry.CANCELLED and state["note"],
+              f"{cid} must end CANCELLED with its reason, got {state}")
+    check(bus.command_state(stop)["state"] == telemetry.QUEUED,
+          "the stop waits to be acknowledged by the robot, not assumed done")
+    bus.complete_stop()
+    check(bus.command_state(stop)["state"] == telemetry.SUCCESS,
+          "the robot's acknowledgement completes the stop")
+
+
+def test_repeated_relook_is_coalesced_and_the_next_one_is_queued_again():
+    bus = telemetry.Bus()
+    first = bus.send_control("relook")
+    second = bus.send_control("relook")
+    third = bus.send_control("relook")
+    check(bus.command_state(first)["state"] == telemetry.QUEUED,
+          "the first relook is queued")
+    check(bus.command_state(second)["state"] == telemetry.CANCELLED
+          and "esperando" in bus.command_state(second)["note"],
+          "a repeat while one waits is cancelled with the reason, not run again")
+    check(bus.command_state(third)["state"] == telemetry.CANCELLED,
+          "every repeat is answered, not just the first")
+    taken = bus.take_control()
+    check(taken and taken["id"] == first and bus.take_control() is None,
+          "one relook is carried out, not three")
+    again = bus.send_control("relook")
+    check(bus.command_state(again)["state"] == telemetry.QUEUED,
+          "once the waiting one is taken, a new relook is accepted again")
+
+
+def test_a_command_moves_only_along_the_legal_lifecycle():
+    bus = telemetry.Bus()
+    cid = bus.submit("pon el cubo rojo en la caja roja")
+    check(bus.command_state(cid)["state"] == telemetry.QUEUED, "accepted: QUEUED")
+    check(bus.take_command(timeout=0.1) == "pon el cubo rojo en la caja roja",
+          "the robot takes it")
+    check(bus.command_state(cid)["state"] == telemetry.RUNNING, "taken: RUNNING")
+    check(bus.set_command_state(cid, telemetry.SUCCESS), "RUNNING may end SUCCESS")
+    check(not bus.set_command_state(cid, telemetry.RUNNING),
+          "a finished command cannot go back to RUNNING")
+    check(bus.command_state(cid)["state"] == telemetry.SUCCESS, "and it stays SUCCESS")
+
+
+def test_a_full_queue_refuses_with_a_reason_and_never_drops_silently():
+    bus = telemetry.Bus()
+    ids = [bus.submit(f"orden {index}") for index in range(telemetry.MAX_QUEUED_COMMANDS)]
+    overflow = bus.submit("una más")
+    check(bus.command_state(overflow)["state"] == telemetry.FAILED
+          and "demasiadas" in bus.command_state(overflow)["note"],
+          "the sentence that does not fit is FAILED with the reason")
+    check(len(set(ids + [overflow])) == len(ids) + 1, "every request has its own id")
+    check(all(bus.command_state(cid)["state"] == telemetry.QUEUED for cid in ids),
+          "the sentences that did fit are still waiting, untouched")
+    snap_ids = [cmd["id"] for cmd in bus.snapshot()["commands"]]
+    check(overflow in snap_ids, "the page can see the refused request in the snapshot")
+
+
+def test_a_control_waiting_in_the_wait_loop_is_carried_out_not_dropped():
+    from unittest import mock
+
+    module = load_demo11()
+    calls = []
+
+    class Probe(module.MonitoredRobot):
+        def __init__(self):
+            self.bus = telemetry.Bus()
+            self.voice = None
+            self.web_input = True
+            self.keyboard = None
+            self.advance = False
+            self.say = lambda *a, **k: None
+            self.look = lambda caption="": calls.append(caption)
+
+    probe = Probe()
+    relook = probe.bus.send_control("relook")
+    threading.Timer(0.3, lambda: probe.bus.submit("coge la bola verde")).start()
+    got = module.MonitoredRobot.ask(probe)
+    check(got == "coge la bola verde", f"the sentence still arrives: {got!r}")
+    check(calls == ["re-observación del panel"],
+          f"the relook was carried out while waiting, not logged as 'later': {calls}")
+    check(probe.bus.command_state(relook)["state"] == telemetry.SUCCESS,
+          "and its command says so")
+
+
+def test_a_failed_relook_is_a_failed_command_with_the_reason():
+    module = load_demo11()
+
+    class Probe(module.MonitoredRobot):
+        def __init__(self):
+            self.bus = telemetry.Bus()
+            self.say = lambda *a, **k: None
+            self.shown = None
+
+        def look(self, caption=""):
+            raise RuntimeError("la cámara no responde")
+
+    probe = Probe()
+    cid = probe.bus.send_control("relook")
+    probe.bus.take_control()
+    module.MonitoredRobot._apply_control(probe, {"action": "relook", "id": cid, "params": {}})
+    state = probe.bus.command_state(cid)
+    check(state["state"] == telemetry.FAILED and "la cámara no responde" in state["note"],
+          f"a failed look is FAILED, with the reason, not swallowed: {state}")
+
+
+def test_keys_carries_out_a_bounded_number_of_controls_per_step():
+    from unittest import mock
+
+    module = load_demo11()
+    counts = {"look": 0, "next": 0}
+
+    class Probe(module.MonitoredRobot):
+        def __init__(self):
+            self.bus = telemetry.Bus()
+            self.say = lambda *a, **k: None
+            self.cam_fps = 0.0
+            self.advance = False
+            self.shown = None
+
+        def look(self, caption=""):
+            counts["look"] += 1
+
+    probe = Probe()
+    for action in ("relook", "next", "next", "next", "next"):
+        probe.bus.send_control(action)
+    with mock.patch.object(module.MonitoredRobot.__bases__[0], "keys", lambda self: set()):
+        probe.keys()
+    waiting = probe.bus.snapshot()["commands"]
+    still_queued = [c for c in waiting if c["state"] == telemetry.QUEUED]
+    check(len(still_queued) == 5 - module.MAX_CONTROLS_PER_STEP,
+          f"only {module.MAX_CONTROLS_PER_STEP} controls run per step; the rest wait in order: "
+          f"{len(still_queued)} still queued")
+    check(counts["look"] == 1, "a burst of relooks costs at most the perception pass it asks for")
+
+
+def test_stop_in_a_step_quits_the_run_even_with_controls_waiting():
+    from unittest import mock
+
+    module = load_demo11()
+
+    class Probe(module.MonitoredRobot):
+        def __init__(self):
+            self.bus = telemetry.Bus()
+            self.say = lambda *a, **k: None
+            self.cam_fps = 0.0
+            self.advance = False
+            self.shown = None
+
+    probe = Probe()
+    probe.bus.send_control("next")
+    probe.bus.send_control("stop")
+    with mock.patch.object(module.MonitoredRobot.__bases__[0], "keys", lambda self: set()):
+        pressed = probe.keys()
+    check("q" in pressed and probe.quit, "STOP quits the run at this step")
+
+
+def test_the_dashboard_acknowledges_with_the_command_id_and_its_state():
+    from monitor import server as monitor_server
+
+    bus = telemetry.Bus()
+    cid = bus.submit("separa las piezas")
+    answer = monitor_server._ack(bus, cid, queued="separa las piezas")
+    check(answer["id"] == cid and answer["state"] == telemetry.QUEUED and answer["ok"],
+          f"the page gets the id and the state it is in: {answer}")
+
+
+def test_a_snapshot_after_a_sequence_number_carries_only_the_new_log_lines():
+    bus = telemetry.Bus()
+    for index in range(5):
+        bus.log(f"linea {index}")
+    first = bus.snapshot()
+    check(len(first["events"]) == 5, "a fresh page gets the recent history")
+    seen = first["seq"]
+    bus.log("linea 5")
+    bus.log("linea 6")
+    delta = bus.snapshot(events_after=seen)
+    check([e["message"] for e in delta["events"]] == ["linea 5", "linea 6"],
+          f"the delta is exactly what came after the last line sent: {delta['events']}")
+    check(bus.snapshot(events_after=delta["seq"])["events"] == [],
+          "and an up-to-date socket gets no log lines at all")
+    check(len(bus.snapshot()["events"]) == 7, "a full snapshot still has the whole recent log")
+
+
+def test_the_bus_measures_rates_depths_and_command_latency():
+    bus = telemetry.Bus()
+    for _ in range(10):
+        bus.tick("physics")
+    check(bus.rate("physics") > 0, "ticks become a rate")
+    check(bus.rate("camera") == 0.0, "a stream that never ticked reads zero, not an error")
+    cid = bus.submit("coge la bola verde")
+    bus.take_command(timeout=0.1)
+    metrics = bus.snapshot()["metrics"]
+    check("physics_per_s" in metrics and metrics["physics_per_s"] > 0,
+          f"the snapshot carries the rate: {metrics}")
+    check("command_latency_ms" in metrics and metrics["command_latency_ms"] >= 0,
+          "the latency from request to pick-up is measured")
+    check(metrics["command_queue_depth"] == 0 and metrics["control_queue_depth"] == 0,
+          "queue depths are reported, and empty here")
+    bus.add_to_metric("websocket_clients", 1)
+    bus.add_to_metric("websocket_clients", 1)
+    bus.add_to_metric("websocket_clients", -1)
+    check(bus.snapshot()["metrics"]["websocket_clients"] == 1, "client count goes up and down")
+    check(bus.command_state(cid)["state"] == telemetry.RUNNING, "the command is RUNNING")
+
+
+def test_end_to_end_over_http_a_command_is_acknowledged_taken_finished_and_stopped():
+    """Phase 5's first steps, without Isaac: the real server, the real HTTP calls, a robot stand-in."""
+    from monitor import server as monitor_server
+
+    bus = telemetry.Bus()
+    monitor = monitor_server.serve(bus, port=0)
+    try:
+        check(monitor.wait_ready(15.0), "the dashboard comes up")
+
+        def call(path, body=None):
+            data = json.dumps(body).encode() if body is not None else None
+            request = urllib.request.Request(monitor.url + path.lstrip("/"), data=data,
+                                             method="POST" if body is not None else "GET",
+                                             headers={"content-type": "application/json"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.loads(response.read())
+
+        def command_in_page(cid):
+            return next((c for c in call("api/state")["commands"] if c["id"] == cid), None)
+
+        ack = call("api/command", {"text": "separa las piezas por colores"})
+        check(ack["ok"] and ack["id"].startswith("cmd_") and ack["state"] == telemetry.QUEUED,
+              f"the browser is acknowledged at once, with an id and QUEUED: {ack}")
+        check(command_in_page(ack["id"])["state"] == telemetry.QUEUED,
+              "and the page sees the same state")
+
+        check(bus.take_command(timeout=0.5) == "separa las piezas por colores",
+              "the robot takes it")
+        check(command_in_page(ack["id"])["state"] == telemetry.RUNNING,
+              "the page sees RUNNING once the robot has it")
+        bus.set_command_state(ack["id"], telemetry.SUCCESS, "pieza colocada")
+        check(command_in_page(ack["id"])["state"] == telemetry.SUCCESS,
+              "and SUCCESS, with the robot's own note")
+
+        waiting = call("api/command", {"text": "coge la bola verde"})
+        stop = call("api/env", {"action": "stop"})
+        check(stop["ok"] and stop["state"] == telemetry.QUEUED,
+              "STOP is acknowledged at once, and waits for the robot to confirm it")
+        check(command_in_page(waiting["id"])["state"] == telemetry.CANCELLED,
+              "a sentence still waiting when STOP arrives is cancelled, and says so")
+        check(bus.stop_requested(), "the robot sees the stop flag")
+        bus.complete_stop()
+        check(command_in_page(stop["id"])["state"] == telemetry.SUCCESS,
+              "the stop is SUCCESS once the robot has halted")
+        check("command_latency_ms" in call("api/state")["metrics"],
+              "the page's metrics include the measured latency")
+    finally:
+        monitor.stop(timeout=5.0)
+
+
+def test_the_start_up_phases_follow_the_real_stages_and_a_failure_is_recorded():
+    """"Isaac is starting" may only be published once Isaac is starting, and a failure must say so."""
+    source = (ROOT / "11_real_sorting_with_monitor.py").read_text(encoding="utf-8")
+    wait = source.index('phase="waiting_start"')
+    loading = source.index('phase="loading"')
+    starting = source.index('phase="starting", voice=')
+    check(wait < loading < starting,
+          "the order is waiting for the press, then loading the models, then Isaac starting")
+    check('phase="failed"' in source[starting:starting + 3000],
+          "a failure while Isaac starts is recorded as failed, with its reason")
+    check("tiempo de espera agotado" in source, "a start that times out is logged, not silent")
+    check("loading:" in (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8"),
+          "the page names the loading stage")
+
+
+def test_the_pre_flight_findings_live_in_the_info_popup_behind_an_icon_button_in_the_header():
+    """The findings are not on the main screen; an icon button in the top bar opens them."""
+    page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
+    header = page[page.index("<header>"):page.index("</header>")]
+    button = header[header.index('id="info-btn"'):]
+    check("<svg" in button and "</svg>" in button, "the info button carries an icon")
+    import re
+    inner = button[button.index(">") + 1:button.index("</button>")]
+    check(re.sub(r"<svg.*?</svg>", "", inner, flags=re.S).strip() == "",
+          "and no text beside the icon")
+    popup = page[page.index('id="info-modal"'):page.index("</main>")]
+    check('id="findings"' in popup, "the findings are in the info popup")
+    main_part = page[page.index("<main>"):page.index("</main>")]
+    check('id="findings"' not in main_part, "and not on the main screen any more")
+
+
+def test_the_log_is_a_popup_behind_an_icon_button_in_the_header_and_not_on_the_main_screen():
+    page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
+    header = page[page.index("<header>"):page.index("</header>")]
+    check('id="log-btn"' in header, "the registro button is in the top bar")
+    main_part = page[page.index("<main>"):page.index("</main>")]
+    check('id="log"' not in main_part and 'id="diag"' not in main_part,
+          "the log and its diagnostics are not on the main screen")
+    popup = page[page.index('id="log-modal"'):page.index("<main>")]
+    check('id="log"' in popup and 'id="diag"' in popup, "the log and diagnostics are in its popup")
+
+
+def test_the_right_column_pairs_camera_and_perception_and_merges_control_with_the_environment():
+    """Camera and perception share one fixed row; control and environment are one panel with a
+    moving start bar, and the camera says it is not connected until a frame arrives."""
+    page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
+    pair = page[page.index('class="pair"'):page.index("</main>")]
+    check('id="frame"' in pair and 'id="detections"' in pair,
+          "the camera and the perception table are in the same row")
+    check('id="cam-empty"' in page and "cámara aún no conectada" in page,
+          "without a frame the camera says it is not connected")
+    entorno = page[page.index('id="entorno-card"'):page.index('id="comando-card"')]
+    check(page.index('id="entorno-card"') < page.index('id="comando-card"') < page.index('class="pair"'),
+          "the right column reads top to bottom: control and environment, command, then camera and perception")
+    check('class="help"' in page[page.index('id="comando-card"'):page.index('class="pair"')]
+          and 'class="help"' in entorno,
+          "the command and environment panels each carry an info icon in their title bar")
+    check('id="start"' in entorno and 'id="stop"' in entorno and 'id="start-bar"' in entorno,
+          "start, stop and the moving bar sit in the same panel as the environment settings")
+    check("startPending" in page and "RUNNING_PHASES" in page,
+          "a press blocks the start button until the environment is running")
+
+
+def test_the_plan_box_lists_tasks_and_the_steps_with_their_poses_live_in_execution():
+    """Plan says what will be moved; Ejecución says how, step by step, with the pose of each."""
+    page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
+    plan_block = page[page.index('if (nodeId === "plan")'):page.index('if (nodeId === "execute")')]
+    exec_block = page[page.index('if (nodeId === "execute")'):]
+    exec_block = exec_block[:exec_block.index("return null")]
+    check('id="plan-tasks"' in plan_block, "the plan box lists its tasks")
+    check("exec-steps" not in plan_block and '<table' not in plan_block,
+          "the plan box carries no steps and no poses")
+    check('id="exec-steps"' in exec_block and 'id="note-execute"' in exec_block,
+          "the execution box holds the steps and what is running now")
+    check("paintSteps(plan)" in page and 'el("exec-steps")' in page,
+          "the steps are painted into the execution box, from the plan")
+
+
+def test_the_page_names_every_status_command_state_and_phase_the_robot_can_publish():
+    """The page's Spanish maps must cover what the robot really publishes, or a state shows raw.
+
+    The phases are read from the demo's own ``phase=`` calls, and the statuses from the ledger,
+    so a new state added on the Python side fails here until the page can say it in Spanish.
+    """
+    import re
+
+    page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
+
+    def keys_of(name):
+        block = re.search(rf"const {name} = \{{(.*?)\}};", page, re.S)
+        return set(re.findall(r"(\w+):", block.group(1))) if block else set()
+
+    source = (ROOT / "11_real_sorting_with_monitor.py").read_text(encoding="utf-8")
+    phases = set(re.findall(r'phase="(\w+)"', source))
+    check(phases and phases <= keys_of("PHASE_ES"),
+          f"the page has no Spanish for these phases: {sorted(phases - keys_of('PHASE_ES'))}")
+    statuses = {module_status for module_status in
+                ("SUCCESS", "PARTIAL_SUCCESS", "FAILED", "ABORTED", "NO_TASKS")}
+    check(statuses <= keys_of("STATUS_ES"),
+          f"missing final statuses: {sorted(statuses - keys_of('STATUS_ES'))}")
+    states = {"RECEIVED", "QUEUED", "RUNNING", "SUCCESS", "FAILED", "CANCELLED"}
+    check(states <= keys_of("COMMAND_ES"),
+          f"missing command states: {sorted(states - keys_of('COMMAND_ES'))}")
+    check("EN CURSO" in page and "COMPLETADA" in page and "FALLIDA" in page and "PENDIENTE" in page,
+          "the checklist speaks the four task states in Spanish")
 
 
 def main() -> int:
+    # Demo 11 is imported once, here, before any test runs. Three tests need its classes, and each
+    # one that went through `load_demo11` first would otherwise import it again - ~500 ms, almost
+    # all of it importing torch and gliner2 through the command model at the top of the file.
+    # `load_demo11` caches, so this is the same work done once and in the right order.
+    started = time.perf_counter()
+    load_demo11()
+    warmup = time.perf_counter() - started
+
+    slowest = []
     for name, function in sorted(globals().items()):
         if name.startswith("test_") and callable(function):
+            began = time.perf_counter()
             function()
+            slowest.append((time.perf_counter() - began, name))
+    slowest.sort(reverse=True)
+
+    if "-v" in sys.argv or "--timing" in sys.argv:
+        print(f"import of demo 11: {warmup * 1000:.0f} ms")
+        for seconds, name in slowest[:8]:
+            print(f"  {seconds * 1000:7.0f} ms  {name}")
     print(f"{checks} checks over the demo 11 real-world model, the bus and the dashboard")
     if failures:
         print(f"{len(failures)} FAILED:")
