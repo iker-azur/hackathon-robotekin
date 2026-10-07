@@ -18,7 +18,15 @@
   header { display: flex; align-items: center; gap: 10px; padding: 8px 14px;
            background: var(--panel); border-bottom: 1px solid var(--line); flex: 0 0 auto; }
   header h1 { font-size: 14px; margin: 0; letter-spacing: .04em; }
-  header h1 small { color: var(--muted); font-weight: normal; margin-left: 8px; }
+  /* Cada píldora tiene su sitio fijo: lo que cambia dentro no empuja a las demás. */
+  /* Cada píldora de la cabecera tiene un tamaño fijo y un texto que nunca se corta: la etiqueta a
+     la izquierda y el valor a la derecha. Los textos son cortos (ver PHASE_SHORT). */
+  header .pill { display: inline-flex; align-items: center; justify-content: space-between;
+                 gap: 10px; width: 150px; box-sizing: border-box; padding: 3px 10px;
+                 font-variant-numeric: tabular-nums; }
+  header .pill.conn-pill { width: 190px; justify-content: flex-start; }
+  header .pill.phase-pill { width: 220px; }
+  header .pill b { white-space: nowrap; text-align: right; }
   .pill { padding: 2px 9px; border-radius: 10px; background: var(--panel-2);
           border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
   .pill b { color: var(--text); font-weight: 600; }
@@ -26,7 +34,9 @@
          background: var(--idle); vertical-align: middle; }
   .dot.live { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
   .dot.dead { background: var(--fail); }
-  main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 1fr 400px;
+  /* La ruta de decisión ocupa el 75% de lo que antes ocupaba (lo que queda tras el panel de la
+     derecha y los márgenes); el resto es para los paneles de la derecha, que necesitan anchura. */
+  main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: calc(0.75 * (100% - 410px)) 1fr;
          gap: 10px; padding: 10px; }
   .col { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
@@ -48,8 +58,31 @@
   button.primary { background: var(--accent); border-color: #6a5ad8; color: #fff; }
   button.primary:hover { background: #8b79f5; }
   button.mic.on { background: var(--fail); border-color: #b04a3c; color: #fff; }
-  #frame { width: 100%; display: block; background: #05070b; border-radius: 6px;
-           aspect-ratio: 16/9; object-fit: contain; }
+  /* Cámara y percepción: dos tarjetas de alto fijo en una fila; nada se reajusta al moverse. */
+  /* La fila llega hasta el fondo de la página. La cámara es la más ancha y no tiene scroll: su
+     imagen ocupa toda la tarjeta. La percepción va a la derecha y sí puede desplazarse. */
+  .pair { display: grid; grid-template-columns: 1.6fr 1fr; gap: 10px; flex: 1 1 auto;
+          min-height: 0; }
+  .pair > .card { display: flex; flex-direction: column; min-height: 0; }
+  .pair > .card > .body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .pair > .cam-card > .body { overflow: hidden; display: flex; flex-direction: column; }
+  .cam-box { position: relative; width: 100%; flex: 1 1 auto; min-height: 0; background: #05070b;
+             border-radius: 6px; overflow: hidden; }
+  .cam-box img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .cam-empty { position: absolute; inset: 0; display: flex; flex-direction: column;
+               align-items: center; justify-content: center; gap: 6px; color: var(--muted);
+               font-size: 12px; text-align: center; }
+  .cam-empty[hidden] { display: none; }
+  /* Entorno y control: la barra se mueve mientras el simulador arranca (dos minutos aprox.). */
+  /* La barra de arranque y su texto van en una misma fila. */
+  .start-line { display: flex; align-items: center; gap: 10px; margin-top: 8px; min-height: 18px; }
+  .start-bar { flex: 1 1 auto; min-width: 0; height: 6px; background: #1d222d; border-radius: 3px;
+               overflow: hidden; }
+  .start-line .hint { min-width: 0; }
+  .start-bar[hidden] { display: none; }
+  .start-bar-fill { height: 100%; width: 35%; background: var(--accent); border-radius: 3px;
+                    animation: barmove 1.3s ease-in-out infinite; }
+  @keyframes barmove { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
   table { width: 100%; border-collapse: collapse; }
   td, th { text-align: left; padding: 2px 4px; border-bottom: 1px solid var(--line);
            font-size: 12px; vertical-align: top; }
@@ -76,8 +109,10 @@
   .hidden { display: none !important; }
 
   /* --- la ruta de decisión, con todo el mapa y el camino iluminado --- */
+  /* La tabla de la intención crece con su contenido hasta llenar su caja, y a partir de ahí
+    _scroll, para que un comando con muchas opciones no se salga por abajo. */
   #route { flex: 1 1 auto; }
-  #route .body { padding: 0; }
+  #route .body { padding: 0; overflow: hidden; }
   svg#flow-svg { width: 100%; height: 100%; min-height: 0; display: block; }
   .node-box { cursor: pointer; }
   .node-box:hover rect { stroke: var(--text); }
@@ -87,15 +122,86 @@
   .edge-travelled { stroke: var(--active); }
   .edge-loop { stroke: var(--warn); stroke-dasharray: 4 3; }
   .edge-travelled-loop { stroke: var(--fail); stroke-dasharray: 4 3; }
-  .edge-label { font-size: 8.5px; fill: var(--muted); }
-  .edge-label.lit { fill: var(--active); }
-  /* contenido HTML vivo dentro de las cajas del mapa */
-  foreignObject { overflow: visible; }
+  /* La etiqueta de una arista, en un div que se recorta al ancho del hueco. Va por eso dentro de
+     un foreignObject: un <text> de SVG no envuelve ni recorta, y una etiqueta se salía de su hueco
+     encima de la caja de al lado. */
+  .edge-wrap { font-size: 8.5px; color: var(--muted); line-height: 13px; height: 13px;
+               width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .edge-wrap.lit { color: var(--active); }
+  /* contenido HTML vivo dentro de las cajas del mapa.
+     Todo lo que hay aquí tiene `overflow: hidden` en algún sitio, y no por心上: el texto que se
+     sale de su caja es lo que hace que este diagrama parezca roto aunque los datos estén bien. */
+  foreignObject { overflow: hidden; }
   .fo { box-sizing: border-box; width: 100%; height: 100%; padding: 0; margin: 0;
         font: 12px/1.45 "SF Mono", "Cascadia Mono", Consolas, monospace; color: var(--text);
         overflow: hidden; }
-  .fo.scroll { overflow-y: auto; }
+  .fo.scroll { overflow-y: auto; overflow-x: hidden; }
   .fo .big { font-size: 13.5px; line-height: 1.4; word-break: break-word; }
+  /* El detalle y la nota viva de una caja sin contenido propio. El detalle se apaga cuando la
+     etapa está en marcha: entonces lo que importa es lo que acaba de decir, no lo que suele
+     hacer. */
+  .fo.plain .det { font-size: 10.5px; line-height: 1.4; color: var(--muted); margin-bottom: 2px; }
+  .fo.plain .live { font-size: 10.5px; line-height: 1.4; color: var(--text); }
+  .node-box.busy .fo.plain .det { display: none; }
+  /* la cabecera de cada caja viva: la insignia y la nota, en una línea que no crece */
+  .fx-head { display: flex; align-items: baseline; gap: 6px; margin-bottom: 3px;
+             min-width: 0; overflow: hidden; }
+  /* Recorta a N líneas con puntos suspensivos. `min-width: 0` en los hijos flex es lo que
+     permite que el texto en vez de la caja: sin él, un hijo flex no baja del ancho mínimo de su
+     contenido y el recorte no ocurre. */
+  .clip-1, .clip-2, .clip-3 { display: -webkit-box; -webkit-box-orient: vertical;
+                              overflow: hidden; word-break: break-word; min-width: 0; }
+  .clip-1 { -webkit-line-clamp: 1; }
+  .clip-2 { -webkit-line-clamp: 2; }
+  .clip-3 { -webkit-line-clamp: 3; }
+  /* el texto de una etiqueta SVG se recorta a una sola línea por caracter, con puntos, porque
+     un <text> no envuelve y antes de este se salía de la caja por la derecha */
+  .node-note { font-size: 9.5px; fill: var(--muted); pointer-events: none;
+               text-overflow: ellipsis; }
+
+  /* La tabla de la intención. Cada opción es una celda seleccionable: la elegida con fondo y
+     borde propios, y la probabilidad del modelo al lado, que es el dato que faltaba - se veía
+     LA decisión pero no cuánto le creyó el modelo. */
+  /* LA TABLA DE LA INTENCIÓN: cada opción es una celda de una matriz, no una etiqueta suelta.
+ *
+ * Antes eran "chips" en línea que se envolvían, y eso se leía como una lista corrida: no había
+ * forma de ver que "separar" competía con "vaciar" y con "parar" en la misma decisión, ni de
+ * barrer la columna para ver qué se eligió. Ahora es una rejilla y cada opción ocupa una celda
+ * del mismo tamaño, de modo que las opciones de un campo forman una fila y las de todos los
+ * campos forman columnas alineadas.
+ *
+ * `grid-template-columns: repeat(auto-fit, minmax(96px, 1fr))` es lo que la convierte en
+ * matriz: celdas de ancho mínimo y las que sobran repartidas en 1fr, así la fila llena el ancho
+ * disponible sin celdas estrechas ni huecos. El número de columnas cambia por fila porque cada
+ * campo tiene un número distinto de opciones, y eso es correcto: lo que se compara son las
+ * opciones de UN campo, y esa fila queda alineada por celda. */
+  table.intent { width: 100%; table-layout: fixed; border-collapse: collapse; }
+  table.intent th { width: 104px; vertical-align: top; padding: 3px 10px 3px 0;
+                    font-size: 11px; color: var(--muted); font-weight: 500;
+                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  table.intent td.opts { padding: 3px 0; vertical-align: top; }
+  table.intent tr + tr th, table.intent tr + tr td { border-top: 1px solid #232936; }
+  /* la rejilla de celdas. El hueco es una línea de la matriz, no un margen: así se lee como
+     cuadrícula y no como una bolsa. */
+  /* Matriz: ocho columnas de igual ancho en todas las filas, así las opciones de cada campo caen
+     bajo las mismas columnas que las de los demás campos. */
+  .opts { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));
+          gap: 3px; min-width: 0; }
+  .opt { display: flex; align-items: center; gap: 5px; padding: 3px 8px; min-width: 0;
+         font-size: 11.5px; border-radius: 4px; background: var(--panel-2);
+         border: 1px solid var(--line); color: var(--muted); overflow: hidden; }
+  /* el texto de una celda se recorta dentro de la celda; `min-width: 0` es lo que lo permite,
+     porque sin él un hijo flex no baja del ancho mínimo de su contenido. */
+  .opt .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .opt.sel { background: #2a2450; border-color: var(--accent); color: var(--text);
+             box-shadow: inset 0 0 0 1px var(--accent); }
+  .opt .p { margin-left: auto; color: var(--muted); font-size: 10px;
+            font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+  .opt.sel .p { color: #bdb2ff; }
+  .opt .present { width: 6px; height: 6px; border-radius: 50%; background: var(--ok);
+                  flex: 0 0 auto; }
+  .opt.target { border-color: var(--ok); }
+  .opt .to { font-size: 10px; opacity: .75; flex: 0 0 auto; }
 
   .chips { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
   .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; font-size: 11.5px;
@@ -116,21 +222,174 @@
   .pasos td { font-size: 11.5px; padding: 1px 4px; }
   .pasos .acc { color: var(--accent); white-space: nowrap; }
   .pasos .pose { color: var(--muted); white-space: nowrap; }
-  #plan-steps { max-height: 96px; overflow-y: auto; display: block; }
-  #plan-cmd { margin-top: 4px; color: var(--muted); }
+  #exec-steps { display: block; margin-top: 4px; }
+  /* El plan, en frases. Cada fila es una tarea - "bola roja a cesta roja" - con un icono que dice
+     si la está haciendo, si está hecha o si falló. Las tres señales son distintas de propósito:
+     "hecha" la marca `check` después de medir dónde paró la pieza, y "falló" significa que se
+     comprobó y no estaba dentro, que no es lo mismo que no haber llegado a intentarlo. */
+  #plan-tasks { list-style: none; margin: 0 0 4px; padding: 0; max-height: 96px;
+                overflow-y: auto; overflow-x: hidden; }
+  #plan-tasks:empty { display: none; }
+  /* La línea de estado de la cabecera: lo que el robot está haciendo, en una frase. */
+  .estado { font-size: 14px; font-weight: 600; margin-left: 6px; color: var(--text); }
+  .estado.ok { color: var(--ok); }
+  .estado.fail { color: var(--fail); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  /* Los dos botones de control: grandes, y el de detener con el color de la parada. */
+  button.big { padding: 12px 18px; font-size: 15px; font-weight: 600; flex: 1; }
+  button.danger { background: var(--fail); border-color: #b04a3c; color: #fff; }
+  button.danger:hover { background: #d2604f; }
+  /* Información: un botón de solo icono a la derecha de la cabecera, que abre una ventana. */
+  .top-icons { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+  .info-btn { width: 34px; height: 34px; padding: 0; display: inline-flex;
+              align-items: center; justify-content: center; border-radius: 50%; flex: 0 0 auto; }
+  .icon-btn { width: 30px; height: 30px; padding: 0; font-size: 18px; line-height: 1;
+              display: inline-flex; align-items: center; justify-content: center; }
+  .modal { position: fixed; inset: 0; background: rgba(4, 6, 10, .7); display: flex;
+           align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+  .modal[hidden] { display: none; }
+  .modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+               width: min(720px, 100%); max-height: 86vh; display: flex; flex-direction: column;
+               box-shadow: 0 16px 48px rgba(0, 0, 0, .5); }
+  .modal-head { display: flex; align-items: center; justify-content: space-between;
+                padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .modal-head h2 { margin: 0; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; }
+  .modal-body { padding: 12px 16px 16px; overflow-y: auto; }
+  /* La ventana del registro: ancha, y con el registro ocupando la mayor parte de la altura. */
+  .modal-box.wide { width: min(980px, 100%); }
+  .modal-box.wide #log { height: 60vh; overflow-y: auto; font-size: 12.5px; }
+  /* Icono de ayuda en la barra del título: no es un botón, sólo muestra su texto al pasar el ratón. */
+  .card { position: relative; }
+  /* Los ocho ejemplos en dos filas de cuatro; cada fila ocupa todo el ancho del panel. */
+  .examples { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px;
+              margin-top: 6px; }
+  .examples button { font-size: 11px; padding: 4px 3px; min-width: 0; white-space: normal;
+                     line-height: 1.3; }
+  /* Una fila que ocupa todo el ancho del panel: cada elemento se reparte el espacio. */
+  .row.fit > button, .row.fit > label { flex: 1 1 0; min-width: 0; }
+  .gate.fail { color: var(--fail); }
+  .card > h2 { display: flex; align-items: center; gap: 6px; }
+  .help { margin-left: auto; flex: 0 0 auto; width: 18px; height: 18px; border-radius: 50%;
+          border: 1px solid var(--muted); color: var(--muted); font-size: 11px; font-weight: 600;
+          letter-spacing: 0; text-transform: none; display: inline-flex; align-items: center;
+          justify-content: center; cursor: default; }
+  .help:hover { color: var(--text); border-color: var(--text); }
+  .help::after { content: attr(data-tip); display: none; position: absolute; right: 10px; top: 32px;
+                 width: 290px; background: #10141d; border: 1px solid var(--line); border-radius: 6px;
+                 padding: 9px 11px; font-size: 12px; font-weight: 400; line-height: 1.45;
+                 letter-spacing: normal; text-transform: none; color: var(--text); white-space: normal;
+                 box-shadow: 0 8px 24px rgba(0, 0, 0, .45); z-index: 30; }
+  .help:hover::after { display: block; }
+  .modal-body h3 { margin: 14px 0 6px; font-size: 12px; color: var(--accent);
+                   letter-spacing: .06em; text-transform: uppercase; }
+  .modal-body h3:first-child { margin-top: 0; }
+  .guide { font-size: 13px; line-height: 1.5; margin: 0 0 8px; }
+  .guide-list { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.6; }
+  #plan-tasks li { display: flex; align-items: baseline; gap: 6px; font-size: 12px;
+                  padding: 2px 0; color: var(--text); min-width: 0; }
+  #plan-tasks .mark { flex: 0 0 14px; text-align: center; font-weight: 700; line-height: 1.2; }
+  #plan-tasks .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #plan-tasks li.doing .mark { color: var(--active); }
+  #plan-tasks li.doing .what { color: var(--text); }
+  #plan-tasks li.done .mark { color: var(--ok); }
+  #plan-tasks li.done .what { color: var(--muted); text-decoration: line-through;
+                             text-decoration-thickness: 1px; }
+  #plan-tasks li.fail .mark { color: var(--fail); }
+  #plan-tasks li.fail .what { color: var(--fail); }
+  /* La caja del plan: la lista de tareas llena el alto, y el recuento va abajo a la derecha. */
+  .fo:has(> .plan-col) { height: 100%; }
+  .plan-col { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .plan-col #plan-tasks { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
+  .plan-col .tally { flex: 0 0 auto; text-align: right; color: var(--muted); font-size: 11px;
+                     padding-top: 4px; white-space: nowrap; }
 </style>
 </head>
 <body>
 <header>
-  <h1>demo 11 <small>del comando al movimiento, con física real</small></h1>
-  <span class="pill"><span class="dot" id="conn"></span><span id="conn-text">conectando</span></span>
-  <span class="pill">fase <b id="phase">-</b></span>
-  <span class="pill">ronda <b id="round">-</b></span>
-  <span class="pill">semilla <b id="seed">-</b></span>
-  <span class="pill">verificados <b id="verified">0</b></span>
-  <span class="pill">con reintento <b id="recovered">0</b></span>
-  <span class="pill">fallidos <b id="missed">0</b></span>
+  <h1>HACKATHON ROBOTEKIN</h1>
+  <span class="pill conn-pill"><span class="dot" id="conn"></span><span id="conn-text">conectando</span></span>
+  <span class="pill phase-pill"><span>fase</span><b id="phase">-</b></span>
+  <span class="pill"><span>ronda</span><b id="round">-</b></span>
+  <span class="pill"><span>semilla</span><b id="seed">-</b></span>
+  <span class="pill"><span>verificados</span><b id="verified">0</b></span>
+  <span class="pill"><span>con reintento</span><b id="recovered">0</b></span>
+  <span class="pill"><span>fallidos</span><b id="missed">0</b></span>
+  <span class="top-icons">
+  <button class="info-btn" id="info-btn" title="información" aria-label="información"
+          aria-haspopup="dialog" aria-controls="info-modal">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M12 10.5v6.2" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+      <circle cx="12" cy="7.3" r="1.35" fill="currentColor"/>
+    </svg>
+  </button>
+  <button class="info-btn" id="log-btn" title="registro" aria-label="registro"
+          aria-haspopup="dialog" aria-controls="log-modal">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <path d="M5 6.5h14M5 12h14M5 17.5h9" fill="none" stroke="currentColor" stroke-width="1.9"
+            stroke-linecap="round"/>
+    </svg>
+  </button>
+  </span>
 </header>
+
+<!-- ventana de información: avisos del pre-vuelo y una guía corta. No ocupa la pantalla principal. -->
+<div class="modal" id="info-modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="info-title">
+    <div class="modal-head">
+      <h2 id="info-title">información</h2>
+      <button class="icon-btn" id="info-close" title="cerrar" aria-label="cerrar">&times;</button>
+    </div>
+    <div class="modal-body">
+      <h3>pre-vuelo: avisos del banco</h3>
+      <div class="findings" id="findings"><span class="hint">sin avisos todavía</span></div>
+
+      <h3>cómo leer la pantalla</h3>
+      <p class="guide">La demo sigue siempre la misma cadena:
+        <b>COMANDO → PLAN → EJECUCIÓN → VERIFICACIÓN → RECUPERACIÓN → RESULTADO</b>.</p>
+      <ul class="guide-list">
+        <li><b>Plan:</b> las tareas que el robot intenta, una por línea, cada una con su estado.</li>
+        <li><b>Ejecución:</b> los pasos del plan con su pose, y el que está en marcha ahora.</li>
+        <li><b>Verificación:</b> se mide dónde quedó cada pieza, dentro de su caja o no.</li>
+        <li><b>Recuperación:</b> si una pieza no quedó bien, el robot vuelve a intentarlo, o lo
+          declara fallido.</li>
+        <li><b>Estados de tarea:</b> PENDIENTE, EN CURSO, COMPLETADA y FALLIDA.</li>
+      </ul>
+
+      <h3>configuración y voz</h3>
+      <ul class="guide-list">
+        <li><b>Configuración:</b> la variante, la cámara, las rondas y la semilla se leen al
+          iniciar el entorno. Después, los botones de siguiente ronda, re-mirada y guardar
+          actúan en caliente.</li>
+        <li><b>Voz:</b> el micrófono graba en el navegador y el servidor transcribe. El texto cae
+          en la casilla del comando, para corregirlo antes de enviarlo.</li>
+        <li><b>Variantes:</b> recinto (zona de trabajo con kerb), abierto (sin kerb, el caso de
+          control) y fuera de alcance (dos piezas lejos del brazo).</li>
+        <li><b>Cámaras:</b> cenital (sobre el brazo), lateral (el otro lado del robot) y frontal (a
+          través del brazo, el peor caso).</li>
+        <li><b>Avisos del pre-vuelo:</b> están en la sección de arriba, con su nivel (fallo, aviso
+          o nota).</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ventana del registro: lo que el robot dice, línea a línea, y el diagnóstico -->
+<div class="modal" id="log-modal" hidden>
+  <div class="modal-box wide" role="dialog" aria-modal="true" aria-labelledby="log-title">
+    <div class="modal-head">
+      <h2 id="log-title">registro</h2>
+      <button class="icon-btn" id="log-close" title="cerrar" aria-label="cerrar">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="log"></div>
+      <details class="diag" style="margin-top:8px">
+        <summary class="hint">diagnóstico (tasas y latencias medidas)</summary>
+        <pre id="diag" class="hint" style="white-space:pre-wrap;margin:4px 0 0"></pre>
+      </details>
+    </div>
+  </div>
+</div>
 
 <main>
   <!-- columna izquierda: únicamente la ruta de decisión -->
@@ -147,87 +406,95 @@
 
   <!-- columna derecha: cámara, percepción, comando y el entorno -->
   <div class="col">
-    <div class="card" style="flex:0 0 auto;max-height:40%">
-      <h2>cámara <span class="hint" id="fps"></span></h2>
+    <!-- entorno y control, en un solo panel: los botones, la barra de arranque y la configuración -->
+    <div class="card" id="entorno-card" style="flex:0 0 auto">
+      <h2>entorno y control <span class="hint" id="variant-tag"></span><span class="help" data-tip="Elige la variante y la cámara y pulsa iniciar entorno: el simulador tarda unos dos minutos. Los botones de abajo (siguiente ronda, re-mirada, guardar) actúan en caliente; la configuración sólo se lee al iniciar.">i</span></h2>
+      <div class="gate waiting" id="gate">
+        el simulador no ha arrancado. pulsa <b>iniciar entorno</b>.
+      </div>
       <div class="body">
-        <img id="frame" alt="último fotograma de la cámara">
-        <div class="hint" id="frame-note" style="margin-top:5px">sin fotograma todavía</div>
+        <div class="row">
+          <button class="primary big" id="start">iniciar entorno</button>
+          <button class="danger big" id="stop">detener</button>
+        </div>
+        <div class="start-line">
+          <div class="start-bar" id="start-bar" hidden><div class="start-bar-fill"></div></div>
+          <div class="hint" id="start-note"></div>
+        </div>
+        <div class="row fit" style="margin-top:8px">
+          <label class="field"><span>variante</span>
+            <select id="variant-sel">
+              <option value="contained">recinto</option>
+              <option value="open">abierto</option>
+              <option value="out_of_reach">fuera de alcance</option>
+            </select>
+          </label>
+          <label class="field"><span>cámara</span>
+            <select id="camera-sel">
+              <option value="top">cenital</option>
+              <option value="side">lateral</option>
+              <option value="front">frontal</option>
+            </select>
+          </label>
+          <label class="field"><span>rondas</span><input id="rounds" value="1"></label>
+          <label class="field"><span>semilla</span><input id="seed-in" value="0"></label>
+        </div>
+        <div class="row fit">
+          <button id="next">siguiente ronda</button>
+          <button id="relook">re-mirada</button>
+          <button id="save">guardar fotograma</button>
+        </div>
       </div>
     </div>
 
-    <div class="card" style="flex:0 0 auto;max-height:24%">
-      <h2>lo que ve la percepción</h2>
-      <div class="body" style="padding-top:6px;padding-bottom:4px"><table id="detections"></table></div>
-    </div>
-
-    <div class="card" style="flex:0 0 auto">
-      <h2>comando</h2>
+    <div class="card" id="comando-card" style="flex:0 0 auto">
+      <h2>comando<span class="help" data-tip="Escribe una orden en español, o pulsa uno de los atajos. Se ejecuta cuando el robot acaba lo que tiene en marcha. La voz se graba aquí y el texto cae en la casilla, para corregirlo antes de enviar.">i</span></h2>
       <div class="body">
         <div class="row">
           <input id="cmd" placeholder="pon el cubo rojo en la caja roja" style="flex:1">
           <button class="primary" id="send">enviar</button>
           <button class="mic" id="mic" title="grabar y transcribir">&#127897;</button>
         </div>
-        <div class="row">
-          <button data-cmd="separa las piezas por colores">separar por colores</button>
-          <button data-cmd="pon el cubo rojo en la caja roja">cubo rojo</button>
-          <button data-cmd="coge la bola verde">bola verde</button>
+        <div class="examples" title="ejemplos: pulsa uno para enviarlo">
+          <button data-cmd="separa las piezas por colores">separar colores</button>
+          <button data-cmd="pon el cubo rojo en la caja roja">cubo rojo a caja</button>
+          <button data-cmd="pon el cubo azul en la caja azul">cubo azul a caja</button>
+          <button data-cmd="coge la bola verde">coge bola verde</button>
+          <button data-cmd="coge la bola roja">coge bola roja</button>
+          <button data-cmd="pon la bola verde en la bandeja azul">bola verde a bandeja</button>
+          <button data-cmd="separa las bolas de los cubos">bolas y cubos</button>
+          <button data-cmd="recoge la mesa">recoger mesa</button>
         </div>
-        <div class="hint" id="mic-note" style="margin-top:4px">la voz se graba aquí y se transcribe
-          en el servidor (faster-whisper); el texto cae en la casilla para enviarlo o
-          corregirlo primero.</div>
+        <div class="hint" id="mic-note" style="margin-top:4px"></div>
         <div class="hint" id="queued-note" style="margin-top:4px"></div>
       </div>
     </div>
-
-    <div class="card" style="flex:0 0 auto">
-      <h2>entorno <span class="hint" id="variant-tag"></span></h2>
-      <div class="gate waiting" id="gate">
-        el simulador no ha arrancado. pulsa <b>iniciar entorno</b> aquí abajo.
+    <!-- cámara y lo que ve la percepción, una al lado de la otra, con el mismo alto fijo: nada se
+         reajusta mientras la simulación corre -->
+    <div class="pair">
+      <div class="card cam-card">
+        <h2>cámara <span class="hint" id="fps"></span></h2>
+        <div class="body">
+          <div class="cam-box">
+            <img id="frame" alt="último fotograma de la cámara" hidden>
+            <div class="cam-empty" id="cam-empty">
+              <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true">
+                <path d="M4 7h3l2-2h6l2 2h3v12H4z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                <circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+                <path d="M3 3l18 18" stroke="currentColor" stroke-width="1.6"/>
+              </svg>
+              <span>cámara aún no conectada</span>
+            </div>
+          </div>
+          <div class="hint" id="frame-note" style="margin-top:5px"></div>
+        </div>
       </div>
-      <div class="body">
-        <div class="row">
-          <label class="field" style="flex:1"><span>variante</span>
-            <select id="variant-sel">
-              <option value="contained">recinto - zona de trabajo con kerb</option>
-              <option value="open">abierto - sin kerb, el caso de control</option>
-              <option value="out_of_reach">fuera de alcance - dos piezas lejos del brazo</option>
-            </select>
-          </label>
-          <label class="field" style="flex:1"><span>cámara</span>
-            <select id="camera-sel">
-              <option value="top">cenital - sobre el brazo</option>
-              <option value="side">lateral - el otro lado del robot</option>
-              <option value="front">frontal - a través del brazo, el peor caso</option>
-            </select>
-          </label>
-        </div>
-        <div class="row">
-          <label class="field"><span>rondas</span><input id="rounds" value="1"></label>
-          <label class="field"><span>semilla</span><input id="seed-in" value="0"></label>
-        </div>
-        <div class="row">
-          <button class="primary" id="start">iniciar entorno</button>
-          <button id="next">siguiente ronda</button>
-          <button id="relook">re-mirada</button>
-        </div>
-        <div class="row">
-          <button id="save">guardar fotograma</button>
-          <button id="stop">parar</button>
-        </div>
-        <div class="hint" style="margin-top:4px">la configuración se lee al iniciar el entorno;
-          los botones de arriba actúan en caliente.</div>
-        <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:6px">
-          <div class="who">pre-vuelo</div>
-          <div class="findings" id="findings"><span class="hint">sin avisos todavía</span></div>
-        </div>
+      <div class="card">
+        <h2>lo que ve la percepción</h2>
+        <div class="body perc-body"><table id="detections"></table></div>
       </div>
     </div>
 
-    <div class="card" style="flex:1 1 auto;min-height:110px">
-      <h2>registro</h2>
-      <div class="body" style="padding-top:6px;padding-bottom:6px"><div id="log"></div></div>
-    </div>
   </div>
 </main>
 
@@ -274,8 +541,8 @@ let nodes = {}, edgeEls = [], lastEventSeq = -1, frameUrl = null, ws = null,
 function el(id) { return document.getElementById(id); }
 
 // Escribir en un id que no existe no puede ser lo que detenga un panel. Esta función se usa en
-// casi todas las tarjetas, y una sola llamada equivocada -`text("plan-n", ...)` cuando la caja
-// del plan no declaraba ese id- lanzaba antes de que se pintara el resto de esa tarjeta: la
+// casi todas las tarjetas, y una sola llamada equivocada -una escritura a un id que la caja
+// no declaraba- lanzaba antes de que se pintara el resto de esa tarjeta: la
 // tabla de pasos, la nota y las piezas quedaban en blanco para siempre, sin decir nada. Ahora
 // avisa una vez por id y sigue.
 const missingIds = new Set();
@@ -298,7 +565,9 @@ function esc(t) {
 // camino recorrido por el comando en curso se ilumina de azul (y el re-intento en rojo).
 // Las cajas vivas: el comando, la clasificación y el plan viven DENTRO del mapa, en su propia
 // caja del flujo, crecidas para acoger su contenido (HTML embebido con foreignObject).
-const CONTENT_H = { input: 92, understand: 262, plan: 190 };
+// El alto que ocupa el contenido vivo de cada caja, dentro de la caja. No hace falta para las
+// que no lo tienen (el foreignObject se mide contra la caja), y está aquí para las tres que sí.
+const CONTENT_H = { input: 76, understand: 268, plan: 176, execute: 176 };
 
 function contentMarkup(nodeId) {
   // Cada caja con contenido lleva ademas un `#note-<id>`: es donde vive la nota viva de la
@@ -306,35 +575,43 @@ function contentMarkup(nodeId) {
   // ese `<text>` la nota no tenia donde escribirse, y `paintNodes` la escribia igual - con lo
   // que reventaba en la segunda caja del diagrama y dejaba las otras diez congeladas.
   if (nodeId === "input") {
-    return { scroll: false, html: `<div style="margin-bottom:3px">` +
-      `<span class="badge" id="cmd-src">oro</span>` +
-      `<span class="hint" id="note-input"></span></div>` +
-      `<div class="big" id="cmd-text">esperando un comando&hellip;</div>` };
+    return { scroll: false, html: `<div class="fx-head"><span class="badge" id="cmd-src">oro</span>` +
+      `<span class="hint clip-1" id="note-input"></span></div>` +
+      `<div class="big clip-2" id="cmd-text">esperando un comando&hellip;</div>` };
   }
   if (nodeId === "understand") {
-    return { scroll: true, html: `<div class="hint" id="note-understand"></div>` +
-      `<div class="opt-row"><span class="tag">intenci&oacute;n</span>
-      <div class="chips" id="row-intent"></div></div>` +
-      `<div class="opt-row"><span class="tag">pieza</span>` +
-      `<div class="chips" id="row-kind"></div></div>` +
-      `<div class="opt-row"><span class="tag">color</span>` +
-      `<div class="chips" id="row-color"></div></div>` +
-      `<div class="opt-row"><span class="tag">cu&aacute;ntos</span>` +
-      `<div class="chips" id="row-count"></div></div>` +
-      `<div class="opt-row"><span class="tag">destino</span>` +
-      `<div class="chips" id="row-place"></div></div>` +
-      `<div class="opt-row"><span class="tag">orden por</span>` +
-      `<div class="chips" id="row-sort"></div></div>` +
-      `<div class="opt-row"><span class="tag">en la mesa</span>` +
-      `<div class="chips" id="row-desk"></div></div>` +
-      `<div class="hint" id="cls-warn" style="margin-top:3px"></div>` };
+// La intención, como tabla a todo lo ancho: una fila por campo, una celda por opción. Tabla y
+  // no bolsa de "chips" porque lo que se lee es una decisión POR CAMPO, y en fila se comparan las
+  // opciones de un campo con las del de al lado; en bolsa se leía como una lista corrida, sin
+  // saber qué competía con qué.
+  if (nodeId === "understand") {
+    return { scroll: true, html:
+      `<div class="fx-head"><span class="badge" id="cls-overall"></span>` +
+      `<span class="hint clip-1" id="note-understand"></span></div>` +
+      `<table class="intent"><tbody>` +
+      `<tr><th>intenci&oacute;n</th><td><div class="opts" id="row-intent"></div></td></tr>` +
+      `<tr><th>pieza</th><td><div class="opts" id="row-kind"></div></td></tr>` +
+      `<tr><th>color</th><td><div class="opts" id="row-color"></div></td></tr>` +
+      `<tr><th>cu&aacute;ntos</th><td><div class="opts" id="row-count"></div></td></tr>` +
+      `<tr><th>destino</th><td><div class="opts" id="row-place"></div></td></tr>` +
+      `<tr><th>orden por</th><td><div class="opts" id="row-sort"></div></td></tr>` +
+      `<tr><th>en la mesa</th><td><div class="opts" id="row-desk"></div></td></tr>` +
+      `</tbody></table>` +
+      `<div class="hint clip-1" id="cls-warn"></div>` };
   }
+  }
+  // PLAN: sólo las tareas, una por línea, con su estado. Nada de pasos ni de poses aquí.
   if (nodeId === "plan") {
-    return { scroll: true, html: `<div><span class="badge" id="plan-n"></span>` +
-      `<span class="hint" id="note-plan"></span></div>` +
-      `<table class="pasos" id="plan-steps"></table>` +
-      `<div class="hint" id="plan-nota"></div>` +
-      `<div class="hint" id="plan-cmd"></div>` };
+    // La lista ocupa el alto; el recuento va pegado abajo a la derecha, fuera de la lista.
+    return { scroll: false, html: `<div class="fx-head"><span class="hint clip-1" id="note-plan">` +
+      `tareas</span></div>` +
+      `<div class="plan-col"><ul id="plan-tasks"></ul><div class="tally" id="tally"></div></div>` };
+  }
+  // EJECUCIÓN: lo que el brazo hace ahora (la nota viva, arriba) y los pasos del plan con su pose.
+  if (nodeId === "execute") {
+    return { scroll: true, html: `<div class="fx-head"><span class="hint clip-1" id="note-execute">` +
+      `</span></div>` +
+      `<table class="pasos" id="exec-steps"></table>` };
   }
   return null;
 }
@@ -343,21 +620,99 @@ function contentMarkup(nodeId) {
 // A: entorno + comando en la misma fila; B: clasificación a todo lo ancho; C: la cadena
 // de percepción en horizontal; D: plan / ejecución / verificación con reintento al lado;
 // E: el informe. El re-intento es un raíl a la derecha con sus dos retornos.
-const BAND = { A: 16, B: 156, C: 456, D: 604, E: 760, rail: 640 };
+// El detalle de una caja sin contenido propio, y su nota viva. Van en un div y no en dos
+// <text> de SVG porque un <text> no envuelve: con un detalle largo se salía de su caja por la
+// derecha y se leía encima de la caja de al lado. El ancho lo pone la caja y el texto se recorta
+// dentro. Sólo el texto; el SVG pone la caja en `title` para el hover.
+function paintDetail(painted, node) {
+  if (!painted.det) return;
+  painted.det.textContent = node.detail || "";
+  painted.group.setAttribute("title", node.title + (node.detail ? " - " + node.detail : ""));
+}
+
+// ---- el reparto del lienzo --------------------------------------------------------------
+//
+// Cinco bandas, todas del mismo ancho y alineadas a los mismos dos márgenes, calculadas en vez
+// de escritas a mano: una constante mal escrita se nota como cajas desiguales, que es
+// precisamente lo que se estaba pidiendo.
+//
+//   A  entorno y comando, lado a lado, el mismo ancho y la misma altura
+//   B  la intención, a todo lo ancho, como tabla
+//   C  cámara, percepción, enlace y resolución, cuatro iguales ocupando todo el ancho
+//   D  el plan a la izquierda; a su derecha el bucle: ejecutar, comprobar, reintentar
+//   E  el informe
+//
+// Que las cuatro de la banda C sean iguales NO es estética: son la misma operación sobre la
+// misma imagen, y un ancho distinto hacía creer que unas tardaban más que otras.
+const MARGIN = 16;
+const GUTTER = 16;
+const VIEW_W = 1160;
+const CONTENT_W = VIEW_W - 2 * MARGIN;            // 1128
+
+// n cajas de igual ancho repartidas en `width`, con `gap` entre ellas, empezando en `x0`.
+function spread(count, width = CONTENT_W, gap = GUTTER, x0 = MARGIN) {
+  const each = (width - gap * (count - 1)) / count;
+  return Array.from({ length: count }, (_, i) => ({ x: x0 + i * (each + gap), w: each }));
+}
+
+const ROW_A = spread(2);
+const ROW_C = spread(4);
+// El plan ocupa la izquierda y el bucle la derecha, repartiéndose el ancho entero. Se calcula
+// desde el margen derecho para que la última caja termine exactamente en él: haciendo la suma al
+// revés sobraban 16 px de fondo a la derecha y el bucle no llegaba al borde.
+// El plan es estrecho (sólo lista tareas); la ejecución es la caja ancha, que lleva los pasos con
+// su pose. Verificación y reintento se reparten lo que queda a la derecha de la ejecución.
+const ROW_D_LEFT = Math.round(CONTENT_W * 0.34);
+const LOOP_W = CONTENT_W - ROW_D_LEFT - GUTTER;
+const LOOP_INNER = LOOP_W - 2 * GUTTER;
+const EXEC_W = Math.round(LOOP_INNER * 0.5);
+const SMALL_W = (LOOP_INNER - EXEC_W) / 2;
+const LOOP_X0 = MARGIN + ROW_D_LEFT + GUTTER;
+const ROW_D_RIGHT = [
+  { x: LOOP_X0, w: EXEC_W },
+  { x: LOOP_X0 + EXEC_W + GUTTER, w: SMALL_W },
+  { x: LOOP_X0 + EXEC_W + SMALL_W + 2 * GUTTER, w: SMALL_W },
+];
+
+// La banda B crece con su contenido: la tabla de opciones tiene un alto propio. La caja tiene
+// que poder conterla, y por eso su alto sale de aquí y no de un número escrito al lado.
+const BAND = { A: MARGIN, B: 0, C: 0, D: 0, E: 0, rail: 0 };
+// Entorno y comando: 20% menos de alto que antes (104), sin el hueco vacío bajo sus textos.
+const BOX_A = 83;
+const BOX_C = 112;
+const BOX_D = 212;
+const BOX_E = 68;
+const HEAD = 26;              // el alto que ocupan el título y la nota dentro de cada caja
+const UNDERSTAND_H = 300;     // la tabla de la intención: siete campos, con su opción elegida
+
+BAND.A = MARGIN;
+BAND.B = BAND.A + BOX_A + 34;
+BAND.C = BAND.B + UNDERSTAND_H + 34;
+BAND.D = BAND.C + BOX_C + 34;
+BAND.E = BAND.D + BOX_D + 34;
+BAND.rail = BAND.D + 10;
+
 const GEO = {
-  setup:      { x: 16,   y: BAND.A, w: 250,  h: 64 },
-  input:      { x: 296,  y: BAND.A, w: 848,  h: 110 },
-  understand: { x: 16,   y: BAND.B, w: 1128, h: 290 },
-  capture:    { x: 16,   y: BAND.C, w: 232,  h: 108 },
-  perceive:   { x: 272,  y: BAND.C, w: 250,  h: 108 },
-  link:       { x: 546,  y: BAND.C, w: 232,  h: 108 },
-  ground:     { x: 802,  y: BAND.C, w: 342,  h: 108 },
-  plan:       { x: 16,   y: BAND.D, w: 420,  h: 240 },
-  execute:    { x: 452,  y: BAND.D, w: 214,  h: 120 },
-  verify:     { x: 690,  y: BAND.D, w: 214,  h: 120 },
-  recover:    { x: 928,  y: BAND.rail, w: 216, h: 190 },
-  report:     { x: 452,  y: BAND.E, w: 452,  h: 64 },
+  setup:      { x: ROW_A[0].x,      y: BAND.A, w: ROW_A[0].w,      h: BOX_A },
+  input:      { x: ROW_A[1].x,      y: BAND.A, w: ROW_A[1].w,      h: BOX_A },
+  understand: { x: MARGIN,          y: BAND.B, w: CONTENT_W,       h: UNDERSTAND_H },
+  capture:    { x: ROW_C[0].x,      y: BAND.C, w: ROW_C[0].w,      h: BOX_C },
+  perceive:   { x: ROW_C[1].x,      y: BAND.C, w: ROW_C[1].w,      h: BOX_C },
+  link:       { x: ROW_C[2].x,      y: BAND.C, w: ROW_C[2].w,      h: BOX_C },
+  ground:     { x: ROW_C[3].x,      y: BAND.C, w: ROW_C[3].w,      h: BOX_C },
+  plan:       { x: MARGIN,          y: BAND.D, w: ROW_D_LEFT,      h: BOX_D },
+  execute:    { x: ROW_D_RIGHT[0].x, y: BAND.D, w: ROW_D_RIGHT[0].w, h: BOX_D },
+  verify:     { x: ROW_D_RIGHT[1].x, y: BAND.D, w: ROW_D_RIGHT[1].w, h: BOX_D },
+  recover:    { x: ROW_D_RIGHT[2].x, y: BAND.D, w: ROW_D_RIGHT[2].w, h: BOX_D },
+  report:     { x: MARGIN,          y: BAND.E, w: CONTENT_W,       h: BOX_E },
 };
+
+// El fondo de la caja del plan, en coordenadas del lienzo. Lo usan las aristas que la rodean por
+// debajo para no atravesarla: estaba escrito como un 858 fijo y la caja creció al meterle la
+// lista de tareas. Va aquí, y no junto a CONTENT_H, porque GEO se declara después.
+const PLAN_BOTTOM = GEO.plan.y + GEO.plan.h;
+
+const XHTML_NS = "http://www.w3.org/1999/xhtml";
 
 function buildFlow(nodeList, edgeList) {
   const svg = el("flow-svg");
@@ -383,20 +738,38 @@ function buildFlow(nodeList, edgeList) {
     'fill="#4c9ffe"/></marker>';
   svg.appendChild(defs);
 
+  // Cuántas bandas hay y dónde termina cada una, para que los raíles del bucle no lleven un
+  // número escrito a mano: la banda de percepción cambió de alto al pasar a cuatro cajas
+  // iguales y un carril con la y fija fue a atravesarlas.
+  const rowBottom = id => pos[id] ? pos[id].y + pos[id].h : 0;
+
   for (const [from, to, label] of edgeList) {
     const a = pos[from], b = pos[to];
     if (!a || !b) continue;
     const loop = from === "recover";
     let d, lx, ly;
     if (loop && to === "capture") {
-      // el retorno del reintento sube por el carril derecho y entra por arriba
-      const rail = VIEW_W - 6;
-      d = `M ${a.x + a.w} ${a.y + a.h / 2} H ${rail} V 451 H ${b.x + b.w / 2} V ${b.y}`;
-      lx = rail + 4; ly = 620; lx = VIEW_W - 70; ly = 620;
+      // El reintento de mirar vuelve por el carril derecho y entra a la cámara POR ABAJO, en su
+      // propio canal, 7 px bajo la banda C. Los enlaces normales bajan por el hueco a 17 px.
+      const rail = VIEW_W - 4;
+      const channel = rowBottom("ground") + 7;
+      d = `M ${a.x + a.w} ${a.y + 26} H ${rail} V ${channel} H ${b.x + b.w / 2} V ${b.y + b.h}`;
+      lx = VIEW_W - 96; ly = channel + 12;
     } else if (loop && to === "plan") {
-      // el re-plan rodea la banda D por debajo y entra por el fondo del plan
-      d = `M ${a.x + a.w / 2} ${a.y + a.h} V 858 H ${b.x + b.w / 2} V ${b.y + b.h}`;
-      lx = 700; ly = 852;
+      // El re-plan sale por la parte izquierda de la caja de reintento, baja a su propio canal, 8 px
+      // bajo la banda D, y entra por el fondo del plan.
+      const rail = rowBottom("recover") + 8;
+      const x0 = a.x + a.w * 0.3;
+      d = `M ${x0} ${a.y + a.h} V ${rail} H ${b.x + b.w / 2} V ${b.y + b.h}`;
+      lx = x0 + 6; ly = rail + 12;
+    } else if (loop && to === "report") {
+      // El rendido sale por la parte derecha del reintento, a su propio canal 26 px bajo la banda
+      // D, y entra a informe por la derecha. Ni el canal ni la entrada coinciden con "todas dentro".
+      const channel = rowBottom("recover") + 26;
+      const x0 = a.x + a.w * 0.7;
+      const x1 = VIEW_W - 40;
+      d = `M ${x0} ${a.y + a.h} V ${channel} H ${x1} V ${b.y}`;
+      lx = x1 - 96; ly = channel + 12;
     } else if (a.x === b.x && a.w === b.w) {
       const middle = a.y + a.h + (b.y - a.y - a.h) / 2;
       d = `M ${a.x + 22} ${a.y + a.h} V ${middle} H ${a.x + 22 + (b.w - 44) / 2} V ${b.y}`;
@@ -428,11 +801,19 @@ function buildFlow(nodeList, edgeList) {
     svg.appendChild(path);
     let labelEl = null;
     if (label && lx !== undefined) {
-      labelEl = document.createElementNS(SVG_NS, "text");
+      // La etiqueta va en un div, no en un <text>: en SVG no se recorta, y una etiqueta de arista
+      //colgando en el hueco entre dos cajas se salía del hueco y se leía encima de la caja. Con
+      // `width` y `overflow: hidden`, no puede.
+      labelEl = document.createElementNS(XHTML_NS, "div");
+      labelEl.className = "edge-wrap";
       labelEl.textContent = label;
-      labelEl.classList.add("edge-label");
-      labelEl.setAttribute("x", lx); labelEl.setAttribute("y", ly);
-      svg.appendChild(labelEl);
+      const labelFo = document.createElementNS(SVG_NS, "foreignObject");
+      labelFo.setAttribute("x", lx);
+      labelFo.setAttribute("y", ly - 10);
+      labelFo.setAttribute("width", 84);
+      labelFo.setAttribute("height", 13);
+      labelFo.appendChild(labelEl);
+      svg.appendChild(labelFo);
     }
     edgeEls.push({ from, to, el: path, loop, text: labelEl });
   }
@@ -459,14 +840,12 @@ function buildFlow(nodeList, edgeList) {
     title.setAttribute("x", box.x + 14); title.setAttribute("y", box.y + 20);
     title.textContent = node.title;
     const markup = contentMarkup(node.id);
-    let live = null, host = null;
+    let live = null, host = null, detail = null;
     group.append(rect, bar, title);
     if (markup) {
       // caja viva: el título arriba y su contenido HTML debajo, dentro de la propia caja.
       // El div vive en el namespace XHTML y se construye aparte: innerHTML sobre un nodo
       // de SVG es la parte que algunos navegadores no parsean bien.
-      title.setAttribute("y", box.y + 19);
-      const XHTML_NS = "http://www.w3.org/1999/xhtml";
       const inner = document.createElementNS(XHTML_NS, "div");
       inner.className = "fo" + (markup.scroll ? " scroll" : "");
       inner.innerHTML = markup.html;
@@ -475,20 +854,29 @@ function buildFlow(nodeList, edgeList) {
       // reventaba al escribir en el, dejando el resto del diagrama sin pintar nunca.
       host = inner.querySelector("#note-" + node.id);
       const fo = document.createElementNS(SVG_NS, "foreignObject");
-      fo.setAttribute("x", box.x + 12); fo.setAttribute("y", box.y + 26);
+      fo.setAttribute("x", box.x + 12); fo.setAttribute("y", box.y + HEAD);
       fo.setAttribute("width", box.w - 24);
-      fo.setAttribute("height", (CONTENT_H[node.id] || 0));
+      fo.setAttribute("height", (CONTENT_H[node.id] || box.h - HEAD));
       fo.appendChild(inner);
       group.appendChild(fo);
     } else {
-      const note = document.createElementNS(SVG_NS, "text");
-      note.setAttribute("class", "node-note");
-      note.setAttribute("x", box.x + 14); note.setAttribute("y", box.y + 37);
-      note.textContent = node.detail;
-      live = document.createElementNS(SVG_NS, "text");
-      live.setAttribute("class", "node-note");
-      live.setAttribute("x", box.x + 14); live.setAttribute("y", box.y + 49);
-      group.append(note, live);
+      // El detalle y la nota viva van en un foreignObject y no en dos <text> de SVG. Un <text>
+      // no envuelve: con un detalle largo se salía de su caja por la derecha y se leía encima
+      // de la caja de al lado, que es lo que pasaba con las cuatro de la banda de percepción.
+      // Aquí el div sí envuelve y recorta, y el ancho lo pone la caja y no el texto.
+      const detailWrap = document.createElementNS(XHTML_NS, "div");
+      detailWrap.className = "fo plain";
+      detailWrap.innerHTML = `<div class="det clip-2">${esc(node.detail)}</div>` +
+        `<div class="live clip-2" id="live-${node.id}"></div>`;
+      const detailFo = document.createElementNS(SVG_NS, "foreignObject");
+      detailFo.setAttribute("x", box.x + 10);
+      detailFo.setAttribute("y", box.y + 30);
+      detailFo.setAttribute("width", box.w - 20);
+      detailFo.setAttribute("height", box.h - 36);
+      detailFo.appendChild(detailWrap);
+      live = detailWrap.querySelector(`#live-${node.id}`);
+      detail = detailWrap.querySelector(".det");
+      group.appendChild(detailFo);
     }
     group.addEventListener("click", () => {
       stageFilter = stageFilter === node.id ? null : node.id;
@@ -501,10 +889,16 @@ function buildFlow(nodeList, edgeList) {
       for (const event of lastEvents) appendEvent(event, true);
     });
     svg.appendChild(group);
-    nodes[node.id] = { rect, bar, live: live || host, title, wid: 1.5 };
+    // La geometría de la caja, publicada en el propio nodo. Lo usa el test del cliente para
+// comprobar que el texto cabe: sin esto, "cabe" sería una afirmación sin medida.
+group.dataset.box = JSON.stringify({ x: box.x, y: box.y, w: box.w, h: box.h });
+    nodes[node.id] = { rect, bar, group, detail, live: live || host, title, wid: 1.5 };
   }
 }
 
+// Recorta por número de caracteres. Se usa en la nota de una caja con contenido propio, que es
+// un <span> de una línea; las que envuelven y recortan por líneas son las clases `clip-N` del
+// CSS, y las que ya viven en un div de ancho fijo (los detalles) no necesitan esto.
 function truncate(value, limit) {
   const word = String(value || "");
   return word.length > limit ? word.slice(0, limit - 1) + "\u2026" : word;
@@ -521,41 +915,73 @@ function paintNodes(list) {
   for (const node of list) {
     const painted = nodes[node.id];
     if (!painted) continue;
-    const colour = COLORS[node.state] || COLORS.idle;
     if (node.state !== "idle") litPaths.add(node.id);
+    // Sólo se repinta una caja que ha cambiado: estado o nota. Un snapshot que no mueve esta caja
+    // no toca su DOM, y el diagrama no se redibuja entero por cada evento de telemetría.
+    const signature = `${node.state}|${node.note || ""}`;
+    if (painted.sig === signature) continue;
+    painted.sig = signature;
+    const colour = COLORS[node.state] || COLORS.idle;
     painted.rect.setAttribute("stroke", colour);
     painted.bar.setAttribute("fill", colour);
     painted.wid = node.state === "active" ? 2.5 : 1.5;
     if (stageFilter !== node.id) painted.rect.setAttribute("stroke-width", painted.wid);
     painted.rect.setAttribute("fill", node.state === "active" ? "#222a3a" : "#1f2531");
+    // En marcha se esconde el detalle de la caja y se deja sólo lo que acaba de decir: con los
+    // dos a la vez, en una caja de 116 px de alto, la nota se salía de su caja por abajo.
+    painted.group.classList.toggle("busy", node.state === "active");
+    paintDetail(painted, node);
     // `live` no existe en toda caja: la tiene el <text> de las cajas sin contenido y el
     // `#note-<id>` de las que lo tienen, pero si una de las dos se llegara a pintar sin ella,
-    // esto no puede ser lo que Detenga el repintado del resto del diagrama.
+    // esto no puede ser lo que detenga el repintado del resto del diagrama.
     if (painted.live) {
-      painted.live.textContent = truncate(node.state === "idle" ? "" : node.note, 60);
+      painted.live.textContent = node.state === "idle" ? "" : node.note;
     }
   }
   litPathsHits = Math.max(litPathsHits, ...list.map(n => n.hits || 0));
   // las aristas: encendidas cuando sus dos extremos ya se han recorrido en este comando
   for (const edge of edgeEls) {
     const lit = litPaths.has(edge.from) && litPaths.has(edge.to);
+    if (edge.lit === lit) continue;   // sin cambio: no se toca el DOM de esta arista
+    edge.lit = lit;
     edge.el.setAttribute("class", "edge " + (lit ? (edge.loop
       ? "edge-travelled-loop" : "edge-travelled") : (edge.loop ? "edge-loop" : "")));
     edge.el.setAttribute("marker-end", lit ? "url(#arrow-lit)" : "url(#arrow)");
-    if (edge.text) edge.text.classList.toggle("lit", lit);
+    if (edge.text) {
+      // La etiqueta ahora es un div dentro de un foreignObject (ver buildFlow), y se pinta
+      // encendida con una clase, no con `fill`, porque no es un <text> de SVG.
+      if (edge.text.classList) edge.text.classList.toggle("lit", lit);
+    }
   }
 }
 
 // ---- las filas de opciones ----------------------------------------------------------
-function optionChips(rowId, options, chosen, present) {
+// Una celda por opción, con la probabilidad del modelo en la elegida.
+//
+// La celda es un div y no un <span> porque ahora ocupa una casilla de una rejilla: necesita ser
+// un bloque con anchura propia para que la matriz tenga filas y columnas, y `flex` por dentro
+// para que la probabilidad se vaya a la derecha de su celda sin empujar el texto.
+function optionChips(rowId, options, chosen, present, marks) {
   const box = el(rowId);
-  box.innerHTML = (options || []).map(([value, label]) => {
+  if (!box) return;
+  const list = options || [];
+  box.innerHTML = list.map(([value, label]) => {
     const selected = (chosen || []).includes(String(value));
     const visible = present && present[value];
-    return `<span class="chip${selected ? " sel" : ""}${visible ? " has" : ""}"` +
-      ` data-value="${esc(value)}">${visible && !selected ? '<span class="present"></span>' : ""}` +
-      `${esc(label)}</span>`;
+    // La probabilidad sólo va en la opción elegida: es la que el modelo decidió, y poner un 0.87
+    // al lado de una opción que NO eligió no significa nada - es la puntuación de esa alternativa,
+    // no una medida de la decisión que se tomó.
+    const probability = selected && marks && marks[value] != null
+      ? `<span class="p">${Math.round(Number(marks[value]) * 100)}%</span>` : "";
+    const swatch = `<span class="swatch" style="background:${SWATCH[value] || "#888"}"></span>`;
+    return `<div class="opt${selected ? " sel" : ""}" data-value="${esc(value)}"` +
+      ` title="${esc(label)}">` +
+      (selected ? "" : (visible ? '<span class="present"></span>' : "")) +
+      `<span class="label">${esc(label)}</span>${probability}</div>`;
   }).join("");
+  // Todas las filas son una matriz de ocho columnas (ver .opts): un campo con menos opciones deja
+  // sus celdas vacías a la derecha, en vez de estirarse y desalinearse con los demás.
+  box.style.gridTemplateColumns = "";
 }
 
 function paintCommand(state) {
@@ -582,6 +1008,19 @@ function paintClassification(cls) {
   if (!el("row-intent")) return;
   const nothing = !cls;
   const picked = nothing ? {} : cls;
+  // Las probabilidades por campo, tal como las publica el modelo. `confidence` es el mínimo de
+  // todas, que es el número honesto para "¿cuánto de fiar?" pero no dice DÓNDE está la duda, así
+  // que se enseña también el mínimo por campo, al lado de la opción que se eligió.
+  const sure = picked.confidences || {};
+  const fieldMarks = (task, value) => (value == null ? null : sure[task]);
+  text("cls-overall", picked.confidence != null
+    ? `confianza ${Math.round(Number(picked.confidence) * 100)}%` : "");
+  const marks = {
+    intent: fieldMarks("intent", picked.intent),
+    place_kind: fieldMarks("place_kind", picked.place && picked.place.kind),
+    place_color: fieldMarks("place_color", picked.place && picked.place.color),
+    sort_by: fieldMarks("sort_by", picked.sort_by),
+  };
   const items = picked.items || [];
   const detections = (window.state || {}).detections || [];
   const plan = (window.state || {}).plan || {};
@@ -599,7 +1038,8 @@ function paintClassification(cls) {
   const deskColors = new Set(detections.map(d => String(d.color || "")).filter(Boolean));
 
   optionChips("row-intent", INTENT_ALL,
-    nothing ? [] : [String(picked.intent || "")], null);
+    nothing ? [] : [String(picked.intent || "")], null,
+    marks.intent != null ? { [String(picked.intent || "")]: marks.intent } : null);
   optionChips("row-kind", KIND_ALL, kinds,
     deskKinds.size ? Object.fromEntries([...deskKinds].map(k => [k, true])) : null);
   const colorPresent = {};
@@ -630,21 +1070,36 @@ function paintClassification(cls) {
       placePresent[kind] = containers.some(c => String(c.kind || "") === kind);
     }
   }
-  optionChips("row-place", PLACE_ALL, places, containers.length ? placePresent : null);
+  // El destino lleva su probabilidad, y la del color va con la opción de color del destino: son
+  // dos decisiones del modelo (de qué tipo de caja, y de qué color) aunque se pinten en la misma
+  // fila, porque "ponlo en la caja roja" puede tener el tipo seguro y el color dudoso.
+  optionChips("row-place", PLACE_ALL, places, containers.length ? placePresent : null,
+    (marks.place_kind != null || marks.place_color != null)
+      ? { [String(picked.place && picked.place.kind || "")]:
+            marks.place_kind != null ? marks.place_kind : marks.place_color }
+      : null);
 
-  optionChips("row-sort", SORT_ALL, nothing ? [] : sortKey.map(String), null);
+  optionChips("row-sort", SORT_ALL, nothing ? [] : sortKey.map(String), null,
+    marks.sort_by != null ? { [sortKey[0]]: marks.sort_by } : null);
 
   // la fila "en la mesa": lo que la percepción ve ahora, con el objetivo del plan marcado
   const desk = el("row-desk");
   if (!detections.length) {
+    desk.className = "opts empty";
+    desk.style.gridTemplateColumns = "1fr";
     desk.innerHTML = '<span class="hint">sin fotograma todav\u00eda</span>';
   } else {
+    desk.className = "opts";
+    desk.style.gridTemplateColumns = "";
     desk.innerHTML = detections.map(d => {
       const color = d.color ? `<span class="swatch" style="background:${SWATCH[d.color] || "#888"}"></span>` : "";
       const isTarget = targets.has(String(d.prim || ""));
-      return `<span class="chip${isTarget ? " target" : ""}">` +
-        `${color}${esc(d.kind || "?")}${d.color ? ` ${esc(COLOR_ES[d.color] || d.color)}` : ""}` +
-        `${isTarget ? ` <span class="to">&larr; objetivo</span>` : ""}</span>`;
+      // La fila "en la mesa" también es una rejilla, por lo mismo que las demás: son celdas de una
+    // matriz, y una etiqueta suelta aquí rompía la alineación de la columna.
+    return `<div class="opt${isTarget ? " target" : ""}">` +
+      `<span class="label">${color}${esc(d.kind || "?")}` +
+      `${d.color ? ` ${esc(COLOR_ES[d.color] || d.color)}` : ""}</span>` +
+      `${isTarget ? `<span class="to">&larr; objetivo</span>` : ""}</div>`;
     }).join("");
   }
 
@@ -652,17 +1107,74 @@ function paintClassification(cls) {
   el("cls-warn").innerHTML = warnings.length ? esc(warnings.join(" | ")) : "";
 }
 
-function paintPlan(plan) {
-  if (!el("plan-steps")) return;
-  if (!plan) {
-    el("plan-steps").innerHTML = '<tr><td class="hint">sin plan todav&iacute;a: manda un comando' +
-      '</td></tr>';
-    el("plan-nota").textContent = "";
-    el("plan-cmd").textContent = "";
+// Los tres estados de una tarea, y por qué son tres y no dos.
+//
+//   moviendo  la está haciendo el brazo ahora mismo
+//   hecha     `check` la midió y estaba dentro de la cesta a la que se mandó
+//   falló     `check` la midió y NO estaba dentro
+//
+// "falló" no es lo mismo que "sin hacer": lo que no llegó a intentarse no ha fallado, y marcarlo
+// como fallado sería mentir sobre lo que se midió. Y ninguna de las dos marcas sale de aquí:
+// las pone el veredicto de `check`, que vuelve a mirar y mide dónde paró cada pieza.
+const TASK_MARKS = {
+  doing: { icon: "&#9679;", word: "EN CURSO" },
+  done: { icon: "&#10003;", word: "COMPLETADA" },
+  fail: { icon: "&#10007;", word: "FALLIDA" },
+  todo: { icon: "&#9675;", word: "PENDIENTE" },
+};
+
+function paintTasks(tasks) {
+  // Las filas vienen del estado `tasks` del bus y no de `plan.tasks`, a propósito: un comando de
+  // varios objetos no se ejecuta como un plan sino como uno por objeto (`_one_at_a_time`
+  // replanifica y llama a `check` tras cada uno), así que el plan que se está ejecutando tiene
+  // una sola tarea. El estado es la unión de todas, con lo ya verificado, y sobrevive a los replan.
+  const list = el("plan-tasks");
+  if (!list) return;
+  const rows = tasks || [];
+  const tally = el("tally");
+  if (!rows.length) {
+    list.innerHTML = "";
+    if (tally) tally.textContent = "";
     return;
   }
-  text("plan-n", plan.n ? `versi\u00f3n ${plan.n}` : "");
-  const table = el("plan-steps");
+  const progress = String((window.state || {}).progress || "");
+  const done = rows.filter(t => t.done).length;
+  const failed = rows.filter(t => t.state === "fail").length;
+
+  const line = row => {
+    // "moviendo" sólo lo dice del plan que se está ejecutando: se compara el primer paso de
+    // esta fila con lo que el ejecutor va announcing, que es lo único que sabe qué está en
+    // marcha ahora mismo.
+    const state = row.state || (row.done ? "done" : (row.key === progress ? "doing" : "todo"));
+    const mark = TASK_MARKS[state] || TASK_MARKS.todo;
+    return `<li class="${state}">` +
+      `<span class="mark" title="${mark.word}">${mark.icon}</span>` +
+      `<span class="what">${esc(row.label || "")}</span></li>`;
+  };
+
+  list.innerHTML = rows.map(line).join("");
+  if (tally) {
+    tally.textContent = `${done} de ${rows.length} completadas` +
+      `${failed ? `, ${failed} ${failed === 1 ? "fallida" : "fallidas"}` : ""}`;
+  }
+}
+
+// PLAN (la caja de la izquierda) y EJECUCIÓN (la de la derecha) son dos cosas distintas, y cada
+// una pinta sólo lo suyo: el plan dice QUÉ se va a mover, con su estado; la ejecución dice CÓMO,
+// paso a paso, con la pose de cada uno y cuál está en marcha.
+function paintPlan(plan) {
+  paintTasks((window.state || {}).tasks);
+  paintSteps(plan);
+  if (plan) paintClassification(window.state && window.state.classification);
+}
+
+function paintSteps(plan) {
+  const table = el("exec-steps");
+  if (!table) return;
+  if (!plan) {
+    table.innerHTML = '<tr><td class="hint">sin pasos todavía: manda un comando</td></tr>';
+    return;
+  }
   const progress = (window.state || {}).progress || "";
   const rows = (plan.steps || []).map(step => {
     const pose = step.pose && step.pose.length
@@ -673,34 +1185,38 @@ function paintPlan(plan) {
       `<td>${now}${esc(step.note || "")}</td><td class="pose">${esc(pose)}</td></tr>`;
   });
   table.innerHTML = rows.length
-    ? `<tr><th>acci\u00f3n</th><th>detalle</th><th>pose</th></tr>${rows.join("")}`
+    ? `<tr><th>acción</th><th>detalle</th><th>pose</th></tr>${rows.join("")}`
     : '<tr><td class="hint">sin pasos: nada que mover</td></tr>';
-  el("plan-nota").textContent = plan.note || "";
-  el("plan-cmd").textContent = plan.picks && plan.picks.length
-    ? `piezas en el plan: ${plan.picks.join(", ")}` : "";
-  paintClassification(window.state && window.state.classification);
 }
 
 // ---- paneles de siempre ------------------------------------------------------------
 function paintState(state) {
   window.state = state || {};
   try {
-    text("phase", state.phase ?? "-");
+    text("phase", PHASE_SHORT[state.phase] || state.phase || "-");
     text("round", state.round ?? "-");
     text("seed", state.seed ?? "-");
     text("verified", state.verified ?? 0);
     text("recovered", state.recovered ?? 0);
     text("missed", state.missed ?? 0);
     text("variant-tag", state.variant ? `(${state.variant})` : "");
-    text("frame-note", state.frame_note || "sin fotograma todavía");
+    text("frame-note", state.frame_note || "");
 
     const gate = el("gate");
-    if ((state.phase || "setup") === "setup") {
+    const phase = state.phase || "setup";
+    if (phase === "setup" || phase === "waiting_start") {
       gate.className = "gate waiting";
-      gate.innerHTML = "el simulador no ha arrancado. pulsa <b>iniciar entorno</b> abajo.";
-    } else if (state.phase === "starting") {
+      gate.innerHTML = "el simulador no ha arrancado. pulsa <b>iniciar entorno</b> en el panel de control.";
+    } else if (phase === "loading") {
       gate.className = "gate waiting";
-      gate.textContent = "Isaac está arrancando; tarda unos dos minutos en la primera ejecución.";
+      gate.textContent = "cargando el modelo de comandos y el micrófono; el simulador aún no ha empezado.";
+    } else if (phase === "starting") {
+      gate.className = "gate waiting";
+      gate.textContent = "Isaac está arrancando; tarda unos dos minutos la primera vez.";
+    } else if (phase === "failed") {
+      gate.className = "gate fail";
+      gate.textContent = "el entorno no ha arrancado: " + (state.error || "motivo desconocido") +
+        ". Mira el registro para ver el detalle.";
     } else {
       gate.className = "gate running";
       gate.innerHTML = "entorno en marcha: los comandos escritos o hablados aquí encolan hasta " +
@@ -743,6 +1259,9 @@ function paintFindings(list) {
     .join("");
 }
 
+// Líneas del registro que se conservan en la página. El terminal guarda el registro completo.
+const LOG_DOM_LINES = 300;
+
 function appendEvent(event, force) {
   if (event.seq <= lastEventSeq && !force) return;
   lastEventSeq = Math.max(lastEventSeq, event.seq);
@@ -765,6 +1284,8 @@ function appendEvent(event, force) {
     div.innerHTML = head + esc(line);
     box.appendChild(div);
   });
+  // El registro es secundario: se mantiene una ventana de líneas en el DOM, no todo lo ocurrido.
+  while (box.childElementCount > LOG_DOM_LINES) box.removeChild(box.firstElementChild);
   box.scrollTop = box.scrollHeight;
 }
 
@@ -772,6 +1293,9 @@ function onFrame(jpeg, meta) {
   if (frameUrl) URL.revokeObjectURL(frameUrl);
   frameUrl = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
   el("frame").src = frameUrl;
+  // Hay imagen: se muestra la cámara y se oculta el aviso de "no conectada".
+  el("frame").hidden = false;
+  el("cam-empty").hidden = true;
   if (meta && meta.note) text("frame-note", meta.note);
   const now = performance.now();
   frameTimes.push(now);
@@ -807,6 +1331,66 @@ function safePaint(name, fn) {
   }
 }
 
+// ---- estado del robot y de cada orden --------------------------------------------------
+// Lo que el robot está haciendo, en una frase, y cómo acabó cada orden. Las palabras vienen del
+// estado que publica el bus; la página no inventa un estado que el robot no haya dicho.
+// El nombre corto de cada fase, para la cabecera: cabe siempre en su píldora.
+const PHASE_SHORT = {
+  setup: "preparando", waiting_start: "esperando inicio", loading: "cargando",
+  starting: "arrancando", failed: "error", ready: "listo", scene: "montando",
+  waiting: "esperando orden", command: "ejecutando", sorting: "ordenando",
+  done: "terminado", stopped: "parado",
+};
+// Una fase por etapa real del arranque. Ninguna dice "Isaac arranca" antes de que Isaac arranque.
+const PHASE_ES = {
+  setup: "preparando la demo",
+  waiting_start: "esperando que pulses iniciar entorno",
+  loading: "cargando el modelo de comandos y el micrófono",
+  starting: "Isaac está arrancando (unos dos minutos la primera vez)",
+  failed: "el entorno no ha arrancado",
+  ready: "entorno listo", scene: "colocando la escena", waiting: "esperando una orden",
+  command: "ejecutando una orden", sorting: "ordenando las piezas, una a una",
+  done: "terminado", stopped: "parado",
+};
+const STATUS_ES = {
+  SUCCESS: "completado", PARTIAL_SUCCESS: "completado parcialmente", FAILED: "fallido",
+  ABORTED: "interrumpido", NO_TASKS: "sin tareas",
+};
+const COMMAND_ES = {
+  RECEIVED: "recibido", QUEUED: "en cola", RUNNING: "ejecutando",
+  SUCCESS: "hecho", FAILED: "fallido", CANCELLED: "cancelado",
+};
+
+// Desde que se pulsa "iniciar entorno" hasta que el robot dice que el entorno está en marcha.
+let startPending = false;
+const RUNNING_PHASES = ["ready", "scene", "waiting", "command", "sorting", "done"];
+
+function paintStatus(state) {
+  // Iniciar sólo tiene sentido antes de que el entorno exista. Un botón que no sirve se ve apagado,
+  // y desde que se pulsa no se puede volver a pulsar hasta que el entorno está en marcha (o falla).
+  const phase = (state || {}).phase;
+  const running = RUNNING_PHASES.includes(phase);
+  const start = el("start");
+  // Sólo se puede iniciar mientras el robot espera esa orden.
+  if (start) start.disabled = startPending || !["setup", "waiting_start"].includes(phase);
+  const bar = el("start-bar");
+  if (bar) bar.hidden = !startPending || running;
+  if (startPending && !running) text("start-note", "arrancando el simulador: tarda unos dos minutos");
+  if (running && startPending) {
+    startPending = false;   // el entorno ya está en marcha: el botón queda apagado por la fase
+    text("start-note", "entorno en marcha");
+  }
+}
+
+function paintCommands(commands) {
+  // La última orden, con su estado real: recibida, en cola, ejecutando, hecha, fallida o cancelada.
+  const last = (commands || []).filter(c => c.type !== "start").pop();
+  if (!last) return;
+  const what = last.text ? `«${last.text}»` : (last.type === "start" ? "iniciar el entorno" : last.type);
+  const note = last.note ? ` · ${last.note}` : "";
+  text("queued-note", `${COMMAND_ES[last.state] || last.state}: ${what}${note}`);
+}
+
 function applySnapshot(snap) {
   if (!snap || snap.type === "frame") return;
   const signature = String(snap.rev ?? snap.seq ?? "");
@@ -817,6 +1401,10 @@ function applySnapshot(snap) {
   }
   if (snap.nodes) safePaint("la ruta", () => paintNodes(snap.nodes));
   if (snap.state) safePaint("el estado", () => paintState(snap.state));
+  if (snap.state) safePaint("el estado del robot", () => paintStatus(snap.state));
+  if (snap.commands) safePaint("las órdenes", () => paintCommands(snap.commands));
+  if (snap.metrics) safePaint("el diagnóstico", () =>
+    text("diag", Object.entries(snap.metrics).map(([name, value]) => `${name}: ${value}`).join("\n")));
   safePaint("el registro", () => {
     for (const event of snap.events || []) appendEvent(event, false);
   });
@@ -828,7 +1416,14 @@ function connect() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${scheme}://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => { setConn(true); if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } };
+  ws.onopen = () => {
+    setConn(true);
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    // Un socket nuevo empieza con el historial reciente, no con lo que quedó del anterior: se
+    // vacía el registro y se vuelve a contar desde cero, para no duplicar ni saltarse líneas.
+    lastEventSeq = 0;
+    el("log").innerHTML = "";
+  };
   // Un solo reconexado. `onerror` llama a close(), que dispara onclose; si además se
   // reintentara desde onerror, dos temporizadores coexistirían y cada uno abriría su propio
   // socket, y el servidor empareja cada uno con su propio manejador.
@@ -855,7 +1450,7 @@ let pendingFrame = null;
 
 function setConn(live) {
   el("conn").className = "dot " + (live ? "live" : "dead");
-  text("conn-text", live ? "en vivo" : "sondeando");
+  text("conn-text", live ? "conectado" : "sin conexión · reintentando");
 }
 
 function startPolling() {
@@ -875,10 +1470,50 @@ function post(path, body) {
 }
 
 el("start").onclick = async () => {
-  await post("/api/env", { action: "start", variant: el("variant-sel").value,
-                           camera: el("camera-sel").value, rounds: Number(el("rounds").value),
-                           seed: Number(el("seed-in").value) });
+  // Una sola pulsación: el botón se bloquea de inmediato y la barra muestra que se está arrancando.
+  if (startPending) return;
+  startPending = true;
+  el("start").disabled = true;
+  el("start-bar").hidden = false;
+  text("start-note", "solicitud enviada; arrancando el simulador");
+  const reply = await post("/api/env", { action: "start", variant: el("variant-sel").value,
+                                         camera: el("camera-sel").value,
+                                         rounds: Number(el("rounds").value),
+                                         seed: Number(el("seed-in").value) });
+  // Si el servidor no lo ha aceptado, el botón vuelve a estar disponible y se dice por qué.
+  if (!reply || !reply.ok) {
+    startPending = false;
+    el("start").disabled = false;
+    el("start-bar").hidden = true;
+    text("start-note", "no se pudo iniciar: el servidor no ha aceptado la orden");
+  }
 };
+// Las ventanas de la cabecera (información y registro). Cada una se abre con su botón y se cierra
+// con su ×, con Escape o con un clic fuera de ella. Mientras están abiertas, la pantalla principal
+// sigue actualizándose: el registro se llena aunque no se vea.
+const POPUPS = [
+  { modal: "info-modal", open: "info-btn", close: "info-close" },
+  { modal: "log-modal", open: "log-btn", close: "log-close" },
+];
+function setPopupOpen(popup, open) {
+  const modal = el(popup.modal);
+  if (!modal) return;
+  modal.hidden = !open;
+  if (open) el(popup.close).focus();
+  else el(popup.open).focus();
+}
+for (const popup of POPUPS) {
+  el(popup.open).onclick = () => setPopupOpen(popup, true);
+  el(popup.close).onclick = () => setPopupOpen(popup, false);
+  el(popup.modal).addEventListener("click", e => {
+    if (e.target === el(popup.modal)) setPopupOpen(popup, false);
+  });
+}
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  for (const popup of POPUPS) if (!el(popup.modal).hidden) setPopupOpen(popup, false);
+});
+
 el("next").onclick = () => post("/api/env", { action: "next" });
 el("relook").onclick = () => post("/api/env", { action: "relook" });
 el("save").onclick = () => post("/api/env", { action: "save" });
@@ -892,7 +1527,9 @@ el("send").onclick = async () => {
   // page going silent after "enviar" is what made a working queue look like a broken server.
   if (reply && reply.ok) {
     box.value = "";
-    text("queued-note", `en cola: ${sentence}`);
+    // The server's answer carries the command's own state, so this line is the truth at the
+    // moment it was sent; the snapshot that follows takes it on from there.
+    text("queued-note", `${COMMAND_ES[reply.state] || "recibido"}: «${sentence}»`);
   } else {
     text("queued-note", (reply && reply.error) || "no se ha podido encolar");
   }
