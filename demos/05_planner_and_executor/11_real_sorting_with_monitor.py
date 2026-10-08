@@ -1663,8 +1663,42 @@ class MonitoredRobot(load_demo10().Robot):
 
     def _one_at_a_time(self, command, plan) -> bool:
         self.bus.set_state(phase="sorting")
-        self.bus.node("plan", telemetry.ACTIVE, "one object at a time, re-looking between")
-        return super()._one_at_a_time(command, plan)
+        self.bus.node("plan", telemetry.ACTIVE, "Una pieza por vez; observación entre tareas")
+        # Keep the requested identities and destinations. Replanning the entire command
+        # would silently forget missing pieces or select a different same-colour object.
+        initial = self.link(self.scene)
+        for task in plan.tasks:
+            prim = initial.get(task.pick)
+            tray_prim = initial.get(task.place)
+            for attempt in range(1 + self.args.regrasp):
+                if self.bus.stop_requested():
+                    return False
+                seen = self.look("Actualizando la posición de la siguiente pieza")
+                premise = self.link(seen)
+                inverse = {name: identifier for identifier, name in premise.items()}
+                things = {thing.id: thing for thing in seen.everything}
+                if prim not in inverse or (task.place is not None and tray_prim not in inverse):
+                    self.bus.log("No se localiza la pieza o su recipiente; la tarea queda pendiente.", level="warn")
+                    break
+                one = planner.Plan(intent=plan.intent)
+                piece = things[inverse[prim]]
+                if task.place is None:
+                    planner._grasp_and_hold(one, piece, self.args.offset, task.tag)
+                else:
+                    planner._pick_and_place(one, piece, things[inverse[tray_prim]], self.args.offset, task.tag)
+                run = self.run_plan(one, premise, command)
+                if run.aborted and not run.stale_grasps:
+                    return False
+                if not run.stale_grasps:
+                    if one.places:
+                        self.check(one, premise, announce=False)
+                    else:
+                        self.ledger.record(self._task_key(one.tasks[0], premise), bool(run.real_grasps and self.bot.holding))
+                        self._settle_rows()
+                    break
+                if attempt < self.args.regrasp:
+                    self.park()
+        return True
 
     def check(self, plan, premise, announce: bool = True):
         self.bus.node("verify", telemetry.ACTIVE,
@@ -2098,6 +2132,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "ever)")
     parser.add_argument("--setup-only", action="store_true",
                         help="print the bench sheet and serve the dashboard; do not start Isaac")
+    parser.add_argument("--startup-timeout", type=float, default=300.0,
+                        help="maximum session startup time in seconds")
+    parser.add_argument("--stop-timeout", type=float, default=10.0,
+                        help="grace period before terminating a stalled session")
     parser.add_argument("--work-x", type=float, nargs=2, default=list(DEFAULT_WORK_X),
                         metavar=("XMIN", "XMAX"),
                         help="where the robot may put a part down to be picked up. Demo 10's "
@@ -2122,11 +2160,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
+def main(args=None, bus=None) -> int:
     parser = build_parser()
-    args = parser.parse_args()
+    args = args or parser.parse_args()
+    if args.web and not args.setup_only and not getattr(args, "worker", False):
+        from supervisor import run
+        return run(args)
 
-    bus = telemetry.Bus()
+    bus = bus or telemetry.Bus()
     bus.node("setup", telemetry.ACTIVE, "choosing the environment")
     bus.set_state(phase="setup", variant=args.variant, seed=args.seed, voice="off",
                   rounds=args.rounds, camera=args.camera, release=args.release,
@@ -2146,7 +2187,7 @@ def main() -> int:
                 ("warn" if level == "warn" else "info"))
 
     monitor = None
-    if args.web:
+    if args.web and not getattr(args, "worker", False):
         monitor = _monitor_server().serve(bus, args.host, args.port, open_browser=args.open,
                                           announce=lambda line: print(line, flush=True))
 
@@ -2162,7 +2203,7 @@ def main() -> int:
     # The dashboard is meant to be set up *before* Isaac, which is where the environment gets
     # chosen and the run gets started. With no dashboard there is nobody to press the button, and
     # a scripted run has its own script, so neither waits.
-    if args.web and args.wait_for_start and not args.text:
+    if args.web and args.wait_for_start and not args.text and not getattr(args, "worker", False):
         bus.set_state(phase="waiting_start")
         bus.node("setup", telemetry.ACTIVE, "waiting for the dashboard to start the environment")
         print(f"  dashboard: {monitor.url if monitor else '(none: --no-web)'}", flush=True)

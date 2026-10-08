@@ -2122,6 +2122,40 @@ def test_controls_do_not_replace_the_running_text_identity():
           "a clarification is an explicit terminal outcome")
 
 
+
+def test_supervisor_can_stop_keep_the_report_and_start_a_new_process():
+    from types import SimpleNamespace
+    from supervisor import Supervisor
+    from fake_session import run
+    with tempfile.TemporaryDirectory() as directory:
+        args = SimpleNamespace(camera="top", variant="contained", rounds=1, seed=0,
+                               startup_timeout=5, stop_timeout=1, session_dir=directory)
+        supervisor = Supervisor(args, target=run)
+        bus = supervisor.bus
+        def until(predicate):
+            deadline = time.monotonic() + 5
+            while not predicate() and time.monotonic() < deadline:
+                supervisor.poll()
+                time.sleep(.02)
+            check(predicate(), "session process reached the expected state")
+        try:
+            for _ in range(2):
+                cid = bus.send_control("start")
+                supervisor.start(bus.take_control())
+                until(lambda: supervisor.ready)
+                check(bus.command_state(cid)["state"] == telemetry.SUCCESS, "start follows camera readiness")
+                command = bus.submit("coge la bola roja")
+                bus.take_command()
+                supervisor.forward(command)
+                until(lambda: bus.command_state(command)["state"] == telemetry.SUCCESS)
+                bus.request_stop()
+                until(lambda: supervisor.child is None)
+                check(bus.snapshot()["state"]["report"]["state"]["status"] == "ABORTED",
+                      "the report survives process shutdown")
+        finally:
+            supervisor.terminate()
+
+
 def main() -> int:
     # Demo 11 is imported once, here, before any test runs. Three tests need its classes, and each
     # one that went through `load_demo11` first would otherwise import it again - ~500 ms, almost

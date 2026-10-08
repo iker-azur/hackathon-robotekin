@@ -169,6 +169,7 @@ class Bus:
         self._controls: queue.Queue[dict] = queue.Queue(maxsize=MAX_QUEUED_CONTROLS)
         self._pending_actions: set[str] = set()
         self._cmd_seq = 0
+        self._id_prefix = ""
         self._cmd_log: dict[str, dict] = {}
         self._stop = threading.Event()
         self._stop_cid = ""
@@ -418,7 +419,7 @@ class Bus:
         """
         with self._lock:
             self._cmd_seq += 1
-            cid = f"cmd_{self._cmd_seq:05d}"
+            cid = f"{self._id_prefix}cmd_{self._cmd_seq:05d}"
             self._cmd_log[cid] = {"id": cid, "type": kind, "state": RECEIVED, "text": text,
                                   "source": source, "note": "", "params": dict(params or {}),
                                   "t": time.time()}
@@ -459,6 +460,19 @@ class Bus:
                       if cmd["state"] in (RECEIVED, QUEUED, RUNNING)]
         for cid in active:
             self.set_command_state(cid, FAILED, reason)
+
+    def prepare_session(self, session_id: str) -> None:
+        """Reset session data without discarding request history or the final report."""
+        self._stop.clear()
+        self._stop_cid = ""
+        self._active_command_id = ""
+        with self._lock:
+            report = self._state.get("report")
+            self._state = {"session_id": session_id, "report": report}
+            self._frame = None
+            self._metrics.clear()
+            self._ticks.clear()
+        reset_nodes(self)
 
     # -- stop ------------------------------------------------------------------
 

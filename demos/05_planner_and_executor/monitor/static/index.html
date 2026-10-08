@@ -1343,7 +1343,7 @@ const PHASE_SHORT = {
   setup: "preparando", waiting_start: "esperando inicio", loading: "cargando",
   starting: "arrancando", failed: "error", ready: "listo", scene: "montando",
   waiting: "esperando orden", command: "ejecutando", sorting: "ordenando",
-  done: "terminado", stopped: "parado",
+  done: "terminado", stopped: "parado", stopping: "deteniendo",
 };
 // Una fase por etapa real del arranque. Ninguna dice "Isaac arranca" antes de que Isaac arranque.
 const PHASE_ES = {
@@ -1354,7 +1354,7 @@ const PHASE_ES = {
   failed: "el entorno no ha arrancado",
   ready: "entorno listo", scene: "colocando la escena", waiting: "esperando una orden",
   command: "ejecutando una orden", sorting: "ordenando las piezas, una a una",
-  done: "terminado", stopped: "parado",
+  done: "terminado", stopped: "parado", stopping: "deteniendo",
 };
 const STATUS_ES = {
   SUCCESS: "completado", PARTIAL_SUCCESS: "completado parcialmente", FAILED: "fallido",
@@ -1377,10 +1377,13 @@ function paintStatus(state) {
   const running = RUNNING_PHASES.includes(phase);
   const start = el("start");
   // Sólo se puede iniciar mientras el robot espera esa orden.
-  if (start) start.disabled = startPending || !["setup", "waiting_start"].includes(phase);
+  if (["failed", "stopped"].includes(phase)) startPending = false;
+  if (start) start.disabled = startPending || !["setup", "waiting_start", "failed", "stopped"].includes(phase);
   const bar = el("start-bar");
   if (bar) bar.hidden = !startPending || running;
-  if (startPending && !running) text("start-note", "arrancando el simulador: tarda unos dos minutos");
+  if (startPending && !running) text("start-note", "preparando el entorno; el panel sigue disponible");
+  if (phase === "failed") text("start-note", state.error || "El entorno ha fallado; puedes volver a iniciarlo.");
+  if (phase === "stopped") text("start-note", "Entorno detenido; puedes iniciar una nueva sesión.");
   if (running && startPending) {
     startPending = false;   // el entorno ya está en marcha: el botón queda apagado por la fase
     text("start-note", "entorno en marcha");
