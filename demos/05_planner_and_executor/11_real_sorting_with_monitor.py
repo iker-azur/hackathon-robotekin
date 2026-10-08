@@ -1360,7 +1360,7 @@ class MonitoredRobot(load_demo10().Robot):
                 part = describe.phrase(task.kind, task.color, 1, "es", bare=True)
                 if task.place is None:
                     return part
-                where = describe.phrase(task.place_kind, task.place_color, 1, self.args.lang,
+                where = describe.phrase(task.place_kind, task.place_color, 1, "es",
                                         bare=True)
                 return f"{part} → {where}"
         return key
@@ -1379,6 +1379,7 @@ class MonitoredRobot(load_demo10().Robot):
             self.say("  re-planning the ones that missed")
         for prim in retry:
             self._retry_one(prim)
+        self.park()
         self.bot.settle()
         final = self._placement_verdicts(plan, premise)
         for _key, placed, prim in final:
@@ -1389,7 +1390,6 @@ class MonitoredRobot(load_demo10().Robot):
         self.verified, self.missed = self.ledger.counts()
         self._settle_rows()
         misses = [key for key, placed, _prim in final if not placed]
-        self.park()
         seen = self.look("after the plan")
         if announce:
             self.say(f"  camera sees {len(seen.objects)} object(s) and "
@@ -1604,7 +1604,7 @@ class MonitoredRobot(load_demo10().Robot):
 
     # -- planning and motion ---------------------------------------------------
 
-    def _release_adjusted(self, plan):
+    def _release_adjusted(self, plan, premise=None):
         """Raise every release to a height the fingertips can actually reach.
 
         ``planner.place_pose`` releases 12 mm above the rim. With ``executor.HOLD`` putting the
@@ -1623,11 +1623,14 @@ class MonitoredRobot(load_demo10().Robot):
         trays = [item for item in self.layout if item.container]
         if not trays:
             return plan
-        floor = max(real_world.safe_release_z(tray) for tray in trays)
+        fallback_floor = max(real_world.safe_release_z(tray) for tray in trays)
         raised = 0
         steps = []
         for step in plan.steps:
             if step.action in ("lower", "release") and step.pose is not None:
+                destination = (premise or {}).get(step.target)
+                tray = next((tray for tray in trays if tray.prim == destination), None)
+                floor = real_world.safe_release_z(tray) if tray else fallback_floor
                 z = float(step.pose[2])
                 if z < floor:
                     step = replace(step, pose=(step.pose[0], step.pose[1], floor))
@@ -1667,7 +1670,7 @@ class MonitoredRobot(load_demo10().Robot):
                 if allocation:
                     dx, dy = allocation[1]
                     plan.steps[number] = replace(step, pose=(step.pose[0]+dx, step.pose[1]+dy, step.pose[2]))
-        plan = self._release_adjusted(plan)
+        plan = self._release_adjusted(plan, premise)
         self._publish_plan(plan, note="", increment=False)
         # The whole job, before the per-object re-plans start: this is the plan the person asked
         # for, and it is where the checklist gets all of its rows from.
@@ -1953,6 +1956,9 @@ class MonitoredRobot(load_demo10().Robot):
             if command.get("intent") == "pick" and len(plan.picks) > 1:
                 outcome, reason = telemetry.NEEDS_CLARIFICATION, "La pinza solo puede sostener una pieza. Indica una pieza o un recipiente."
                 return True
+            if len({premise[pick] for pick in plan.picks}) != len(plan.picks):
+                outcome, reason = telemetry.NEEDS_CLARIFICATION, "Una pieza aparece varias veces. Envía cada traslado de esa pieza en una orden distinta."
+                return True
             import capacity
             try:
                 self._task_slots = capacity.allocate(plan.tasks, premise, self.layout, self._placed_slots)
@@ -2019,6 +2025,10 @@ class MonitoredRobot(load_demo10().Robot):
         finally:
             if outcome in (telemetry.FAILED, telemetry.NEEDS_CLARIFICATION, telemetry.PARTIAL_SUCCESS):
                 self._rejected_commands = getattr(self, "_rejected_commands", 0) + 1
+            for node in self.bus.snapshot()["nodes"]:
+                if node["state"] == telemetry.ACTIVE:
+                    self.bus.node(node["id"], telemetry.OK if outcome == telemetry.SUCCESS else telemetry.WARN,
+                                  "Etapa terminada" if outcome == telemetry.SUCCESS else "Etapa interrumpida: " + reason)
             self.bus.set_command_state(cid, outcome, reason)
             self.bus.set_state(command_result={"id": cid, "status": outcome, "reason": reason}, reply=reason)
             self.bus.node("report", telemetry.OK if outcome == telemetry.SUCCESS else telemetry.WARN
@@ -2060,7 +2070,7 @@ class MonitoredRobot(load_demo10().Robot):
             self.bus.node("input", telemetry.ACTIVE, "escuchando")
             self.say("  listening...")
             heard = self.voice.listen()
-            self.bus.log(f"  heard: {heard}" if heard else "  heard nothing")
+            self.bus.log(f"  Se ha oído: {heard}" if heard else "  No se ha oído ningún comando")
             if heard:
                 self.bus.node("input", telemetry.OK, heard)
                 self.bus.set_state(command_src="voice")
@@ -2452,12 +2462,11 @@ def main(args=None, bus=None) -> int:
             parser.error(f"--voice cannot work: {complaint}")
         listener = voice.Listener(model=args.voice_model, language=args.voice_language,
                                   device=args.voice_device)
-        bus.set_state(voice="on", voice_note="microphone live; commands also come from the "
-                                             "browser and the terminal")
+        bus.set_state(voice="on", voice_note="Micrófono activo; también puedes enviar órdenes desde el panel.")
 
     bus.set_state(phase="starting", voice="on" if listener else "off")
     bus.node("setup", telemetry.ACTIVE, "Arrancando Isaac Sim")
-    print("  starting Isaac Sim; this takes about two minutes", flush=True)
+    print("  Arrancando Isaac Sim; el panel mostrará el estado y cualquier error.", flush=True)
     try:
         isaac_io.prepare_runtime(headless=args.headless)
 

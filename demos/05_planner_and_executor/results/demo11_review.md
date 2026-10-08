@@ -1,26 +1,38 @@
-# Revisi?n de Demo 11
+# Revisión inicial de Demo 11
 
-Fecha: 2026-10-08. Rama: prepare-demos. Entorno: hackathon-robotekin.
+Fecha: 2026-10-08. Rama: `prepare-demos`. Python: `hackathon-robotekin`.
+Las referencias siguientes corresponden al código anterior a `979fd5b`; las líneas cambian durante la implementación.
 
-## Hallazgos antes de cambios
+## Hallazgos por gravedad
 
-- Cr?tico: ground.py:370-372 sustituye una caja de color inexistente por otra; reproducido verde ? roja.
-- Alto: 11_real_sorting_with_monitor.py:1871 declara ?xito de inicio antes del arranque; :2073 deja la carga del modelo fuera del manejador de errores.
-- Alto: :1660-1678 no finaliza ?rdenes de texto.
-- Alto: :976,:1268,:1298 reutiliza veredictos de piezas entre ?rdenes.
-- Alto: :2242-2248 cierra el panel con Isaac.
-- Alto: :1396,:1424,:1463 silencia errores de c?mara/asociaci?n.
-- Alto: command_model_v2/evaluate.py:77 omite sort_filter; 48/136 frases de test_real est?n literalmente en train_commands.
-- Medio: perceive.py:175,:359 usa operaciones sobre el fotograma completo y umbrales de ?rea; scene_spec.py:318 fija la escena.
+| Gravedad | Referencia original | Problema observado |
+|---|---|---|
+| Crítica | `ground.py:370–372` | Un destino de color inexistente se sustituye por otro; reproducido verde → roja. |
+| Alta | `11_real_sorting_with_monitor.py:1871,2073` | Inicio marcado correcto antes de arrancar; carga del modelo fuera del manejador de errores. |
+| Alta | `11_real_sorting_with_monitor.py:1660–1678` | Las órdenes de texto no alcanzan un estado terminal. |
+| Alta | `11_real_sorting_with_monitor.py:976,1268,1298` | Veredictos reutilizados entre órdenes, con riesgo de contabilizar éxito previo. |
+| Alta | `11_real_sorting_with_monitor.py:2242–2248` | El panel termina al cerrar Isaac. |
+| Alta | `11_real_sorting_with_monitor.py:1396,1424,1463` | Excepciones de cámara/asociación silenciadas. |
+| Alta | `command_model_v2/evaluate.py:77` | La comparación omite `sort_filter`; hay frases del conjunto de prueba en entrenamiento. |
+| Media | `perceive.py:175,359`; `scene_spec.py:318` | Trabajo por componente sobre toda la imagen; escena y vocabulario fijos. |
 
-## L?nea base medida
+## Línea base observada
 
-- test_demo11.py: 461 comprobaciones, SUCCESS; test_planner.py: 1468 comprobaciones, 20 escenas, SUCCESS.
-- Modelo: 68/88 comandos exactos (77,3 %); 81/88 intenciones (92,0 %), media 100,6 ms. Excluidas coincidencias textuales; no comprobada independencia sem?ntica. Evaluador antiguo no incluye sort_filter.
-- Isaac: orden bola roja ? caja roja verificada; 1 tarea, 0 sujeciones cinem?ticas. Escena inicial: 4 piezas y 2 recipientes detectados, tipos correctos en 3/4 piezas.
-- Perfil detallado: proceso 76,439 s; look media 42,405 ms/15 llamadas, capture_rgb media 21,864 ms/43 llamadas. Incluye carga, arranque y cierre; ejecuci?n headless sin navegador.
-- Websocket aislado: 100 publicaciones ? 1 snapshot; primera actualizaci?n 12,595 ms; 0 mensajes extra en 0,5 s inactivo.
-- Primer arranque online falla por certificado HTTPS. HF_HUB_OFFLINE=1 permite usar la cach?.
-- Navegador real pendiente; las pruebas originales usan Node/DOM simulado y HTTP/websocket.
+- Pruebas: Demo 11, 461 comprobaciones, SUCCESS; planner, 1468 comprobaciones sobre 20 escenas, SUCCESS.
+- Evaluación antigua: 68/88 comandos exactos y 81/88 intenciones; media 100,584 ms. Excluye 48 coincidencias literales de 136 frases, pero omite `sort_filter`; no comparar directamente con el evaluador corregido.
+- Isaac headless: una bola roja colocada y verificada, sin sujeción cinemática. Primera escena: cuatro piezas y dos recipientes; tres de cuatro tipos de pieza correctos.
+- Perfil: proceso 76,439 s; `look`, 15 llamadas, media 42,405 ms; `capture_rgb`, 43 llamadas, media 21,864 ms. Incluye carga, arranque y cierre. Entrada a ejecución: 137,145 ms; no mide HTTP hasta el primer movimiento físico.
+- Websocket aislado: 100 publicaciones, primer snapshot en 12,595 ms, cero mensajes adicionales durante 0,5 s inactivo.
+- Arranque online: fallo de certificado HTTPS. Con `HF_HUB_OFFLINE=1` se pudo usar la caché local.
 
-No hay n?meros despu?s de cambios todav?a.
+## Orden de trabajo aprobado
+
+1. Corregir destinos, estados terminales y contabilidad por orden.
+2. Mantener el servidor y aislar cada sesión Isaac en un proceso.
+3. Añadir catálogo configurable y destinos con nombre.
+4. Evaluar percepción, parser y coste de cámara/panel; aplicar mejoras medidas.
+5. Verificar HTTP, reinicio y ejecución física; publicar resultados y limitaciones.
+
+Fuera de alcance: modificar Demo 10 o `executor.py`, colores sin calibrar, reentrenar sin evidencia y afirmar rendimiento del navegador sin observarlo.
+
+Resultado y mediciones finales: [demo11_implementation.md](demo11_implementation.md).

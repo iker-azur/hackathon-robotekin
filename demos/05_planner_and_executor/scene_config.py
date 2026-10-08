@@ -5,6 +5,7 @@ import copy
 import json
 import math
 import re
+import unicodedata
 from dataclasses import replace
 from pathlib import Path
 
@@ -35,7 +36,14 @@ def default_config():
 
 def simple_config():
     cfg = default_config()
-    cfg["objects"] = [o for o in cfg["objects"] if o["id"] in ("ball_red", "cube_blue")]
+    cfg["objects"] = [o for o in cfg["objects"] if o["id"] in ("cube", "cube_blue")]
+    # Spawn both cubes with the same calibrated mass and contact material.
+    for obj in cfg["objects"]:
+        if obj["id"] == "cube":
+            obj["id"] = "cube_red"
+            obj["x"] = .38
+    for tray in cfg["containers"]:
+        tray["size_mm"][2] = 30
     return cfg
 
 
@@ -78,7 +86,8 @@ def build(config):
                 if not isinstance(name, str) or not name.strip() or not isinstance(aliases, list) or any(not isinstance(a, str) or not a.strip() for a in aliases):
                     raise ValueError("El recipiente necesita un nombre y una lista de alias de texto.")
                 for label in [identifier, name, *aliases]:
-                    label = label.casefold().strip()
+                    label = " ".join("".join(c for c in unicodedata.normalize("NFD", label.casefold())
+                                             if unicodedata.category(c) != "Mn").split())
                     if label in names:
                         raise ValueError(f"Nombre o alias de recipiente repetido: {label}.")
                     names.add(label)

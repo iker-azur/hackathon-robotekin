@@ -36,6 +36,7 @@ def main():
     observations=[]; env=dict(os.environ,HF_HUB_OFFLINE="1",PYTHONIOENCODING="utf-8")
     with (OUT/"supervisor.log").open("w",encoding="utf-8") as log:
         process=subprocess.Popen([sys.executable,str(HERE/"11_real_sorting_with_monitor.py"),"--headless","--no-viewer","--spread","0","--port",str(PORT)],stdout=log,stderr=log,env=env)
+        original_config=None
         try:
             deadline=time.monotonic()+30
             while True:
@@ -43,6 +44,7 @@ def main():
                 except OSError:
                     if process.poll() is not None or time.monotonic()>deadline: raise
                     time.sleep(.1)
+            original_config=request("/api/config")["config"]
             for cycle in range(2):
                 config=scene_config.default_config() if cycle==0 else scene_config.simple_config()
                 if cycle:
@@ -88,6 +90,7 @@ def main():
         finally:
             try:
                 request("/api/env",{"action":"stop"});until(lambda s:s["state"].get("sim")=="stopped",timeout=20)
+                if original_config is not None:request("/api/config",original_config)
             except Exception: pass
             if process.poll() is None:
                 if os.name=="nt":subprocess.run(["taskkill","/F","/T","/PID",str(process.pid)],capture_output=True)

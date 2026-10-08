@@ -47,6 +47,7 @@ const IDLE_STROKE = process.argv[4] || "#4a5164";
 const PAGE_IDS = new Set([...fs.readFileSync(PAGE, "utf8").matchAll(/id="([^"]+)"/g)]
   .map(m => m[1]));
 
+let htmlWrites = 0;
 class El {
   constructor(tag, ns) {
     this.tagName = tag; this.ns = ns || ""; this.attrs = {}; this.children = [];
@@ -67,6 +68,7 @@ class El {
   // to be told "this element has class `opts`" - the grid is CSS, and a real browser applies it
   // from the class. Without reading it, every grid looked empty to this shim.
   set innerHTML(html) {
+    htmlWrites += 1;
     this.children = []; this._text = ""; this._html = String(html);
     // Each id becomes a child, carrying whatever class its own tag declares. The class matters:
     // an option grid IS a class, and a real browser gets it from the markup, so a shim that
@@ -197,6 +199,7 @@ function noteOf(group) {
 }
 
 const throws = [];
+const paintStarted = process.hrtime.bigint();
 const lit = new Set();
 const withNote = new Set();
 for (const [index, snap] of SNAPSHOTS.entries()) {
@@ -270,6 +273,8 @@ for (let b = 1; b < BATCHES.length; b++) {
 }
 
 process.stdout.write(JSON.stringify({
+  paintMs: Number(process.hrtime.bigint() - paintStarted) / 1e6,
+  htmlWrites,
   loadError,
   throws,
   warnings,
@@ -342,5 +347,5 @@ paintError: page.querySelector("#paint-error") ? page.querySelector("#paint-erro
   missed: textOf("missed"),
   resultCommand: textOf("result-command"),
   resultSession: textOf("result-session"),
-  examples: page.querySelector("#scene-examples").children.map(e => e.textContent),
+  examples: (page.querySelector("#scene-examples") || {children:[]}).children.map(e => e.textContent),
 }));

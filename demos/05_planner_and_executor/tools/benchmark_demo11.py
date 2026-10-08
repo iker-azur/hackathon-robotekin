@@ -79,8 +79,10 @@ def capture(arguments):
         if "phase" in values: stages.append({"phase": values["phase"], "s":time.perf_counter()-started})
         original_state(**values)
         if values.get("phase") == "done":
-            write("runtime.json", {"elapsed_s":time.perf_counter()-started,"stages":stages,
-                                   "timings":timings,"snapshot":bus.snapshot()})
+            report = {"elapsed_s":time.perf_counter()-started,"stages":stages,
+                      "timings":timings,"snapshot":bus.snapshot()}
+            write("runtime.json", report)
+            write(f"runtime_{args.seed}.json", report)
     bus.set_state = state
     original = demo.MonitoredRobot.look
     counter = 0
@@ -127,7 +129,8 @@ def perception():
     spec=importlib.util.spec_from_file_location("demo11_baseline_perceive",baseline_path)
     baseline=importlib.util.module_from_spec(spec);sys.modules[spec.name]=baseline;spec.loader.exec_module(baseline)
     for label, detector, mode in (("baseline",baseline,False),("legacy",perceive,False),("robust",perceive,True)):
-        totals={"truth":0,"detections":0,"matched":0,"correct_kind":0,"xy_errors_mm":[],"latencies_ms":[],"frames":0}
+        totals={"truth":0,"detections":0,"matched":0,"correct_kind":0,"xy_errors_mm":[],"latencies_ms":[],"frames":0,
+                "by_category":{k:{"truth":0,"detections":0,"matched":0,"correct_kind":0} for k in ("objects","containers")}}
         for path in sorted((OUT/"captures").glob("*.json")):
             meta=json.loads(path.read_text()); image=cv2.imread(str(path.with_suffix(".png")))
             camera=CameraModel.from_dict(meta["camera"])
@@ -147,6 +150,9 @@ def perception():
                     elapsed=(time.perf_counter()-began)*1000
                     if repeat: totals["latencies_ms"].append(elapsed)
                 detected=seen.everything; totals["frames"]+=1;totals["truth"]+=len(truth);totals["detections"]+=len(detected)
+                for key, group in (("objects",seen.objects),("containers",seen.containers)):
+                    totals["by_category"][key]["truth"] += sum(t["container"] == (key == "containers") for t in truth)
+                    totals["by_category"][key]["detections"] += len(group)
                 cost=np.full((len(truth),len(detected)),1e6)
                 for i,t in enumerate(truth):
                     for j,d in enumerate(detected):
@@ -157,6 +163,9 @@ def perception():
                     for i,j in zip(*linear_sum_assignment(cost)):
                         if cost[i,j] <= .04:
                             totals["matched"]+=1; totals["correct_kind"]+=truth[i]["kind"]==detected[j].kind
+                            category = "containers" if truth[i]["container"] else "objects"
+                            totals["by_category"][category]["matched"] += 1
+                            totals["by_category"][category]["correct_kind"] += truth[i]["kind"] == detected[j].kind
                             totals["xy_errors_mm"].append(float(cost[i,j]*1000))
         totals["mean_ms"]=float(np.mean(totals["latencies_ms"])) if totals["latencies_ms"] else None
         totals["mean_xy_error_mm"]=float(np.mean(totals["xy_errors_mm"])) if totals["xy_errors_mm"] else None
@@ -211,7 +220,48 @@ def extensions():
     print(json.dumps({k:{a:b for a,b in v.items() if a!="failures"} for k,v in result.items()},indent=2),flush=True)
 
 
+def monitor():
+    import asyncio
+    import websockets
+    import telemetry
+    from monitor.server import serve
+    bus=telemetry.Bus(); server=serve(bus,port=0)
+    async def stream():
+        async with websockets.connect(f"ws://{server.host}:{server.port}/ws") as socket:
+            started=time.perf_counter();await socket.recv(); initial=(time.perf_counter()-started)*1000
+            await asyncio.sleep(.06)
+            started=time.perf_counter()
+            for index in range(100):bus.set_state(profile_burst=index)
+            await socket.recv(); burst=(time.perf_counter()-started)*1000
+            extras=0
+            deadline=time.perf_counter()+.5
+            while time.perf_counter()<deadline:
+                try:await asyncio.wait_for(socket.recv(),deadline-time.perf_counter());extras+=1
+                except asyncio.TimeoutError:break
+            return {"initial_snapshot_ms":initial,"burst_first_snapshot_ms":burst,"writes":100,"extra_messages_in_half_second":extras}
+    try: result={"websocket":asyncio.run(stream())}
+    finally:server.stop()
+    # DOM shim timing isolates script work, not visual browser responsiveness.
+    bus=telemetry.Bus();bus.set_state(phase="waiting",detections=[],tasks=[],plan=None)
+    snapshots=[]
+    for index in range(1000):
+        snap=bus.snapshot();snap["rev"]=index+1;snap["metrics"]={"profile_counter":index};snapshots.append(snap)
+    write("ui_snapshots.json",[snapshots])
+    baseline=OUT/"baseline_index.html"
+    baseline.write_bytes(subprocess.check_output(["git","show","979fd5b^:demos/05_planner_and_executor/monitor/static/index.html"],cwd=HERE))
+    result["dom_shim"]={}
+    for label,page in (("baseline",baseline),("updated",HERE/"monitor"/"static"/"index.html")):
+        samples=[]
+        for _ in range(5):
+            completed=subprocess.run(["node",str(HERE/"tests"/"dashboard_client.js"),str(page),str(OUT/"ui_snapshots.json")],capture_output=True,encoding="utf-8",check=True)
+            report=json.loads(completed.stdout)
+            if report["loadError"] or report["warnings"] or report["throws"]:raise RuntimeError(report)
+            samples.append({key:report[key] for key in ("paintMs","htmlWrites")})
+        result["dom_shim"][label]=samples
+    write("monitor.json",result);print(json.dumps(result,indent=2),flush=True)
+
+
 if __name__ == "__main__":
     os.environ.setdefault("HF_HUB_OFFLINE","1")
     mode=sys.argv[1]
-    {"intent":intent,"extensions":extensions,"perception":perception,"capture":lambda:capture(sys.argv[2:])}[mode]()
+    {"intent":intent,"extensions":extensions,"monitor":monitor,"perception":perception,"capture":lambda:capture(sys.argv[2:])}[mode]()

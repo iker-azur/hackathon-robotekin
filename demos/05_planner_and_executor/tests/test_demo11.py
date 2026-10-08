@@ -2121,7 +2121,7 @@ def test_controls_do_not_replace_the_running_text_identity():
     bus.send_control("relook")
     bus.take_control()
     check(bus.active_command_id() == cid, "controls cannot steal the active text id")
-    bus.set_command_state(cid, telemetry.NEEDS_CLARIFICATION, "?Qu? caja?")
+    bus.set_command_state(cid, telemetry.NEEDS_CLARIFICATION, "¿Qué caja?")
     check(bus.command_state(cid)["state"] == telemetry.NEEDS_CLARIFICATION,
           "a clarification is an explicit terminal outcome")
 
@@ -2295,6 +2295,77 @@ def test_dashboard_shows_clarification_and_preserved_session_report():
         check("parcialmente" in report["resultSession"], "a previous session result remains visible after stop")
         check(bool(report["examples"]), "examples derive from the live catalog")
 
+
+
+def test_simple_preset_uses_uniform_custom_cubes():
+    import scene_config
+    cfg, parts = scene_config.build(scene_config.simple_config())
+    check({o["id"] for o in cfg["objects"]} == {"cube_red", "cube_blue"}, "simple cubes both use calibrated spawned material")
+    check(len(parts) == 4 and all(o["kind"] == "cube" for o in cfg["objects"]), "simple preset has two cubes and two containers")
+    cfg["containers"][0]["name"] = "Destino Ágil"
+    cfg["containers"][1]["name"] = "Destino Agil"
+    try:
+        scene_config.build(cfg)
+    except ValueError:
+        check(True, "accent-equivalent names are ambiguous and rejected")
+    else:
+        check(False, "accent-equivalent names were accepted")
+
+
+def test_release_height_is_resolved_per_container():
+    import planner, scene_config, real_world
+    from dataclasses import replace
+    module = load_demo11()
+    robot = module.MonitoredRobot.__new__(module.MonitoredRobot)
+    _, robot.layout = scene_config.load()
+    low = next(t for t in robot.layout if t.prim == "box_red")
+    low = replace(low, size=(low.size[0], low.size[1], .03))
+    robot.layout = [low if t.prim == low.prim else t for t in robot.layout]
+    high = next(t for t in robot.layout if t.prim == "tray_blue")
+    robot.release_mode = "clear"; robot.bus = telemetry.Bus()
+    robot.say = lambda *args: None
+    plan = planner.Plan(intent="sort", steps=[planner.Step("release", (.3, -.45, .01), target=1),
+                                             planner.Step("release", (.4, -.45, .01), target=2)])
+    adjusted = robot._release_adjusted(plan, {1:low.prim, 2:high.prim})
+    check(adjusted.steps[0].pose[2] == real_world.safe_release_z(low), "low container gets its own release height")
+    check(adjusted.steps[1].pose[2] == real_world.safe_release_z(high), "high container gets its own release height")
+
+
+def test_verification_measures_after_parking():
+    from types import SimpleNamespace
+    module = load_demo11()
+    robot = module.MonitoredRobot.__new__(module.MonitoredRobot)
+    order = []
+    robot.bot = SimpleNamespace(settle=lambda:order.append("settle"))
+    robot._placement_verdicts = lambda *args: order.append("verify") or [("task", True, "cube")]
+    robot.park = lambda:order.append("park")
+    robot.ledger = module.TaskLedger()
+    robot.recovered = 0
+    robot._task_label = lambda *args:"cubo rojo"
+    robot._settle_rows = lambda:None
+    robot.look = lambda *args:SimpleNamespace(objects=[], containers=[])
+    plan = SimpleNamespace(picks=[1])
+    robot._verify_and_retry(plan, {}, announce=False)
+    check(order == ["settle", "verify", "park", "settle", "verify"], "final placement verdict follows the final arm motion")
+
+
+def test_handle_finishes_failure_and_diagram_without_motion():
+    from types import SimpleNamespace
+    module = load_demo11()
+    for parsing, expected in (({"errors":["Indica el destino."],"intent":"pick_and_place"}, telemetry.NEEDS_CLARIFICATION),
+                              ({"intent":"greeting"}, telemetry.SUCCESS),
+                              (RuntimeError("modelo no disponible"), telemetry.FAILED)):
+        robot = module.MonitoredRobot.__new__(module.MonitoredRobot)
+        robot.bus = telemetry.Bus(); robot.bot = SimpleNamespace(impossible=set(),failures=set())
+        robot._task_rows = {}; robot.demo10 = SimpleNamespace(QUIT_WORDS=set())
+        def parse(text):
+            if isinstance(parsing, Exception): raise parsing
+            return parsing
+        robot.model = SimpleNamespace(parse=parse)
+        robot.handle("comando de prueba")
+        snap = robot.bus.snapshot()
+        check(snap["commands"][-1]["state"] == expected, "parser errors and nonmoving intents have honest terminal states")
+        check(not any(n["state"] == telemetry.ACTIVE for n in snap["nodes"]), "completed commands leave no stale active stage")
 
 def main() -> int:
     # Demo 11 is imported once, here, before any test runs. Three tests need its classes, and each

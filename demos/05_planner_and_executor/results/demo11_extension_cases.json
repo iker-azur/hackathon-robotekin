@@ -1,0 +1,170 @@
+[
+  {
+    "text": "pon 1 bolas rojas en Destino Norte",
+    "lang": "es",
+    "quantity": 1,
+    "refuse": false
+  },
+  {
+    "text": "pon 2 bolas rojas en Destino Norte",
+    "lang": "es",
+    "quantity": 2,
+    "refuse": false
+  },
+  {
+    "text": "pon 3 bolas rojas en Destino Norte",
+    "lang": "es",
+    "quantity": 3,
+    "refuse": false
+  },
+  {
+    "text": "pon 4 bolas rojas en Destino Norte",
+    "lang": "es",
+    "quantity": 4,
+    "refuse": false
+  },
+  {
+    "text": "pon 5 bolas rojas en Destino Norte",
+    "lang": "es",
+    "quantity": 5,
+    "refuse": false
+  },
+  {
+    "text": "pon 6 bolas rojas en Destino Norte",
+    "lang": "es",
+    "quantity": 6,
+    "refuse": false
+  },
+  {
+    "text": "put 1 red balls into Destino Norte",
+    "lang": "en",
+    "quantity": 1,
+    "refuse": false
+  },
+  {
+    "text": "put 2 red balls into Destino Norte",
+    "lang": "en",
+    "quantity": 2,
+    "refuse": false
+  },
+  {
+    "text": "put 3 red balls into Destino Norte",
+    "lang": "en",
+    "quantity": 3,
+    "refuse": false
+  },
+  {
+    "text": "put 4 red balls into Destino Norte",
+    "lang": "en",
+    "quantity": 4,
+    "refuse": false
+  },
+  {
+    "text": "put 5 red balls into Destino Norte",
+    "lang": "en",
+    "quantity": 5,
+    "refuse": false
+  },
+  {
+    "text": "put 6 red balls into Destino Norte",
+    "lang": "en",
+    "quantity": 6,
+    "refuse": false
+  },
+  {
+    "text": "hartu 1 bola gorri eta sartu kutxa Destino Norte",
+    "lang": "eu",
+    "quantity": 1,
+    "refuse": false
+  },
+  {
+    "text": "hartu 2 bola gorri eta sartu kutxa Destino Norte",
+    "lang": "eu",
+    "quantity": 2,
+    "refuse": false
+  },
+  {
+    "text": "hartu 3 bola gorri eta sartu kutxa Destino Norte",
+    "lang": "eu",
+    "quantity": 3,
+    "refuse": false
+  },
+  {
+    "text": "hartu 4 bola gorri eta sartu kutxa Destino Norte",
+    "lang": "eu",
+    "quantity": 4,
+    "refuse": false
+  },
+  {
+    "text": "hartu 5 bola gorri eta sartu kutxa Destino Norte",
+    "lang": "eu",
+    "quantity": 5,
+    "refuse": false
+  },
+  {
+    "text": "hartu 6 bola gorri eta sartu kutxa Destino Norte",
+    "lang": "eu",
+    "quantity": 6,
+    "refuse": false
+  },
+  {
+    "text": "pon la bola magenta en Destino Norte",
+    "lang": "es",
+    "refuse": true
+  },
+  {
+    "text": "pon la bola roja en la caja fantasma",
+    "lang": "es",
+    "refuse": true
+  },
+  {
+    "text": "no cojas la bola roja",
+    "lang": "es",
+    "refuse": true
+  },
+  {
+    "text": "pon 0 bolas rojas en Destino Norte",
+    "lang": "es",
+    "refuse": true
+  },
+  {
+    "text": "put the magenta ball into Destino Norte",
+    "lang": "en",
+    "refuse": true
+  },
+  {
+    "text": "put the red ball into the phantom box",
+    "lang": "en",
+    "refuse": true
+  },
+  {
+    "text": "don't grab the red ball",
+    "lang": "en",
+    "refuse": true
+  },
+  {
+    "text": "put 0 red balls into Destino Norte",
+    "lang": "en",
+    "refuse": true
+  },
+  {
+    "text": "hartu bola magenta eta sartu kutxa Destino Norte",
+    "lang": "eu",
+    "refuse": true
+  },
+  {
+    "text": "hartu bola gorri eta sartu kutxa fantasma",
+    "lang": "eu",
+    "refuse": true
+  },
+  {
+    "text": "ez hartu bola gorri",
+    "lang": "eu",
+    "refuse": true
+  },
+  {
+    "text": "hartu 0 bola gorri eta sartu kutxa Destino Norte",
+    "lang": "eu",
+    "refuse": true
+  }
+]
