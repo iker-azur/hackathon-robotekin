@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import time
 
 HERE = Path(__file__).resolve().parents[1]
@@ -95,6 +96,7 @@ def capture(arguments):
             cv2.imwrite(str(folder/(stem+".png")), image)
             if depth is not None: np.save(folder/(stem+".npy"),depth)
             truth = [{"id":i.prim,"kind":i.kind,"color":i.color,"container":i.container,
+                      "size":list(i.size),
                       "position":self.env.scene[i.prim].data.root_pos_w[0].detach().cpu().tolist()} for i in self.layout]
             (folder/(stem+".json")).write_text(json.dumps({"camera":asdict(camera),"truth":truth,"caption":caption}),encoding="utf-8")
         counter += 1
@@ -120,7 +122,11 @@ def perception():
     import scene_spec
     from scene import CameraModel
     reports = {}
-    for mode in (False,True):
+    baseline_path=OUT/"baseline_perceive.py"
+    baseline_path.write_bytes(subprocess.check_output(["git","show","979fd5b^:demos/05_planner_and_executor/perceive.py"],cwd=HERE))
+    spec=importlib.util.spec_from_file_location("demo11_baseline_perceive",baseline_path)
+    baseline=importlib.util.module_from_spec(spec);sys.modules[spec.name]=baseline;spec.loader.exec_module(baseline)
+    for label, detector, mode in (("baseline",baseline,False),("legacy",perceive,False),("robust",perceive,True)):
         totals={"truth":0,"detections":0,"matched":0,"correct_kind":0,"xy_errors_mm":[],"latencies_ms":[],"frames":0}
         for path in sorted((OUT/"captures").glob("*.json")):
             meta=json.loads(path.read_text()); image=cv2.imread(str(path.with_suffix(".png")))
@@ -135,7 +141,9 @@ def perception():
                 frame=np.clip(image.astype(float)*brightness,0,255).astype(np.uint8)
                 for repeat in range(6):
                     began=time.perf_counter()
-                    seen=perceive.perceive(frame,camera=camera,depth=depth,plane_z=scene_spec.TABLE_TOP_Z,looking_for=colors,robust=mode)
+                    parameters=dict(camera=camera,depth=depth,plane_z=scene_spec.TABLE_TOP_Z,looking_for=colors)
+                    if detector is perceive:parameters["robust"]=mode
+                    seen=detector.perceive(frame,**parameters)
                     elapsed=(time.perf_counter()-began)*1000
                     if repeat: totals["latencies_ms"].append(elapsed)
                 detected=seen.everything; totals["frames"]+=1;totals["truth"]+=len(truth);totals["detections"]+=len(detected)
@@ -152,7 +160,7 @@ def perception():
                             totals["xy_errors_mm"].append(float(cost[i,j]*1000))
         totals["mean_ms"]=float(np.mean(totals["latencies_ms"])) if totals["latencies_ms"] else None
         totals["mean_xy_error_mm"]=float(np.mean(totals["xy_errors_mm"])) if totals["xy_errors_mm"] else None
-        reports["robust" if mode else "legacy"]=totals
+        reports[label]=totals
     write("perception.json",reports);print(json.dumps(reports,indent=2),flush=True)
 
 

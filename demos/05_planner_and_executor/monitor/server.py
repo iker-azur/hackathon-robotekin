@@ -38,7 +38,7 @@ import webbrowser
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 import telemetry
 
@@ -100,6 +100,8 @@ def decode_wav(payload: bytes) -> tuple:
         rate = wav.getframerate()
         channels = wav.getnchannels()
         width = wav.getsampwidth()
+        if not 8000 <= rate <= 96000 or wav.getnframes()/rate > 15 or channels not in (1, 2):
+            raise ValueError("Audio no válido: utiliza mono o estéreo y un máximo de 15 segundos.")
         frames = wav.readframes(wav.getnframes())
     if width != 2:
         return None, rate
@@ -113,7 +115,11 @@ def transcribe_wav(payload: bytes, model_name: str = STT_MODEL, language: str | 
     """One WAV blob -> one sentence. The model cache is on the machine already."""
     samples, rate = decode_wav(payload)
     if samples is None:
-        return ""
+        raise ValueError("El audio debe ser WAV PCM de 16 bits.")
+    if rate != 16000:
+        import numpy as np
+        samples = np.interp(np.arange(round(len(samples)*16000/rate))*rate/16000,
+                            np.arange(len(samples)), samples).astype("float32")
     key = (model_name, language)
     with STT_LOCK:
         model = STT_CACHE.get(key)
@@ -168,7 +174,7 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
         result = bus.snapshot()["state"].get("report")
         if result is None:
             return JSONResponse({"error": "Todavía no hay un informe de sesión."}, status_code=404)
-        return result
+        return JSONResponse(result, headers={"Content-Disposition": 'attachment; filename="informe-sesion.json"'})
 
     @app.get("/api/runtime-log")
     def runtime_log():
@@ -188,6 +194,8 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
         payload = await request.body()
         if not payload:
             return JSONResponse({"error": "audio vacío"}, status_code=400)
+        if len(payload) > 4_000_000:
+            return JSONResponse({"error": "La grabación es demasiado grande."}, status_code=413)
         model_name = request.query_params.get("model") or STT_MODEL
         language = request.query_params.get("language") or None
         # Transcription is seconds of CPU. It runs in a worker thread, so the event loop - and
@@ -209,7 +217,7 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
     @app.get("/")
     def index() -> FileResponse:
         if not INDEX.exists():
-            return JSONResponse({"error": f"{INDEX} is missing"}, status_code=500)
+            return JSONResponse({"error": "No se encuentra el archivo del panel."}, status_code=500)
         return FileResponse(INDEX, media_type="text/html")
 
     @app.get("/api/health")
@@ -224,7 +232,7 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
     def frame() -> Response:
         _seq, jpeg, _meta = bus.frame()
         if jpeg is None:
-            return JSONResponse({"error": "no frame yet"}, status_code=404)
+            return JSONResponse({"error": "Todavía no hay un fotograma."}, status_code=404)
         return Response(content=jpeg, media_type="image/jpeg")
 
     @app.post("/api/command")
@@ -250,13 +258,13 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
             params = {k: v for k, v in payload.items() if k != "action"}
             cid = bus.send_control(action, **params)
             return _ack(bus, cid, queued=action)
-        return JSONResponse({"error": "nothing to do: send text or action"}, status_code=400)
+        return JSONResponse({"error": "Envía una orden de texto o una acción."}, status_code=400)
 
     @app.post("/api/env")
     async def env(payload: dict, request: Request) -> dict:
         action = str(payload.get("action") or "").strip()
         if not action:
-            return JSONResponse({"error": "no action"}, status_code=400)
+            return JSONResponse({"error": "Falta la acción solicitada."}, status_code=400)
         params = {k: v for k, v in payload.items() if k != "action"}
         if action == "start":
             # The setup the dashboard chose travels with the go-ahead: the demo is already

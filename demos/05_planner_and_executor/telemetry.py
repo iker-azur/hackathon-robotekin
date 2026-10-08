@@ -321,6 +321,9 @@ class Bus:
         text = (text or "").strip()
         if not text:
             return None
+        if text.casefold().strip(".!? ") in {"para", "parar", "detente", "stop", "gelditu",
+                                             "cancelar", "cancela", "cancel", "bertan behera"}:
+            return self.request_stop(source)
         cid = self.new_command("command", source, text=text)
         try:
             self._commands.put_nowait((text, source, cid))
@@ -345,7 +348,7 @@ class Bus:
         """
         return not self._controls.empty()
 
-    def take_command(self, timeout: float | None = None) -> str | None:
+    def take_command(self, timeout: float | None = None, *, start: bool = True) -> str | None:
         """The next queued command, or None if none arrived in time.
 
         The origin is remembered rather than returned, because every caller wants the sentence
@@ -360,11 +363,12 @@ class Bus:
         self._last_command_id = cid
         self._active_command_id = cid
         # Latency from the moment the page's request was received to the moment the robot took it.
-        with self._lock:
-            cmd = self._cmd_log.get(cid)
-            if cmd is not None:
-                self._metrics["command_latency_ms"] = round((time.time() - cmd["t"]) * 1000, 1)
-        self.set_command_state(cid, RUNNING)
+        if start:
+            with self._lock:
+                cmd = self._cmd_log.get(cid)
+                if cmd is not None:
+                    self._metrics["command_latency_ms"] = round((time.time() - cmd["t"]) * 1000, 1)
+            self.set_command_state(cid, RUNNING)
         return text
 
     def send_control(self, action: str, **params) -> str:
@@ -395,7 +399,7 @@ class Bus:
         self.set_command_state(cid, QUEUED)
         return cid
 
-    def take_control(self, timeout: float | None = None) -> dict | None:
+    def take_control(self, timeout: float | None = None, *, start: bool = True) -> dict | None:
         """The next queued control, or None. It becomes RUNNING; the robot finishes it."""
         try:
             control = (self._controls.get(timeout=timeout) if timeout else
@@ -405,7 +409,8 @@ class Bus:
         with self._lock:
             self._pending_actions.discard(control.get("action"))
         self._last_command_id = control.get("id", "")
-        self.set_command_state(control.get("id", ""), RUNNING)
+        if start:
+            self.set_command_state(control.get("id", ""), RUNNING)
         return control
 
     # -- command lifecycle -----------------------------------------------------
@@ -457,7 +462,7 @@ class Bus:
     def fail_active(self, reason: str) -> None:
         with self._lock:
             active = [cid for cid, cmd in self._cmd_log.items()
-                      if cmd["state"] in (RECEIVED, QUEUED, RUNNING)]
+                      if cmd["state"] in (RECEIVED, QUEUED, RUNNING) and cmd["type"] != "stop"]
         for cid in active:
             self.set_command_state(cid, FAILED, reason)
 

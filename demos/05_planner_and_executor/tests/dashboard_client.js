@@ -89,6 +89,7 @@ class El {
   append(...kids) { kids.forEach(k => { this.children.push(k); k.parent = this; }); }
   appendChild(k) { this.append(k); return k; }
   addEventListener() {}
+  click() { if (this.onclick) return this.onclick(); }
   querySelector(sel) { return findById(this, sel.replace(/^#/, "")); }
 }
 
@@ -339,4 +340,7 @@ paintError: page.querySelector("#paint-error") ? page.querySelector("#paint-erro
   phase: textOf("phase"),
   verified: textOf("verified"),
   missed: textOf("missed"),
+  resultCommand: textOf("result-command"),
+  resultSession: textOf("result-session"),
+  examples: page.querySelector("#scene-examples").children.map(e => e.textContent),
 }));

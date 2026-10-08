@@ -1060,7 +1060,7 @@ def run_dashboard_client(page_batches):
         done = subprocess.run([node, str(ROOT / "tests" / "dashboard_client.js"),
                                str(ROOT / "monitor" / "static" / "index.html"), str(dump),
                                idle.group(1) if idle else "#4a5164"],
-                              capture_output=True, text=True, timeout=120)
+                              capture_output=True, text=True, encoding="utf-8", timeout=120)
     if done.returncode != 0:
         return {"loadError": done.stderr[-400:], "throws": [], "warnings": [], "nodes": 0,
                 "boxes": 0, "dark": [], "noNote": [], "paintError": "", "layout": {},
@@ -1487,6 +1487,8 @@ def _stub_robot(module, layout, placed):
     robot.ledger = module.TaskLedger()
     robot.verified = robot.missed = robot.recovered = 0
     robot.replanned = robot.regrasped = robot.tracked = robot.reaimed = 0
+    robot.mask_arm = False
+    robot.tracked_xy = {}
     robot.bot = SimpleNamespace(settle=lambda: None, refused=0, corrected=0, kinematic=0,
                                 lost=0)
     robot.release_mode = "clear"
@@ -1555,9 +1557,10 @@ def test_a_failed_grasp_is_a_failed_task_and_a_later_placement_replaces_the_verd
                                   tracked=0, real_grasps=0, kinematic_grasps=0, steps=[],
                                   lost_grasps=0,
                                   summary=lambda: "1 stale")
-    with mock.patch.object(module.MonitoredRobot.__bases__[0], "run_plan",
-                           lambda self, plan, premise, command: refused_run):
+    with mock.patch.object(robot.bot, "run", create=True, return_value=refused_run) as motion:
         robot.run_plan(plan, premise, "coge la pieza")
+        check(motion.call_args.kwargs["retarget"] is None,
+              "motion cannot replace the requested identities and destinations through demo 10's generic replan")
 
     check(robot.ledger.status() == "FAILED",
           f"one grasp failed and nothing placed must read FAILED, got {robot.ledger.status()}")
@@ -1990,7 +1993,8 @@ def test_the_start_up_phases_follow_the_real_stages_and_a_failure_is_recorded():
     starting = source.index('phase="starting", voice=')
     check(wait < loading < starting,
           "the order is waiting for the press, then loading the models, then Isaac starting")
-    check('phase="failed"' in source[starting:starting + 3000],
+    startup = source[starting:source.index("    viewer = None", starting)]
+    check('phase="failed"' in startup and "except BaseException as exc" in startup,
           "a failure while Isaac starts is recorded as failed, with its reason")
     check("tiempo de espera agotado" in source, "a start that times out is logged, not silent")
     check("loading:" in (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8"),
@@ -2245,6 +2249,51 @@ def test_frame_encoder_publishes_and_closes():
     encoder.close()
     check(bus.frame()[1] is not None and bus.frame()[2]["captured_at"] == 1, "encoder drains the latest frame at shutdown")
     check(not errors and not encoder.thread.is_alive(), "encoder worker closes cleanly")
+
+
+def test_forwarding_does_not_mark_queued_commands_as_running():
+    bus = telemetry.Bus(); cid = bus.submit("coge el cubo azul")
+    bus.take_command(start=False)
+    check(bus.command_state(cid)["state"] == telemetry.QUEUED, "IPC forwarding keeps the text queued until robot consumption")
+    cid = bus.send_control("relook"); bus.take_control(start=False)
+    check(bus.command_state(cid)["state"] == telemetry.QUEUED, "IPC forwarding keeps controls queued too")
+    stop = bus.request_stop(); bus.fail_active("La sesión terminó."); bus.complete_stop()
+    check(bus.command_state(stop)["state"] == telemetry.SUCCESS, "actual process termination acknowledges stop")
+    for text in ("para", "stop", "gelditu"):
+        bus = telemetry.Bus(); pending = bus.submit("coge el cubo azul"); stop = bus.submit(text)
+        check(bus.stop_requested() and bus.command_state(stop)["type"] == "stop", "typed stop bypasses the motion queue")
+        check(bus.command_state(pending)["state"] == telemetry.CANCELLED, "stop cancels queued text")
+
+
+def test_catalog_prevents_occluded_parts_and_hidden_box_ambiguity():
+    module = load_demo11()
+    import scene_config
+    robot = module.MonitoredRobot.__new__(module.MonitoredRobot)
+    _, robot.layout = scene_config.load(); robot._placed_slots = {}
+    premise = {index:item.prim for index,item in enumerate(robot.layout) if item.prim != "ball_red"}
+    check(bool(robot._catalog_gaps({"intent":"sort","items":[]},premise)), "an occluded piece cannot disappear from all")
+    check(not robot._catalog_gaps({"intent":"pick","items":[{"kind":"cube","color":"blue"}]},premise), "unrelated occlusions do not block a fully resolved reference")
+    from dataclasses import replace
+    tray = next(item for item in robot.layout if item.prim == "box_red")
+    robot.layout.append(replace(tray,prim="other_red_box"))
+    command={"intent":"pick_and_place","items":[{"kind":"cube","color":"blue"}],"place":{"color":"red","kind":"box"}}
+    check(bool(robot._catalog_gaps(command,premise)), "hidden same-colour boxes remain ambiguous")
+    command["place"]["entity_id"]="box_red"
+    check(not robot._catalog_gaps(command,premise), "named destinations disambiguate the catalog")
+
+
+def test_dashboard_shows_clarification_and_preserved_session_report():
+    import scene_config
+    cfg, parts = scene_config.load(); bus = telemetry.Bus()
+    bus.set_state(phase="stopped",catalog=scene_config.catalog(cfg,parts),
+                  command_result={"status":"NEEDS_CLARIFICATION","reason":"Indica el recipiente."},
+                  report={"state":{"status":"PARTIAL_SUCCESS","verified":1}})
+    report=run_dashboard_client([[bus.snapshot()]])
+    check(report and not report["loadError"] and not report["warnings"], "new result panels render without script errors")
+    if report and not report["loadError"]:
+        check("aclaración" in report["resultCommand"] and "Indica" in report["resultCommand"], "clarification is visible in the result card")
+        check("parcialmente" in report["resultSession"], "a previous session result remains visible after stop")
+        check(bool(report["examples"]), "examples derive from the live catalog")
 
 
 def main() -> int:

@@ -254,6 +254,26 @@ def test_named_container_and_declared_geometry():
           "release follows the configured container height")
 
 
+def test_sort_filters_quantities_and_ambiguous_boxes():
+    import copy
+    s = scene()
+    selected = command("sort", sort_by="color")
+    selected["sort_filter"] = [item("cube", "red", "all")]
+    plan = planner.plan_command(selected, s)
+    check(bool(plan.tasks), "a supported sort filter produces a task")
+    check(all(t.kind == "cube" and t.color == "red" for t in plan.tasks), "sort does not add unrequested balls or colours")
+    selected["sort_filter"] = [item("ball", "red", 2)]
+    plan = planner.plan_command(selected, s)
+    check(bool(plan.question) and not plan.moves, "sort refuses a count that cannot be satisfied")
+    selected["sort_filter"] = [item("ball", "purple", "all")]
+    plan = planner.plan_command(selected, s)
+    check(bool(plan.question) and not plan.moves, "sort does not silently discard an unknown colour filter")
+    duplicate = copy.deepcopy(next(t for t in s.containers if t.color == "red")); duplicate.id=200
+    s.containers.append(duplicate)
+    plan = planner.plan_command(command("sort",sort_by="color"),s)
+    check(bool(plan.unresolved), "same-colour containers require an explicit destination")
+
+
 def main() -> int:
     for name, function in sorted(globals().items()):
         if name.startswith("test_") and callable(function):

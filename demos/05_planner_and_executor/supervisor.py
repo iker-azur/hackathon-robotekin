@@ -144,6 +144,7 @@ class Supervisor:
 
     def start(self, control):
         cid = control["id"]
+        self.bus.set_command_state(cid, telemetry.RUNNING)
         if self.child is not None:
             self.bus.set_command_state(cid, telemetry.FAILED, "Ya hay una sesión activa.")
             return
@@ -160,7 +161,7 @@ class Supervisor:
             if key in control["params"]:
                 arguments[key] = control["params"][key]
         if arguments["camera"] not in ("top", "side", "front") or arguments["variant"] not in (
-                "contained", "open", "out_of_reach") or not isinstance(arguments["rounds"], int) or arguments["rounds"] < 1:
+                "contained", "open", "out_of_reach") or type(arguments["rounds"]) is not int or not 1 <= arguments["rounds"] <= 100 or type(arguments["seed"]) is not int:
             self.bus.set_command_state(cid, telemetry.FAILED, "Configuración de entorno no válida.")
             return
         self.session_id = uuid.uuid4().hex
@@ -194,8 +195,11 @@ class Supervisor:
         if state.get("phase") == "stopped":
             state.pop("phase")
         self.bus.set_state(**state)
+        current_nodes = {node["id"]: node for node in self.bus.snapshot()["nodes"]}
         for node in snapshot["nodes"]:
-            self.bus.node(node["id"], node["state"], node.get("note", ""), detail=node.get("detail", ""))
+            previous = current_nodes.get(node["id"], {})
+            if any(node.get(key) != previous.get(key) for key in ("state", "note", "detail")):
+                self.bus.node(node["id"], node["state"], node.get("note", ""), detail=node.get("detail", ""))
         for event in snapshot["events"]:
             if event["seq"] > self.last_event:
                 self.bus.log(event["message"], level=event["level"], node=event.get("node", ""))
@@ -270,6 +274,13 @@ class Supervisor:
             error = self.bus.snapshot()["state"].get("error", "")
             if not self.result and not self.bus.stop_requested():
                 error = error or f"Isaac terminó sin informe (código {self.child.exitcode}). Consulte el registro de la sesión."
+            if not self.result:
+                status = "ABORTED" if self.bus.stop_requested() else "FAILED"
+                reason = error or "El entorno se detuvo antes de generar su informe."
+                self.bus.set_state(status=status, termination_reason=reason)
+                self.result = self.bus.snapshot()
+                atomic_json(self.report_path, self.result)
+                self.bus.set_state(report=self.result)
             self.bus.fail_active(error or "La sesión ha terminado antes de completar esta orden.")
             self.bus.complete_stop()
             self.bus.set_state(phase="failed" if error else "stopped", sim="stopped", error=error)
@@ -300,18 +311,18 @@ def run(args):
             bus.send_control("start")
         while True:
             supervisor.poll()
-            control = bus.take_control()
+            control = bus.take_control(start=False)
             if control:
                 if control["action"] == "start":
                     supervisor.start(control)
                 else:
                     supervisor.forward(control["id"])
             if supervisor.ready:
-                text = bus.take_command()
+                text = bus.take_command(start=False)
                 if text:
                     supervisor.forward(bus.active_command_id())
             elif not supervisor.child:
-                text = bus.take_command()
+                text = bus.take_command(start=False)
                 if text:
                     bus.set_command_state(bus.active_command_id(), telemetry.FAILED, "Inicia el entorno antes de enviar una orden.")
             if not supervisor.child and bus.stop_requested():

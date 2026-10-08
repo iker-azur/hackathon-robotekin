@@ -847,9 +847,10 @@ class ModelSpy:
             "errors": command.get("errors", []),
         })
         self._bus.set_metric("parse_ms", command.get("parse_ms"))
-        items = " ".join(str(item.get("kind")) for item in command.get("items", []))
+        import ui_spanish
+        items = " ".join(describe.phrase(item.get("kind"), item.get("color"), 1, "es", bare=True) for item in command.get("items", []))
         self._bus.node("understand", telemetry.OK,
-                       f"{command.get('intent')} [{items.strip() or 'sin piezas'}]")
+                       f"{ui_spanish.INTENTS.get(command.get('intent'), 'orden')} [{items.strip() or 'sin piezas'}]")
         return command
 
 
@@ -1062,7 +1063,7 @@ class MonitoredRobot(load_demo10().Robot):
         self.demo10 = sys.modules["demo10"]
         self.advance = False
         self.quit = False
-        self.web_input = bool(args.web) and not sys.stdin.isatty()
+        self.web_input = bool(args.web) or bool(getattr(args, "worker", False))
         # The thread that reads typed commands, if there is a terminal to read. Started from
         # ``main`` once the start gate is open, so it never competes with
         # ``enter_starts_the_run`` for the same stdin.
@@ -1113,15 +1114,15 @@ class MonitoredRobot(load_demo10().Robot):
         and the dashboard cannot end up telling different stories.
         """
         print(text, flush=True)
-        if text.strip():
-            self.bus.log(text)
 
     def _step_logged(self, text: str) -> None:
         """The executor's per-step log line, which is also the execute node's progress."""
         self.say(text)
         head = text.strip().split()
         if head:
-            self.bus.node("execute", telemetry.ACTIVE, head[0])
+            import ui_spanish
+            self.bus.set_state(progress=head[0])
+            self.bus.node("execute", telemetry.ACTIVE, ui_spanish.ACTIONS.get(head[0], "Comprobando ejecución"))
 
     # -- the environment -------------------------------------------------------
 
@@ -1142,8 +1143,9 @@ class MonitoredRobot(load_demo10().Robot):
             f"13-18 mm from the commanded pose there against {LATERAL_SLACK_M * 1000:.1f} mm of "
             f"lateral slack. A bench with an uncalibrated arm should use --work-x "
             f"{GRASP_ENVELOPE_X[0]:.2f} {GRASP_ENVELOPE_X[1]:.2f}."))
-        self.bus.set_state(findings=rows)
-        for level, text in rows:
+        import ui_spanish
+        self.bus.set_state(findings=ui_spanish.findings(rows), findings_technical=rows)
+        for level, text in ui_spanish.findings(rows):
             self.bus.log(f"{level}: {text}",
                          level="fail" if level == "fail" else ("warn" if level == "warn"
                                                               else "info"))
@@ -1211,7 +1213,7 @@ class MonitoredRobot(load_demo10().Robot):
         """
         if plan.question:
             line = next(iter(plan.question.values()))
-            self.bus.node("ground", telemetry.WARN, f"asked: {line}")
+            self.bus.node("ground", telemetry.WARN, f"Aclaración: {line}")
         elif plan.unresolved:
             self.bus.node("ground", telemetry.WARN, "; ".join(plan.unresolved))
         else:
@@ -1270,11 +1272,11 @@ class MonitoredRobot(load_demo10().Robot):
         """
         rows = []
         for task in getattr(plan, "tasks", None) or []:
-            part = describe.phrase(task.kind, task.color, 1, self.args.lang, bare=True)
+            part = describe.phrase(task.kind, task.color, 1, "es", bare=True)
             where = ""
             if task.place is not None:
                 where = describe.phrase(task.place_kind, task.place_color, 1,
-                                        self.args.lang, bare=True)
+                                        "es", bare=True)
             rows.append({"key": self._task_key(task, premise),
                          "part": part, "destination": where,
                          "label": f"{part} → {where}" if where else part,
@@ -1355,7 +1357,7 @@ class MonitoredRobot(load_demo10().Robot):
         """The human-readable objective of a task, for the ledger's failure list."""
         for task in getattr(plan, "tasks", None) or []:
             if self._task_key(task, premise) == key:
-                part = describe.phrase(task.kind, task.color, 1, self.args.lang, bare=True)
+                part = describe.phrase(task.kind, task.color, 1, "es", bare=True)
                 if task.place is None:
                     return part
                 where = describe.phrase(task.place_kind, task.place_color, 1, self.args.lang,
@@ -1408,18 +1410,19 @@ class MonitoredRobot(load_demo10().Robot):
         question the dashboard exists to answer: whether the robot saw the green ball as a ball
         at (+0.366, -0.472) or as an unclassified blob.
         """
-        self.bus.node("capture", telemetry.ACTIVE, caption or "frame")
+        self.bus.node("capture", telemetry.ACTIVE, "Capturando la mesa")
         began = time.perf_counter()
         image, depth, camera = isaac_io.capture(self.env, self.sensor)
         self._last_capture = (image, depth, camera)
         self.bus.set_metric("capture_ms", round((time.perf_counter() - began) * 1000, 1))
-        self._latest_rgb = (time.monotonic(), image)
+        self._latest_rgb = (time.monotonic(), image, time.time())
         if self.mask_arm:
             image = self._mask(image, camera)
         perceived = time.perf_counter()
         seen = perceive.perceive(image, source=self.label, camera=camera,
                                 frame=isaac_io.robot_frame(self.env), plane_z=scene_spec.TABLE_TOP_Z,
-                                depth=depth, looking_for=self.args.detect, robust=not getattr(self.args, "legacy_perception", False))
+                                depth=depth, looking_for=self.args.detect,
+                                robust=not getattr(self.args, "legacy_perception", False) and self.args.variant != "out_of_reach")
         self.bus.set_metric("segmentation_ms", round((time.perf_counter() - perceived) * 1000, 1))
         self.scene, self.last_image = seen, image
         annotation = time.perf_counter()
@@ -1459,7 +1462,7 @@ class MonitoredRobot(load_demo10().Robot):
             return
         if getattr(self, "frame_encoder", None):
             self.frame_encoder.offer(self.shown, {"note": note, "annotated": True,
-                                                "captured_at": time.time()}, FRAME_JPEG_QUALITY)
+                                                "captured_at": getattr(self, "_latest_rgb", (None,None,time.time()))[2]}, FRAME_JPEG_QUALITY)
             return
         try:
             import cv2
@@ -1512,14 +1515,16 @@ class MonitoredRobot(load_demo10().Robot):
             latest = getattr(self, "_latest_rgb", None)
             if latest and now - latest[0] < 1.0 / self.cam_fps:
                 image = latest[1]
+                captured_at = latest[2] if len(latest) > 2 else time.time()
                 self.bus.add_to_metric("camera_reused_frames", 1)
             else:
                 capture_started = time.perf_counter()
                 image, _camera = isaac_io.capture_rgb(self.env, self.sensor)
+                captured_at = time.time()
                 self.bus.set_metric("live_capture_ms", round((time.perf_counter() - capture_started) * 1000, 1))
             if getattr(self, "frame_encoder", None):
                 self.frame_encoder.offer(image, {"note": "en vivo", "annotated": False,
-                                                 "captured_at": time.time()}, FRAME_PUMP_QUALITY, FRAME_PUMP_WIDTH)
+                                                 "captured_at": captured_at}, FRAME_PUMP_QUALITY, FRAME_PUMP_WIDTH)
                 return
             height, width = image.shape[:2]
             small = cv2.resize(image, (FRAME_PUMP_WIDTH,
@@ -1543,6 +1548,8 @@ class MonitoredRobot(load_demo10().Robot):
         for row, thing in enumerate(things):
             for column, item in enumerate(items):
                 if thing.color != item.color or (thing in seen.containers) != item.container:
+                    continue
+                if not item.container and thing.kind not in ("any", item.kind):
                     continue
                 last = self.tracked_xy.get(item.prim, (item.x, item.y))
                 gap = math.dist(thing.aim_xy or thing.pos_m[:2], last)
@@ -1571,7 +1578,7 @@ class MonitoredRobot(load_demo10().Robot):
                 if item.container:
                     thing.cavity_m = list(item.inner)
         self.bus.node("link", telemetry.OK if mapping else telemetry.WARN,
-                      f"{len(mapping)}/{len(seen.everything)} blob(s) matched a part")
+                      f"{len(mapping)}/{len(seen.everything)} detecciones asociadas")
         return mapping
 
     def locate(self, prim, last_xy=None, kind_hint=None):
@@ -1667,10 +1674,21 @@ class MonitoredRobot(load_demo10().Robot):
         self._note_tasks(plan, premise)
         for step in plan.steps:
             pose = "" if step.pose is None else " ".join(f"{v:+.3f}" for v in step.pose)
-            self.bus.log(f"    plan: {step.action:<8} {step.note:<34} {pose}", node="plan")
-        self.bus.node("execute", telemetry.ACTIVE, f"{len(plan.steps)} step(s)")
+            import ui_spanish
+            self.bus.log(f"Plan: {ui_spanish.ACTIONS.get(step.action, 'movimiento')} {pose}", node="plan")
+        self.bus.node("execute", telemetry.ACTIVE, f"{len(plan.steps)} pasos")
         refused_before = self.bot.refused
-        run = super().run_plan(plan, premise, command)
+        # Demo 10's retarget callback replans the whole original command. That can
+        # change identities, destinations and release heights inside a single task.
+        # Demo 11 retries explicitly between tasks with the same requested identity.
+        was_masked = self.mask_arm
+        self.mask_arm = True
+        try:
+            run = self.bot.run(plan, resolve=premise.get, keys=lambda: self.keys(),
+                               observe=lambda prim: self.locate(prim, self.tracked_xy.get(prim)),
+                               retarget=None)
+        finally:
+            self.mask_arm = was_masked
         if run.stale_grasps:
             # A grasp that did not hold, or a target that could not be found again, is a failed
             # attempt at each task in this plan. A later verdict (check) may still settle it as
@@ -1705,7 +1723,7 @@ class MonitoredRobot(load_demo10().Robot):
         ``run_plan`` masks for its own descents; the retry is driven from outside that, so it
         has to do it itself.
         """
-        self.bus.node("recover", telemetry.ACTIVE, f"re-picking {prim}")
+        self.bus.node("recover", telemetry.ACTIVE, f"Recuperando {prim}")
         was = getattr(self, "mask_arm", False)
         self.mask_arm = True
         try:
@@ -1713,7 +1731,7 @@ class MonitoredRobot(load_demo10().Robot):
         finally:
             self.mask_arm = was
         self.bus.node("recover", telemetry.OK if done else telemetry.FAIL,
-                      f"{prim} {'re-placed' if done else 'could not be re-placed'}")
+                      f"{prim}: {'recuperada' if done else 'no se pudo recuperar'}")
         return done
 
     def _retry_placed(self, prim: str) -> bool:
@@ -1740,8 +1758,14 @@ class MonitoredRobot(load_demo10().Robot):
             return False
         grasp = np.asarray(planner.grasp_pose(thing, offset=self.args.offset), dtype=float)
         lift = grasp + np.array([0.0, 0.0, executor_module.ABOVE])
-        drop = np.asarray(planner.place_pose(self._as_thing(tray, (tray.x, tray.y, tray.z))),
-                          dtype=float)
+        target = next((t for t in seen.containers if t.entity_id == tray.prim), None)
+        if target is None:
+            self.bus.log("No se identifica el recipiente durante la recuperación.", level="warn")
+            return False
+        drop = np.asarray(planner.place_pose(target), dtype=float)
+        allocation = getattr(self, "_task_slots", {}).get(prim)
+        if allocation:
+            drop[:2] += allocation[1]
         drop_low = drop.copy()
         drop_low[2] = max(drop[2], real_world.safe_release_z(tray))
         above_drop = drop_low + np.array([0.0, 0.0, executor_module.ABOVE])
@@ -1815,9 +1839,17 @@ class MonitoredRobot(load_demo10().Robot):
                     self.park()
         return True
 
+    def _tray_of(self, prim):
+        allocation = getattr(self, "_task_slots", {}).get(prim) or getattr(self, "_placed_slots", {}).get(prim)
+        if allocation:
+            return next((i for i in self.layout if i.prim == allocation[0]), None)
+        item = next((i for i in self.layout if i.prim == prim), None)
+        matches = [i for i in self.layout if item and i.container and i.color == item.color]
+        return matches[0] if len(matches) == 1 else None
+
     def check(self, plan, premise, announce: bool = True):
         self.bus.node("verify", telemetry.ACTIVE,
-                      f"judging {len(plan.picks)} placement(s) against the tray geometry")
+                      f"Comprobando {len(plan.picks)} colocaciones")
         misses = self._verify_and_retry(plan, premise, announce)
         # The verdict per task. `check` has just re-perceived and measured where every part came
         # to rest, so this is the moment the checklist has an answer: `misses` is the parts that
@@ -1825,13 +1857,34 @@ class MonitoredRobot(load_demo10().Robot):
         verified = len(plan.picks) - len(misses)
         self.bus.node("verify", telemetry.OK if not misses else telemetry.WARN,
                       f"{verified}/{len(plan.picks)} dentro"
-                      + (f"; missed {', '.join(misses)}" if misses else ""))
+                      + (f"; sin verificar: {', '.join(misses)}" if misses else ""))
         self.bus.set_state(verified=self.verified, recovered=self.recovered,
                            missed=self.missed, replanned=self.replanned,
                            regrasped=self.regrasped)
         return misses
 
     # -- input -----------------------------------------------------------------
+
+    def _catalog_gaps(self, command, premise):
+        """Do not let an occluded configured piece disappear from an 'all' request."""
+        filters = command.get("sort_filter") or command.get("items") or [{"kind": "any"}]
+        known = [item for item in self.layout if not item.container
+                 and item.prim not in getattr(self, "_placed_slots", {})]
+        visible = set(premise.values())
+        for selection in filters:
+            candidates = [item for item in known
+                          if selection.get("kind") in (None, "any", item.kind)
+                          and selection.get("color") in (None, item.color)]
+            missing = [item.prim for item in candidates if item.prim not in visible]
+            if missing:
+                return "No se identifican todas las piezas de esa referencia: " + ", ".join(missing) + ". Separa las piezas o cambia la cámara."
+        destinations = [command.get("place"), *[item.get("place") for item in command.get("items", [])]]
+        for destination in destinations:
+            if destination and not destination.get("entity_id"):
+                matches = [item for item in self.layout if item.container and destination.get("color") in (None, item.color)]
+                if len(matches) > 1:
+                    return "Hay varios recipientes que coinciden. Indica el nombre del destino."
+        return ""
 
     def handle(self, text: str) -> bool:
         text = (text or "").strip()
@@ -1884,6 +1937,10 @@ class MonitoredRobot(load_demo10().Robot):
             # Observe without moving first. Unresolved orders must not park the arm.
             seen = self.look("Observando para resolver la orden")
             premise = self.link(seen)
+            gap = self._catalog_gaps(command, premise)
+            if gap:
+                outcome, reason = telemetry.NEEDS_CLARIFICATION, gap
+                return True
             plan = planner.plan_command(command, seen, offset=self.args.offset)
             if plan.question or plan.unresolved or not plan.moves:
                 reason = plan.question.get("es") or "; ".join(plan.unresolved) or plan.reply
@@ -1903,14 +1960,21 @@ class MonitoredRobot(load_demo10().Robot):
                 outcome, reason = telemetry.NEEDS_CLARIFICATION, str(exc)
                 return True
             self._note_tasks(plan, premise)
+            requested = {(premise[task.pick], premise.get(task.place)) for task in plan.tasks}
             if len(plan.picks) > 1:
                 self._one_at_a_time(command, plan)
             else:
                 for attempt in range(1 + self.args.regrasp):
                     run = self.run_plan(plan, premise, command)
-                    if run.aborted or self.bus.stop_requested():
+                    if self.bus.stop_requested():
                         outcome, reason = telemetry.CANCELLED, "Ejecución interrumpida."
                         return False
+                    if run.aborted and not run.stale_grasps:
+                        for task in plan.tasks:
+                            self.ledger.record(self._task_key(task, premise), False)
+                        self._settle_rows()
+                        outcome, reason = telemetry.FAILED, "El ejecutor detuvo la tarea: no se confirmó el agarre o el movimiento. Revisa la cámara y la posición de la pieza."
+                        return True
                     if not run.stale_grasps:
                         if plan.places:
                             self.check(plan, premise)
@@ -1923,15 +1987,20 @@ class MonitoredRobot(load_demo10().Robot):
                     if attempt < self.args.regrasp:
                         self.park()
                         seen = self.look("Reintentando tras perder la pieza")
-                        premise = self.link(seen)
-                        plan = planner.plan_command(command, seen, offset=self.args.offset)
-                        if not plan.moves or plan.question or plan.unresolved:
+                        fresh_premise = self.link(seen)
+                        fresh = planner.plan_command(command, seen, offset=self.args.offset)
+                        fresh_targets = {(fresh_premise.get(task.pick), fresh_premise.get(task.place)) for task in fresh.tasks}
+                        if not fresh.moves or fresh.question or fresh.unresolved or fresh_targets != requested:
+                            self.bus.log("No se pueden conservar las identidades y destinos al reintentar; la orden termina como fallida.", level="warn")
                             break
+                        premise, plan = fresh_premise, fresh
             rows = list(self._task_rows.values())
             done = sum(row.get("state") == "done" for row in rows)
             outcome = (telemetry.SUCCESS if rows and done == len(rows) else
                        telemetry.PARTIAL_SUCCESS if done else telemetry.FAILED)
             reason = f"{done}/{len(rows)} tareas verificadas."
+            if done < len(rows):
+                reason += " No se ha confirmado el agarre o la colocación de todas las piezas; consulta la lista de tareas."
             if self.bus.stop_requested():
                 outcome, reason = telemetry.CANCELLED, "Ejecución interrumpida."
             for task in plan.tasks:
@@ -2030,6 +2099,8 @@ class MonitoredRobot(load_demo10().Robot):
                 self.bus.node("input", telemetry.ACTIVE, f"desde {where}: {text}")
                 self.bus.set_state(command_src=source, queued="", phase="command")
                 return text
+            if getattr(self, "cam_fps", 0) > 0:
+                self.cam_pump()
             if not self.bus.control_pending():
                 continue
             control = self.bus.take_control() or {}
@@ -2055,8 +2126,7 @@ class MonitoredRobot(load_demo10().Robot):
         are safe to perform between two steps.
         """
         pressed = set(super().keys())
-        # keys() runs once per physics step, so its rate is the simulator's loop rate.
-        self.bus.tick("physics")
+        self.bus.tick("control_poll")
         self.cam_pump()
         # STOP first, and always: it is a flag, so it is seen even if the controls below are
         # busy or there are many of them.
@@ -2302,6 +2372,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(args=None, bus=None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = build_parser()
     args = args or parser.parse_args()
     if args.web and not args.setup_only and not getattr(args, "worker", False):
@@ -2312,7 +2385,7 @@ def main(args=None, bus=None) -> int:
     args.detect = sorted({i.color for i in args.scene_items})
 
     bus = bus or telemetry.Bus()
-    bus.node("setup", telemetry.ACTIVE, "choosing the environment")
+    bus.node("setup", telemetry.ACTIVE, "Preparando el entorno")
     bus.set_state(phase="setup", variant=args.variant, seed=args.seed, voice="off",
                   rounds=args.rounds, camera=args.camera, release=args.release,
                   close_command=args.close_command, grip_stiffness=args.grip_stiffness,
@@ -2322,12 +2395,11 @@ def main(args=None, bus=None) -> int:
     # starts: this is the part of the demo that transfers to a real bench.
     sheet = real_world.setup_sheet(args.scene_items, camera=args.camera)
     print("\n".join(sheet), flush=True)
-    for line in sheet:
-        bus.log(line)
     findings = real_world.preflight(args.scene_items, camera=args.camera)
-    bus.set_state(findings=findings)
-    for level, text in findings:
-        bus.log(f"{level}: {text}", level="fail" if level == "fail" else
+    import ui_spanish
+    bus.set_state(findings=ui_spanish.findings(findings), findings_technical=findings)
+    for level, text in ui_spanish.findings(findings):
+        bus.log(text, level="fail" if level == "fail" else
                 ("warn" if level == "warn" else "info"))
 
     monitor = None
@@ -2349,7 +2421,7 @@ def main(args=None, bus=None) -> int:
     # a scripted run has its own script, so neither waits.
     if args.web and args.wait_for_start and not args.text and not getattr(args, "worker", False):
         bus.set_state(phase="waiting_start")
-        bus.node("setup", telemetry.ACTIVE, "waiting for the dashboard to start the environment")
+        bus.node("setup", telemetry.ACTIVE, "Esperando el inicio desde el panel")
         print(f"  dashboard: {monitor.url if monitor else '(none: --no-web)'}", flush=True)
         print("  waiting for the start command there, or press Enter here", flush=True)
         enter_starts_the_run(bus)
@@ -2384,14 +2456,17 @@ def main(args=None, bus=None) -> int:
                                              "browser and the terminal")
 
     bus.set_state(phase="starting", voice="on" if listener else "off")
-    bus.node("setup", telemetry.ACTIVE, "starting Isaac Sim")
+    bus.node("setup", telemetry.ACTIVE, "Arrancando Isaac Sim")
     print("  starting Isaac Sim; this takes about two minutes", flush=True)
     try:
         isaac_io.prepare_runtime(headless=args.headless)
 
         layout = None
         if args.variant == "out_of_reach":
-            layout = scene_spec.out_of_reach_scene()
+            from dataclasses import replace
+            layout = [replace(item, x=scene_spec.OUT_OF_REACH_ITEMS[item.prim][0],
+                              y=scene_spec.OUT_OF_REACH_ITEMS[item.prim][1])
+                      if item.prim in scene_spec.OUT_OF_REACH_ITEMS else item for item in args.scene_items]
             env, sensor = build_real_env(args.camera, layout, pen=False,
                                            grip_stiffness=args.grip_stiffness)
             print("  two parts placed beyond the arm's reach, on purpose:", flush=True)
@@ -2407,6 +2482,14 @@ def main(args=None, bus=None) -> int:
                 print(f"  working area walled in: a {pen_module.PEN_HEIGHT * 100:.1f} cm kerb around "
                       f"x {scene_spec.WORK_X} y {scene_spec.WORK_Y}", flush=True)
         env.reset()
+        original_step = env.step
+        def measured_step(*values, **options):
+            began = time.perf_counter()
+            result = original_step(*values, **options)
+            bus.tick("physics")
+            bus.set_metric("physics_step_ms", round((time.perf_counter()-began)*1000, 2))
+            return result
+        env.step = measured_step
         if scene_spec.SHIPPED_CUBE not in {i.prim for i in args.scene_items}:
             import torch
             hidden = env.scene[scene_spec.SHIPPED_CUBE]
@@ -2453,12 +2536,14 @@ def main(args=None, bus=None) -> int:
         # The keyboard joins the same queue as the browser, read on its own thread. Started
         # here, after the start gate: ``enter_starts_the_run`` has already had stdin to itself
         # and two threads calling ``input()`` is not a thing to do on purpose.
-        robot.keyboard = _terminal_reader(bus) if not args.text else None
+        robot.keyboard = (_terminal_reader(bus) if not args.text and sys.stdin.isatty()
+                          and not getattr(args, "worker", False) else None)
+        bus.set_state(input_mode="dashboard" if robot.web_input else "terminal")
         bus.set_state(phase="ready", sim="running")
         start_id = bus.snapshot()["state"].get("start_command_id")
         if start_id:
             bus.set_command_state(start_id, telemetry.SUCCESS, "Entorno listo.")
-        bus.node("setup", telemetry.OK, f"Isaac running; variant {args.variant}, camera "
+        bus.node("setup", telemetry.OK, f"Isaac en marcha; variante {args.variant}, cámara "
                                         f"{args.camera}")
         robot.findings()
 
@@ -2546,6 +2631,9 @@ def main(args=None, bus=None) -> int:
         bus.node("report", telemetry.OK if status in ("SUCCESS", "NO_TASKS") else telemetry.FAIL,
                  f"{ok_count} ok, {failed_count} fallidas")
         bus.set_state(phase="done", status=status, verified=robot.verified,
+                      completed_tasks=ok_count, failed_tasks=failed_count,
+                      rejected_commands=robot._rejected_commands,
+                      failed_labels=robot.ledger.failed_labels(),
                       recovered=robot.recovered, missed=robot.missed,
                       refused_grasps=robot.bot.refused, lost_grasps=robot.bot.lost,
                       kinematic_grasps=robot.bot.kinematic)

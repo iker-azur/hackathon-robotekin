@@ -390,7 +390,7 @@ def _plan_sort_from_scene(plan: Plan, scene: Scene, command: dict, resolved: dic
     placed_any = False
     for _key, label, members, tray in pairs:
         if tray is None:
-            plan.unresolved.append(f"{label} {sort_by}: no {sort_by} receptacle for it")
+            plan.unresolved.append(f"No hay un recipiente único para el grupo {label}; indica el nombre del destino.")
             continue
         for thing in members:
             pose = grasp_pose(thing, offset)

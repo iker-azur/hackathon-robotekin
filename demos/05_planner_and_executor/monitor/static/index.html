@@ -409,7 +409,7 @@
   <div class="col">
     <!-- entorno y control, en un solo panel: los botones, la barra de arranque y la configuración -->
     <div class="card" id="entorno-card" style="flex:0 0 auto">
-      <h2>entorno y control <span class="hint" id="variant-tag"></span><span class="help" data-tip="Elige la variante y la cámara y pulsa iniciar entorno: el simulador tarda unos dos minutos. Los botones de abajo (siguiente ronda, re-mirada, guardar) actúan en caliente; la configuración sólo se lee al iniciar.">i</span></h2>
+      <h2>entorno y control <span class="hint" id="variant-tag"></span><span class="help" data-tip="Elige la variante y la cámara y pulsa iniciar entorno: el panel muestra cada etapa del arranque. Los botones de abajo (siguiente ronda, re-mirada, guardar) actúan en caliente; la configuración sólo se lee al iniciar.">i</span></h2>
       <div class="gate waiting" id="gate">
         el simulador no ha arrancado. pulsa <b>iniciar entorno</b>.
       </div>
@@ -463,14 +463,14 @@
     </div>
 
     <div class="card" id="comando-card" style="flex:0 0 auto">
-      <h2>comando<span class="help" data-tip="Escribe una orden en español, o pulsa uno de los atajos. Se ejecuta cuando el robot acaba lo que tiene en marcha. La voz se graba aquí y el texto cae en la casilla, para corregirlo antes de enviar.">i</span></h2>
+      <h2>comando<span class="help" data-tip="Escribe una orden en español, inglés o euskera, o pulsa uno de los atajos. Se ejecuta cuando el robot acaba lo que tiene en marcha. La voz se graba aquí y el texto cae en la casilla, para corregirlo antes de enviar.">i</span></h2>
       <div class="body">
         <div class="row">
           <input id="cmd" placeholder="pon el cubo rojo en la caja roja" style="flex:1">
           <button class="primary" id="send">enviar</button>
           <button class="mic" id="mic" title="grabar y transcribir">&#127897;</button>
         </div>
-        <div class="examples" title="ejemplos: pulsa uno para enviarlo">
+        <div class="examples" id="scene-examples" title="ejemplos: pulsa uno para enviarlo">
           <button data-cmd="separa las piezas por colores">separar colores</button>
           <button data-cmd="pon el cubo rojo en la caja roja">cubo rojo a caja</button>
           <button data-cmd="pon el cubo azul en la caja azul">cubo azul a caja</button>
@@ -482,6 +482,15 @@
         </div>
         <div class="hint" id="mic-note" style="margin-top:4px"></div>
         <div class="hint" id="queued-note" style="margin-top:4px"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>resultado</h2>
+      <div class="body">
+        <div id="result-command" role="status">Todavía no se ha ejecutado una orden.</div>
+        <div id="result-session" class="hint"></div>
+        <a href="/api/report" download="informe-sesion.json">descargar informe de sesión</a>
+        · <a href="/api/runtime-log" download="registro-sesion.log">descargar registro técnico</a>
       </div>
     </div>
     <!-- cámara y lo que ve la percepción, una al lado de la otra, con el mismo alto fijo: nada se
@@ -502,6 +511,7 @@
             </div>
           </div>
           <div class="hint" id="frame-note" style="margin-top:5px"></div>
+          <div class="hint" id="camera-age" role="status"></div>
         </div>
       </div>
       <div class="card">
@@ -539,6 +549,8 @@ const INTENT_ALL = [
 const KIND_ALL = [["ball", "bola"], ["cube", "cubo"], ["any", "pieza"], ["other", "otro"]];
 const COLOR_ALL = ["red", "green", "blue", "yellow", "orange", "white", "black", "purple",
                    "pink"];
+const KIND_ES = {ball:"bola",cube:"cubo",any:"pieza",box:"caja",tray:"bandeja",basket:"cesto"};
+const ACTION_ES = {above:"aproximar",lower:"bajar",close:"cerrar pinza",lift:"elevar",carry:"trasladar",release:"soltar",retreat:"retirar",open:"abrir pinza"};
 const COLOR_ES = { red: "rojo", green: "verde", blue: "azul", yellow: "amarillo",
                    orange: "naranja", white: "blanco", black: "negro", purple: "morado",
                    pink: "rosa" };
@@ -1032,7 +1044,7 @@ function paintClassification(cls) {
   const sure = picked.confidences || {};
   const fieldMarks = (task, value) => (value == null ? null : sure[task]);
   text("cls-overall", picked.confidence != null
-    ? `confianza ${Math.round(Number(picked.confidence) * 100)}%` : "");
+    ? `puntuación del modelo ${Math.round(Number(picked.confidence) * 100)}%` : picked.parser === "rules" ? "reglas completas; sin probabilidad estimada" : "");
   const marks = {
     intent: fieldMarks("intent", picked.intent),
     place_kind: fieldMarks("place_kind", picked.place && picked.place.kind),
@@ -1186,6 +1198,43 @@ function paintPlan(plan) {
   if (plan) paintClassification(window.state && window.state.classification);
 }
 
+const sectionSignatures = {};
+function paintChanged(key, value, painter) {
+  const signature = JSON.stringify(value);
+  if (sectionSignatures[key] === signature) return;
+  painter();
+  sectionSignatures[key] = signature;
+}
+
+function paintResult(state) {
+  const result = state.command_result;
+  text("result-command", result ? `${COMMAND_ES[result.status] || result.status}: ${result.reason}` : "Todavía no se ha ejecutado una orden.");
+  const report = state.report;
+  text("result-session", report ? `Última sesión: ${STATUS_ES[report.state.status] || report.state.status || "terminada"}. ${report.state.verified || 0} colocaciones verificadas.` : "Sin informe de sesión todavía.");
+}
+
+function paintExamples(catalog) {
+  if (!catalog || !el("scene-examples")) return;
+  const box = el("scene-examples"); box.textContent = "";
+  const destinations = catalog.filter(entry => entry.container);
+  const objects = catalog.filter(entry => !entry.container);
+  const commands = [];
+  if (objects.length && objects.every(entry => destinations.some(d => d.color === entry.color)))
+    commands.push(["separar colores", "separa las piezas por colores"]);
+  for (const entry of objects) {
+    const destination = destinations.find(d => d.color === entry.color) || destinations[0];
+    const noun = entry.kind === "ball" ? "bola" : "cubo";
+    const article = entry.kind === "ball" ? "la" : "el";
+    const color = entry.kind === "ball" && entry.color === "red" ? "roja" : COLOR_ES[entry.color];
+    const command = destination ? `pon ${article} ${noun} ${color} en ${destination.name}` : `coge ${article} ${noun} ${color}`;
+    commands.push([`${noun} ${color}`, command]);
+  }
+  for (const [label, command] of commands.slice(0, 8)) {
+    const button = document.createElement("button"); button.textContent = label;
+    button.onclick = () => { el("cmd").value = command; el("send").click(); }; box.appendChild(button);
+  }
+}
+
 function paintSteps(plan) {
   const table = el("exec-steps");
   if (!table) return;
@@ -1199,8 +1248,8 @@ function paintSteps(plan) {
       ? `${step.pose.map(v => (v * 1000).toFixed(0)).join(", ")} mm` : "";
     const now = progress && String(step.action).startsWith(progress)
       ? '<span class="badge ok">ahora</span>' : "";
-    return `<tr><td class="acc">${esc(step.action)}</td>` +
-      `<td>${now}${esc(step.note || "")}</td><td class="pose">${esc(pose)}</td></tr>`;
+    return `<tr><td class="acc">${esc(ACTION_ES[step.action] || step.action)}</td>` +
+      `<td>${now}${esc(step.note && /^#/.test(step.note) ? step.note : "")}</td><td class="pose">${esc(pose)}</td></tr>`;
   });
   table.innerHTML = rows.length
     ? `<tr><th>acción</th><th>detalle</th><th>pose</th></tr>${rows.join("")}`
@@ -1209,6 +1258,10 @@ function paintSteps(plan) {
 
 // ---- paneles de siempre ------------------------------------------------------------
 function paintState(state) {
+  if (state.session_id && state.session_id !== paintedSession) {
+    paintedSession = state.session_id; lastCameraAt = 0;
+    el("frame").hidden = true; el("cam-empty").hidden = false;
+  }
   window.state = state || {};
   try {
     text("phase", PHASE_SHORT[state.phase] || state.phase || "-");
@@ -1217,7 +1270,7 @@ function paintState(state) {
     text("verified", state.verified ?? 0);
     text("recovered", state.recovered ?? 0);
     text("missed", state.missed ?? 0);
-    text("variant-tag", state.variant ? `(${state.variant})` : "");
+    text("variant-tag", state.variant ? `(${({contained:"con límites",open:"abierto",out_of_reach:"fuera de alcance"})[state.variant] || state.variant})` : "");
     text("frame-note", state.frame_note || "");
 
     const gate = el("gate");
@@ -1230,7 +1283,9 @@ function paintState(state) {
       gate.textContent = "cargando el modelo de comandos y el micrófono; el simulador aún no ha empezado.";
     } else if (phase === "starting") {
       gate.className = "gate waiting";
-      gate.textContent = "Isaac está arrancando; tarda unos dos minutos la primera vez.";
+      gate.textContent = "Isaac está arrancando; puedes consultar el registro de la sesión.";
+    } else if (phase === "stopped" || phase === "stopping" || phase === "done") {
+      gate.className = "gate waiting"; gate.textContent = phase === "stopping" ? "Deteniendo el entorno…" : "El entorno ha terminado; puedes iniciar una nueva sesión.";
     } else if (phase === "failed") {
       gate.className = "gate fail";
       gate.textContent = "el entorno no ha arrancado: " + (state.error || "motivo desconocido") +
@@ -1244,12 +1299,14 @@ function paintState(state) {
   // Las tarjetas vivas se pintan SIEMPRE: sin comando aún, la clasificación enseña todo el
   // espacio de opciones sin nada elegido, y el plan su hueco. Si solo se pintaran al llegar
   // datos, el panel se vería vacío el primer minuto y eso es exactamente lo que parece roto.
-  try { paintCommand(state); } catch (error) { console.error("comando:", error); }
-  try { paintClassification(state.classification); } catch (error) { console.error("clasificación:", error); }
-  try { paintPlan(state.plan); } catch (error) { console.error("plan:", error); }
+  try { paintChanged("command", [state.command,state.command_src], () => paintCommand(state)); } catch (error) { console.error("comando:", error); }
+  try { paintChanged("classification", state.classification, () => paintClassification(state.classification)); } catch (error) { console.error("clasificación:", error); }
+  try { paintChanged("plan", [state.plan,state.tasks,state.progress], () => paintPlan(state.plan)); } catch (error) { console.error("plan:", error); }
+  try { paintChanged("result", [state.command_result,state.report], () => paintResult(state)); paintChanged("examples",state.catalog,()=>paintExamples(state.catalog)); }
+  catch(error) { console.error("resultado:",error); }
   try { if (state.findings !== undefined && el("findings")) paintFindings(state.findings); }
   catch (error) { console.error("pre-vuelo:", error); }
-  try { if (state.detections !== undefined) paintDetections(state.detections); }
+  try { if (state.detections !== undefined) paintChanged("detections",state.detections,()=>paintDetections(state.detections)); }
   catch (error) { console.error("percepción:", error); }
 }
 
@@ -1263,7 +1320,7 @@ function paintDetections(list) {
     const where = t.pos ? `${(t.pos[0] * 1000).toFixed(0)}, ${(t.pos[1] * 1000).toFixed(0)} mm`
                         : "sin posici\u00f3n";
     const color = t.color ? `<span class="swatch" style="background:${SWATCH[t.color] || "#888"}"></span>` : "";
-    return `<tr><td>${color}${esc(t.kind || "?")} ${esc(t.color || "")}</td>` +
+    return `<tr><td>${color}${esc(KIND_ES[t.kind] || "pieza")} ${esc(COLOR_ES[t.color] || "")}</td>` +
            `<td>${where}</td><td>${esc(t.prim || "sin pieza")}</td></tr>`;
   });
   table.innerHTML = `<tr><th>cosa</th><th>x, y</th><th>pieza</th></tr>${rows.join("")}`;
@@ -1273,7 +1330,7 @@ function paintFindings(list) {
   const box = el("findings");
   if (!list || !list.length) { box.innerHTML = '<span class="hint">sin avisos</span>'; return; }
   box.innerHTML = list.map(([level, message]) =>
-    `<div class="finding ${level}"><span class="lv">${level}</span>${esc(message)}</div>`)
+    `<div class="finding ${level}"><span class="lv">${({fail:"error",warn:"aviso",note:"nota"})[level] || "nota"}</span>${esc(message)}</div>`)
     .join("");
 }
 
@@ -1315,12 +1372,22 @@ function onFrame(jpeg, meta) {
   el("frame").hidden = false;
   el("cam-empty").hidden = true;
   if (meta && meta.note) text("frame-note", meta.note);
+  lastCameraAt = meta && meta.captured_at ? meta.captured_at*1000 : Date.now();
   const now = performance.now();
   frameTimes.push(now);
   while (frameTimes.length && now - frameTimes[0] > 4000) frameTimes.shift();
   text("fps", frameTimes.length > 1
     ? `${(frameTimes.length / ((now - frameTimes[0]) / 1000)).toFixed(1)} fps` : "");
 }
+
+let lastCameraAt = 0;
+let paintedSession = "";
+setInterval(() => {
+  const error = (window.state || {}).camera_error;
+  const age = lastCameraAt ? (Date.now()-lastCameraAt)/1000 : null;
+  text("camera-age", error ? "Error de cámara: "+error : age === null ? "Esperando el primer fotograma." :
+    `Imagen capturada hace ${Math.max(0,age).toFixed(1)} s${age>3 ? " · imagen sin actualizar" : ""}`);
+}, 500);
 
 // ---- transporte --------------------------------------------------------------------
 
@@ -1364,7 +1431,7 @@ const PHASE_ES = {
   setup: "preparando la demo",
   waiting_start: "esperando que pulses iniciar entorno",
   loading: "cargando el modelo de comandos y el micrófono",
-  starting: "Isaac está arrancando (unos dos minutos la primera vez)",
+  starting: "Isaac está arrancando",
   failed: "el entorno no ha arrancado",
   ready: "entorno listo", scene: "colocando la escena", waiting: "esperando una orden",
   command: "ejecutando una orden", sorting: "ordenando las piezas, una a una",
@@ -1377,7 +1444,7 @@ const STATUS_ES = {
 const COMMAND_ES = {
   RECEIVED: "recibido", QUEUED: "en cola", RUNNING: "ejecutando",
   SUCCESS: "hecho", FAILED: "fallido", CANCELLED: "cancelado",
-  NEEDS_CLARIFICATION: "necesita aclaraci?n", PARTIAL_SUCCESS: "completado parcialmente",
+  NEEDS_CLARIFICATION: "necesita aclaración", PARTIAL_SUCCESS: "completado parcialmente",
 };
 
 // Desde que se pulsa "iniciar entorno" hasta que el robot dice que el entorno está en marcha.
@@ -1405,6 +1472,12 @@ function paintStatus(state) {
 }
 
 function paintCommands(commands) {
+  const startResult = (commands || []).filter(c => c.type === "start").pop();
+  if (startResult && startResult.state === "FAILED") {
+    startPending = false; text("start-note", startResult.note || "No se pudo iniciar el entorno.");
+    if (["setup","waiting_start","failed","stopped"].includes((window.state || {}).phase)) el("start").disabled = false;
+    el("start-bar").hidden = true;
+  }
   // La última orden, con su estado real: recibida, en cola, ejecutando, hecha, fallida o cancelada.
   const last = (commands || []).filter(c => c.type !== "start").pop();
   if (!last) return;
@@ -1421,7 +1494,7 @@ function applySnapshot(snap) {
   if (snap.nodes && !Object.keys(nodes).length) {
     safePaint("el diagrama", () => buildFlow(snap.nodes, snap.edges || []));
   }
-  if (snap.nodes) safePaint("la ruta", () => paintNodes(snap.nodes));
+  if (snap.nodes) safePaint("la ruta", () => paintChanged("nodes",snap.nodes,()=>paintNodes(snap.nodes)));
   if (snap.state) safePaint("el estado", () => paintState(snap.state));
   if (snap.state) safePaint("el estado del robot", () => paintStatus(snap.state));
   if (snap.commands) safePaint("las órdenes", () => paintCommands(snap.commands));
@@ -1654,7 +1727,7 @@ function sceneSelect(values, selected, change) {
 }
 function sceneRow(entry, container, index) {
   const row=document.createElement("div"); row.className="row fit";
-  const change = (key, value) => { entry[key]=value; delete entry.x; delete entry.y; syncSceneJSON(); };
+  const change = (key, value) => { if(entry.id==="cube")entry.id=sceneIdentifier("pieza_"); entry[key]=value; delete entry.x; delete entry.y; syncSceneJSON(); };
   if (container) {
     const name=document.createElement("input"); name.value=entry.name; name.setAttribute("aria-label", "Nombre del recipiente");
     name.onchange=()=>{entry.name=name.value; syncSceneJSON();}; row.appendChild(name);
