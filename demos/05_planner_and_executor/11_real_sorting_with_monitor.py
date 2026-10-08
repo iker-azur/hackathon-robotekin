@@ -74,6 +74,7 @@ import executor as executor_module  # noqa: E402
 import isaac_io  # noqa: E402
 import pen as pen_module  # noqa: E402
 import planner  # noqa: E402
+import perceive  # noqa: E402
 import real_world  # noqa: E402
 import scene_spec  # noqa: E402
 import telemetry  # noqa: E402
@@ -834,7 +835,7 @@ class ModelSpy:
         self._bus.set_state(classification={
             "intent": command.get("intent"),
             "items": [{"kind": item.get("kind"), "color": item.get("color"),
-                       "count": item.get("count"), "place": item.get("place")}
+                       "count": item.get("quantity", item.get("count")), "place": item.get("place")}
                       for item in command.get("items", [])],
             "place": command.get("place"),
             "sort_by": command.get("sort_by"),
@@ -842,7 +843,10 @@ class ModelSpy:
             # was unsure of instead of only reporting the weakest of them as a single number.
             "confidences": command.get("confidences") or {},
             "confidence": command.get("confidence"),
+            "parser": command.get("parser", "model"),
+            "errors": command.get("errors", []),
         })
+        self._bus.set_metric("parse_ms", command.get("parse_ms"))
         items = " ".join(str(item.get("kind")) for item in command.get("items", []))
         self._bus.node("understand", telemetry.OK,
                        f"{command.get('intent')} [{items.strip() or 'sin piezas'}]")
@@ -1080,6 +1084,11 @@ class MonitoredRobot(load_demo10().Robot):
             self.tracked_xy = {i.prim: (i.x, i.y) for i in self.base}
         self.catalog = scene_config.catalog(getattr(args, "scene_data", scene_config.default_config()), self.base)
         self._initial_layout = list(self.base)
+        self._placed_slots = {}
+        self._task_slots = {}
+        self._rejected_commands = 0
+        from frame_encoder import FrameEncoder
+        self.frame_encoder = FrameEncoder(bus, self._camera_error)
         # Its own out/ folder: these frames are annotated for the dashboard and saved on
         # request, and mixing them into demo 10's would make either run's folder a mixture.
         self.writer = viewer_module.FrameWriter(
@@ -1401,7 +1410,26 @@ class MonitoredRobot(load_demo10().Robot):
         """
         self.bus.node("capture", telemetry.ACTIVE, caption or "frame")
         began = time.perf_counter()
-        seen = super().look(caption)
+        image, depth, camera = isaac_io.capture(self.env, self.sensor)
+        self._last_capture = (image, depth, camera)
+        self.bus.set_metric("capture_ms", round((time.perf_counter() - began) * 1000, 1))
+        self._latest_rgb = (time.monotonic(), image)
+        if self.mask_arm:
+            image = self._mask(image, camera)
+        perceived = time.perf_counter()
+        seen = perceive.perceive(image, source=self.label, camera=camera,
+                                frame=isaac_io.robot_frame(self.env), plane_z=scene_spec.TABLE_TOP_Z,
+                                depth=depth, looking_for=self.args.detect, robust=not getattr(self.args, "legacy_perception", False))
+        self.bus.set_metric("segmentation_ms", round((time.perf_counter() - perceived) * 1000, 1))
+        self.scene, self.last_image = seen, image
+        annotation = time.perf_counter()
+        self.shown = image if self.args.raw else perceive.annotate(image, seen, "Percepción de la mesa", lang="es")
+        self.bus.set_metric("annotation_ms", round((time.perf_counter() - annotation) * 1000, 1))
+        self.writer.offer(self.shown)
+        if self.viewer is not None:
+            self.viewer.show(self.shown, caption)
+        self.frames += 1
+        self.bus.node("capture", telemetry.OK, "Fotograma capturado")
         self.bus.set_metric("perception_ms", round((time.perf_counter() - began) * 1000, 1))
         # Corta a propósito: la caja de percepción es pequeña. El motivo va en la caja de cámara.
         note = f"{len(seen.objects)} objetos, {len(seen.containers)} cestas"
@@ -1428,6 +1456,10 @@ class MonitoredRobot(load_demo10().Robot):
 
     def _publish_frame(self, note: str) -> None:
         if self.shown is None:
+            return
+        if getattr(self, "frame_encoder", None):
+            self.frame_encoder.offer(self.shown, {"note": note, "annotated": True,
+                                                "captured_at": time.time()}, FRAME_JPEG_QUALITY)
             return
         try:
             import cv2
@@ -1477,7 +1509,18 @@ class MonitoredRobot(load_demo10().Robot):
         try:
             import cv2
 
-            image, _camera = isaac_io.capture_rgb(self.env, self.sensor)
+            latest = getattr(self, "_latest_rgb", None)
+            if latest and now - latest[0] < 1.0 / self.cam_fps:
+                image = latest[1]
+                self.bus.add_to_metric("camera_reused_frames", 1)
+            else:
+                capture_started = time.perf_counter()
+                image, _camera = isaac_io.capture_rgb(self.env, self.sensor)
+                self.bus.set_metric("live_capture_ms", round((time.perf_counter() - capture_started) * 1000, 1))
+            if getattr(self, "frame_encoder", None):
+                self.frame_encoder.offer(image, {"note": "en vivo", "annotated": False,
+                                                 "captured_at": time.time()}, FRAME_PUMP_QUALITY, FRAME_PUMP_WIDTH)
+                return
             height, width = image.shape[:2]
             small = cv2.resize(image, (FRAME_PUMP_WIDTH,
                                        max(1, int(FRAME_PUMP_WIDTH * height / width))))
@@ -1493,7 +1536,24 @@ class MonitoredRobot(load_demo10().Robot):
             self._camera_error(str(exc))
 
     def link(self, seen):
-        mapping = super().link(seen)
+        from scipy.optimize import linear_sum_assignment
+        things = [t for t in seen.everything if t.pos_m is not None]
+        items = list(self.layout)
+        costs = np.full((len(things), len(items)), 1e6)
+        for row, thing in enumerate(things):
+            for column, item in enumerate(items):
+                if thing.color != item.color or (thing in seen.containers) != item.container:
+                    continue
+                last = self.tracked_xy.get(item.prim, (item.x, item.y))
+                gap = math.dist(thing.aim_xy or thing.pos_m[:2], last)
+                if gap <= self.demo10.LINK_TOLERANCE_M:
+                    costs[row, column] = gap
+        mapping = {}
+        if things and items:
+            rows, columns = linear_sum_assignment(costs)
+            for row, column in zip(rows, columns):
+                if costs[row, column] < 1e6:
+                    mapping[things[row].id] = items[column].prim
         by_name = {i.prim: i for i in self.layout}
         names = {entry["id"]: entry["name"] for entry in self.catalog}
         for thing in seen.everything:
@@ -1502,11 +1562,38 @@ class MonitoredRobot(load_demo10().Robot):
                 thing.entity_id = item.prim
                 thing.display_name = names.get(item.prim, item.prim)
                 thing.size_m = list(item.size)
+                if (item.container or thing.kind in ("ball", "cube")) and seen.camera and not getattr(self.args, "legacy_perception", False):
+                    from scene import CameraModel
+                    point = CameraModel.from_dict(seen.camera).on_plane(*thing.centroid_px, scene_spec.TABLE_TOP_Z + item.height / 2)
+                    if point:
+                        thing.aim_xy = point[:2]
+                self.tracked_xy[item.prim] = tuple(thing.aim_xy or scene_spec.aim_point(thing.pos_m, container=item.container))
                 if item.container:
                     thing.cavity_m = list(item.inner)
         self.bus.node("link", telemetry.OK if mapping else telemetry.WARN,
                       f"{len(mapping)}/{len(seen.everything)} blob(s) matched a part")
         return mapping
+
+    def locate(self, prim, last_xy=None, kind_hint=None):
+        item = next((i for i in self.layout if i.prim == prim), None)
+        if item is None:
+            self.locate_note = "La pieza no pertenece a la escena activa."
+            return None
+        seen = self.look("Siguiendo la pieza")
+        candidates = [t for t in seen.objects if t.color == item.color
+                      and (kind_hint == "any" or t.kind in ("any", kind_hint or item.kind))]
+        nearest = self._nearest(candidates, last_xy)
+        if not nearest:
+            self.locate_note = "La pieza está oculta o no se identifica con seguridad."
+            return None
+        nearest.sort(key=lambda pair: pair[0])
+        if len(nearest) > 1 and abs(nearest[0][0] - nearest[1][0]) < .005:
+            self.locate_note = "Dos piezas coinciden con la referencia; seguimiento ambiguo."
+            return None
+        best = nearest[0][1]
+        self.locate_note = ""
+        self.tracked_xy[prim] = tuple(best.aim_xy or scene_spec.aim_point(best.pos_m))
+        return self.tracked_xy[prim]
 
     # -- planning and motion ---------------------------------------------------
 
@@ -1562,6 +1649,17 @@ class MonitoredRobot(load_demo10().Robot):
             self._first_motion = True
             self.bus.set_metric("command_to_task_motion_ms", round(
                 (time.perf_counter() - self._command_began) * 1000, 1))
+        plan = copy.deepcopy(plan)
+        index = -1
+        for number, step in enumerate(plan.steps):
+            if step.action == "above":
+                index += 1
+            if step.action in ("carry", "lower", "release", "retreat") and 0 <= index < len(plan.tasks) and step.pose:
+                prim = premise.get(plan.tasks[index].pick)
+                allocation = getattr(self, "_task_slots", {}).get(prim)
+                if allocation:
+                    dx, dy = allocation[1]
+                    plan.steps[number] = replace(step, pose=(step.pose[0]+dx, step.pose[1]+dy, step.pose[2]))
         plan = self._release_adjusted(plan)
         self._publish_plan(plan, note="", increment=False)
         # The whole job, before the per-object re-plans start: this is the plan the person asked
@@ -1739,9 +1837,6 @@ class MonitoredRobot(load_demo10().Robot):
         text = (text or "").strip()
         if not text:
             return True
-        if text.lower() in self.demo10.QUIT_WORDS:
-            self.quit = True
-            return False
         # A new command is a new chance for parts that failed last time: the park sweep moves
         # things down between commands, and a part lying flat is a part the jaws can hold.
         self.bot.impossible.clear()
@@ -1765,6 +1860,10 @@ class MonitoredRobot(load_demo10().Robot):
         self._first_motion = False
         outcome, reason = telemetry.FAILED, "La orden no se ha completado."
         try:
+            if text.lower() in self.demo10.QUIT_WORDS:
+                self.quit = True
+                outcome, reason = telemetry.CANCELLED, "Parada solicitada."
+                return False
             command = self.model.parse(text)
             if command.get("intent") in ("stop", "cancel"):
                 self.bus.request_stop()
@@ -1775,7 +1874,11 @@ class MonitoredRobot(load_demo10().Robot):
                 outcome, reason = telemetry.NEEDS_CLARIFICATION, "; ".join(command["errors"])
                 return True
             if command.get("intent") in planner.NO_MOTION:
-                outcome, reason = telemetry.SUCCESS, "Orden atendida sin movimiento."
+                reason = (describe.answer(self.scene, command, lang="es") if command["intent"] == "question"
+                          else "Hola. Puedes pedir que mueva cubos y bolas a los recipientes." if command["intent"] == "greeting"
+                          else "La orden no requiere movimiento." if command["intent"] in {"answer_yes", "answer_no", "answer_value"}
+                          else "No puedo realizar esa orden. Usa las piezas y recipientes de la escena.")
+                outcome = telemetry.NEEDS_CLARIFICATION if command["intent"] in {"not_doable", "off_topic"} else telemetry.SUCCESS
                 self.bus.set_state(reply=reason)
                 return True
             # Observe without moving first. Unresolved orders must not park the arm.
@@ -1789,6 +1892,15 @@ class MonitoredRobot(load_demo10().Robot):
             if any(pick not in premise for pick in plan.picks) or any(
                     place not in premise for place in plan.places):
                 outcome, reason = telemetry.NEEDS_CLARIFICATION, "No puedo identificar todas las piezas y sus destinos."
+                return True
+            if command.get("intent") == "pick" and len(plan.picks) > 1:
+                outcome, reason = telemetry.NEEDS_CLARIFICATION, "La pinza solo puede sostener una pieza. Indica una pieza o un recipiente."
+                return True
+            import capacity
+            try:
+                self._task_slots = capacity.allocate(plan.tasks, premise, self.layout, self._placed_slots)
+            except ValueError as exc:
+                outcome, reason = telemetry.NEEDS_CLARIFICATION, str(exc)
                 return True
             self._note_tasks(plan, premise)
             if len(plan.picks) > 1:
@@ -1822,6 +1934,13 @@ class MonitoredRobot(load_demo10().Robot):
             reason = f"{done}/{len(rows)} tareas verificadas."
             if self.bus.stop_requested():
                 outcome, reason = telemetry.CANCELLED, "Ejecución interrumpida."
+            for task in plan.tasks:
+                key = self._task_key(task, premise)
+                prim = premise.get(task.pick)
+                if self.ledger.verdict(key) == TaskLedger.OK:
+                    self._placed_slots.pop(prim, None)
+                    if prim in self._task_slots:
+                        self._placed_slots[prim] = self._task_slots[prim]
             return not self.bus.stop_requested()
         except Exception as exc:
             reason = f"No se pudo ejecutar la orden: {type(exc).__name__}: {exc}"
@@ -1829,6 +1948,8 @@ class MonitoredRobot(load_demo10().Robot):
             self.bus.node("execute", telemetry.FAIL, reason)
             return True
         finally:
+            if outcome in (telemetry.FAILED, telemetry.NEEDS_CLARIFICATION, telemetry.PARTIAL_SUCCESS):
+                self._rejected_commands = getattr(self, "_rejected_commands", 0) + 1
             self.bus.set_command_state(cid, outcome, reason)
             self.bus.set_state(command_result={"id": cid, "status": outcome, "reason": reason}, reply=reason)
             self.bus.node("report", telemetry.OK if outcome == telemetry.SUCCESS else telemetry.WARN
@@ -2152,6 +2273,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--startup-timeout", type=float, default=300.0,
                         help="maximum session startup time in seconds")
     parser.add_argument("--scene-config", help="versioned scene JSON file")
+    parser.add_argument("--legacy-perception", action="store_true", help="use baseline perception for paired measurements")
+    parser.add_argument("--intent-backend", choices=["hybrid", "model", "rules"], default="hybrid")
     parser.add_argument("--stop-timeout", type=float, default=10.0,
                         help="grace period before terminating a stalled session")
     parser.add_argument("--work-x", type=float, nargs=2, default=list(DEFAULT_WORK_X),
@@ -2240,7 +2363,10 @@ def main(args=None, bus=None) -> int:
     # loading at once did the same thing before that.
     bus.set_state(phase="loading")
     try:
-        model = CommandModel()
+        model = CommandModel() if args.intent_backend != "rules" else None
+        if args.intent_backend != "model":
+            from intent_parser import HybridParser
+            model = HybridParser(model, scene_config.catalog(args.scene_data, args.scene_items))
     except Exception as exc:
         bus.set_state(phase="failed", error=f"No se pudo cargar el modelo: {exc}")
         bus.fail_active(str(exc))
@@ -2357,6 +2483,7 @@ def main(args=None, bus=None) -> int:
 
             robot.park()  # before populate: the park sweep moves whatever is down
             robot.populate(layout)
+            robot._placed_slots.clear()
             robot.round_index = round_index
             robot.label = f"round{round_index}"
             robot.advance = False
@@ -2397,6 +2524,8 @@ def main(args=None, bus=None) -> int:
         # exit code is derived from the same status, so the summary and the process cannot
         # disagree.
         status = robot.ledger.status(aborted=stopped)
+        if robot._rejected_commands and status in ("SUCCESS", "NO_TASKS"):
+            status = "PARTIAL_SUCCESS" if robot.ledger.counts()[0] else "FAILED"
         ok_count, failed_count = robot.ledger.counts()
         robot.say("\n=== resultado ===")
         robot.say(f"  {STATUS_ES[status]}  ({status})")
@@ -2427,6 +2556,9 @@ def main(args=None, bus=None) -> int:
             robot.writer.close()
         return EXIT_CODE[status]
     finally:
+        active_robot = locals().get("robot")
+        if active_robot and getattr(active_robot, "frame_encoder", None):
+            active_robot.frame_encoder.close()
         if viewer is not None:
             viewer.close()
         env.close()

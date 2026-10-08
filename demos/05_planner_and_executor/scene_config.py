@@ -87,7 +87,7 @@ def build(config):
                 cavity = entry.get("cavity_mm", [56, 56])
                 if not isinstance(size, list) or len(size) != 3 or not isinstance(cavity, list) or len(cavity) != 2:
                     raise ValueError("size_mm necesita tres medidas; cavity_mm, dos.")
-                size = tuple(number(x, "Tamaño del recipiente", 10, 250) / 1000 for x in size)
+                size = tuple(number(x, "Tamaño del recipiente", 10, 50 if index == 2 else 250) / 1000 for index, x in enumerate(size))
                 cavity = tuple(number(x, "Cavidad", 1, 240) / 1000 for x in cavity)
                 wall = number(entry.get("wall_mm", 7), "Pared", 1, 20) / 1000
                 floor = number(entry.get("floor_mm", 6), "Suelo", 1, 20) / 1000

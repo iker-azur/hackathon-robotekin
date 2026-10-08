@@ -148,7 +148,7 @@ def grasp_pose(thing: Thing, offset: tuple[float, float] = (0.0, 0.0)) -> tuple[
 
     ``offset`` is on top of that and is a user knob, for anything this bias cannot explain.
     """
-    x, y = scene_spec.aim_point(thing.pos_m)
+    x, y = thing.aim_xy or scene_spec.aim_point(thing.pos_m)
     x, y = x + offset[0], y + offset[1]
     height = thing.size_m[2] if thing.size_m else OBJECT_HEIGHT.get(thing.kind, DEFAULT_HEIGHT)
     return (x, y, scene_spec.TABLE_TOP_Z + height / 2.0)
@@ -171,7 +171,7 @@ def place_pose(thing: Thing) -> tuple[float, float, float]:
     Releasing from just above the rim means the object falls the full depth of the cavity and
     lands on the floor, which is the only place it can rest that counts as "in the tray".
     """
-    x, y = scene_spec.aim_point(thing.pos_m, container=True)
+    x, y = thing.aim_xy or scene_spec.aim_point(thing.pos_m, container=True)
     rim = scene_spec.TABLE_TOP_Z + (thing.size_m[2] if thing.size_m else _TRAY.height)
     return (x, y, rim + RELEASE_CLEARANCE)
 
@@ -260,9 +260,10 @@ def _destinations_for_sort(scene: Scene, sort_by: str, filters: list[dict] | Non
         members = groups[key]
         want_colour = key if sort_by == "color" else None
         want_kind = key if sort_by == "kind" else None
-        match = next((t for t in trays
+        matches = [t for t in trays
                       if (want_colour is None or t.color == want_colour)
-                      and (want_kind is None or t.kind == want_kind)), None)
+                      and (want_kind is None or t.kind == want_kind)]
+        match = matches[0] if len(matches) == 1 else None
         yield key, f"{len(members)} {key}", members, match
 
 
@@ -366,6 +367,20 @@ def _plan_sort_from_scene(plan: Plan, scene: Scene, command: dict, resolved: dic
     sort says so.
     """
     sort_by = command.get("sort_by") or "color"
+    filters = command.get("sort_filter") or command.get("items") or []
+    if filters:
+        chosen = []
+        for selection in filters:
+            entry = ground.ground(scene, {**selection, "quantity": selection.get("quantity", "all")})
+            if not entry.ok:
+                plan.question = entry.question or {"es": "No puedo resolver todas las piezas solicitadas."}
+                plan.reply = plan.question.get("es", "No se puede resolver el filtro.")
+                return plan
+            chosen.extend(entry.targets)
+        # Preserve the camera and coordinate frame while restricting the sort set.
+        import copy
+        scene = copy.copy(scene)
+        scene.objects = list({thing.id: thing for thing in chosen}.values())
     pairs = list(_destinations_for_sort(scene, sort_by,
                                          command.get("sort_filter") or command.get("items")))
     if not pairs:

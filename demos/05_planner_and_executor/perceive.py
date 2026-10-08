@@ -36,7 +36,7 @@ falls back on colour and position instead of trusting a guess.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import cv2
 import numpy as np
@@ -172,12 +172,19 @@ def kind_of(elongation: float, fill: float) -> str:
     return "any"
 
 
-def blobs_of(hsv: np.ndarray, color: colors.Color, opening_px: int) -> list[Blob]:
+def blobs_of(hsv: np.ndarray, color: colors.Color, opening_px: int,
+             robust: bool = False, roi: np.ndarray | None = None) -> list[Blob]:
     """Every blob of one colour, after opening the mask to separate touching objects."""
-    mask = colors.mask_of(hsv, color)
+    spec = replace(color, val_min=max(40, int(color.val_min * .65))) if robust else color
+    mask = colors.mask_of(hsv, spec)
+    if roi is not None:
+        mask &= roi
     if opening_px > 0:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * opening_px + 1,) * 2)
         mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_OPEN, kernel).astype(bool)
+    if robust:
+        mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE,
+                               cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))).astype(bool)
     found: list[Blob] = []
     total, labels, stats, centroids = cv2.connectedComponentsWithStats(
         mask.astype(np.uint8), connectivity=8
@@ -189,8 +196,9 @@ def blobs_of(hsv: np.ndarray, color: colors.Color, opening_px: int) -> list[Blob
         blob_mask = labels == label
         x, y = int(stats[label, cv2.CC_STAT_LEFT]), int(stats[label, cv2.CC_STAT_TOP])
         w, h = int(stats[label, cv2.CC_STAT_WIDTH]), int(stats[label, cv2.CC_STAT_HEIGHT])
-        mean = cv2.mean(hsv, mask=blob_mask.astype(np.uint8))[:3]
-        elongation, fill = shape_of(blob_mask)
+        local = blob_mask[y:y+h, x:x+w]
+        mean = cv2.mean(hsv[y:y+h, x:x+w], mask=local.astype(np.uint8))[:3]
+        elongation, fill = shape_of(local)
         found.append(
             Blob(
                 color=color.name,
@@ -206,6 +214,53 @@ def blobs_of(hsv: np.ndarray, color: colors.Color, opening_px: int) -> list[Blob
     return sorted(found, key=lambda b: -b.area_px)
 
 
+def split_touching(blob: Blob) -> list[Blob]:
+    """Watershed only for an elongated object-sized clump, never for a tray."""
+    if blob.elongation >= .72:
+        return [blob]
+    x, y, w, h = blob.bbox_px
+    mask = blob.mask[y:y+h, x:x+w].astype(np.uint8)
+    padded = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT)
+    distance = cv2.distanceTransform(padded, cv2.DIST_L2, 5)
+    peaks = (distance >= distance.max() * .75).astype(np.uint8)
+    count, markers = cv2.connectedComponents(peaks)
+    if count < 3 or count > 5:
+        return [blob]
+    # Flood the negative distance surface. cv2.watershed uses image gradients,
+    # which does not implement this topography and can swallow one of the peaks.
+    import heapq
+    heap = []
+    serial = 0
+    for yy, xx in zip(*np.nonzero(markers)):
+        heapq.heappush(heap, (-float(distance[yy, xx]), serial, int(yy), int(xx)))
+        serial += 1
+    while heap:
+        _, _, yy, xx = heapq.heappop(heap)
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ny, nx = yy + dy, xx + dx
+            if 0 <= ny < padded.shape[0] and 0 <= nx < padded.shape[1] and padded[ny, nx] and markers[ny, nx] == 0:
+                markers[ny, nx] = markers[yy, xx]
+                heapq.heappush(heap, (-float(distance[ny, nx]), serial, ny, nx))
+                serial += 1
+    results = []
+    for label in range(1, count):
+        local = (markers[1:-1, 1:-1] == label) & (mask > 0)
+        if int(local.sum()) < colors.MIN_AREA_PX:
+            return [blob]
+        ys, xs = np.nonzero(local)
+        full = np.zeros_like(blob.mask)
+        full[y:y+h, x:x+w] = local
+        elongation, fill = shape_of(local)
+        candidate = Blob(blob.color, int(local.sum()), [x+int(xs.min()), y+int(ys.min()),
+                         int(xs.max()-xs.min()+1), int(ys.max()-ys.min()+1)],
+                         [x+float(xs.mean()), y+float(ys.mean())], blob.mean_hsv,
+                         elongation, fill, full)
+        if robust_kind(candidate) == "any":
+            return [blob]
+        results.append(candidate)
+    return results
+
+
 def confidence_of(blob: Blob, distance_to_edge: float) -> float:
     """How much to trust a blob, from its shape purity and its size.
 
@@ -216,7 +271,7 @@ def confidence_of(blob: Blob, distance_to_edge: float) -> float:
     """
     score = 1.0
     purity = min(abs(blob.fill - BALL_FILL), abs(blob.fill - CUBE_FILL)) / 0.05
-    score *= float(np.clip(0.55 + 0.45 * min(1.0, purity), 0.0, 1.0))
+    score *= float(np.clip(0.55 + 0.45 * (1.0 - min(1.0, purity)), 0.0, 1.0))
     if blob.area_px < KIND_MIN_AREA_PX:
         score *= 0.6
     score *= float(np.clip(1.15 - distance_to_edge, 0.0, 1.0))
@@ -226,7 +281,40 @@ def confidence_of(blob: Blob, distance_to_edge: float) -> float:
 def distance_to_edge(centroid: tuple[float, float], width: int, height: int) -> float:
     """How far a centroid is from the frame border, as a fraction of the half-diagonal."""
     half = 0.5 * float(np.hypot(width, height))
-    return min(centroid) / half if half else 0.0
+    return min(centroid[0], centroid[1], width-centroid[0], height-centroid[1]) / half if half else 0.0
+
+
+def robust_kind(blob: Blob) -> str:
+    """Rotated-rectangle occupancy is less sensitive to shaded spherical edges."""
+    x, y, w, h = blob.bbox_px
+    contours, _ = cv2.findContours(blob.mask[y:y+h, x:x+w].astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return "any"
+    contour = max(contours, key=cv2.contourArea)
+    _, (rw, rh), _ = cv2.minAreaRect(contour)
+    extent = cv2.contourArea(contour) / max(1.0, rw * rh)
+    if blob.elongation < .72:
+        return "any"
+    if extent < .85 and blob.fill > .97 and blob.elongation >= .75:
+        return "ball"
+    if extent > .85 and blob.fill < BALL_FILL:
+        return "cube"
+    return "any"
+
+
+def workspace_roi(camera, plane_z, width, height):
+    import scene_spec
+    pad = .025
+    corners = [(scene_spec.WORK_X[0]-pad, scene_spec.WORK_Y[0]-pad),
+               (scene_spec.WORK_X[1]+pad, scene_spec.WORK_Y[0]-pad),
+               (scene_spec.WORK_X[1]+pad, scene_spec.WORK_Y[1]+pad),
+               (scene_spec.WORK_X[0]-pad, scene_spec.WORK_Y[1]+pad)]
+    pixels = [camera.project([x, y, plane_z]) for x, y in corners]
+    if any(p is None for p in pixels):
+        raise ValueError("La cámara no cubre el área de trabajo.")
+    roi = np.zeros((height, width), np.uint8)
+    cv2.fillConvexPoly(roi, np.rint(pixels).astype(np.int32), 1)
+    return roi.astype(bool)
 
 
 def base_band(camera: CameraModel, blob: Blob, depth: np.ndarray,
@@ -391,6 +479,7 @@ def perceive(
     container_min_area: int = colors.CONTAINER_MIN_AREA_PX,
     detect=None,
     looking_for: list[str] | None = None,
+    robust: bool = False,
 ) -> Scene:
     """One image to one scene.
 
@@ -414,8 +503,11 @@ def perceive(
         frame = Frame.from_image(width, height)
 
     found: list[Blob] = []
+    roi = workspace_roi(camera, plane_z, width, height) if robust and camera is not None and plane_z is not None else None
     for name in colors.colors(looking_for):
-        found.extend(blobs_of(hsv, colors.COLORS[name], opening_px))
+        found.extend(blobs_of(hsv, colors.COLORS[name], 1 if robust else opening_px, robust=robust, roi=roi))
+    if robust:
+        found = [part for blob in found for part in split_touching(blob)]
 
     # Canonical order: biggest first, then left to right. Ids are therefore stable
     # while nothing moves, which is what lets demo 10 say "object #3" and mean it.
@@ -439,7 +531,7 @@ def perceive(
         if container:
             kind = "box" if aspect <= BOX_ASPECT else "any"
         else:
-            kind = kind_of(blob.elongation, blob.fill)
+            kind = robust_kind(blob) if robust else kind_of(blob.elongation, blob.fill)
         thing = Thing(
             id=index,
             kind=kind,
@@ -469,6 +561,17 @@ def perceive(
             thing.base_centre_m = centre
             thing.inner_rect_m = inner_rect(thing, pixels_per_m, footprint)
             thing.hollow = True
+            if robust and camera is not None and plane_z is not None:
+                # A partial floor band can bias the median towards one wall. Use
+                # the projected silhouette at mid-height instead; Demo 11 supplies
+                # each matched container's declared height rather than this default.
+                target = camera.on_plane(*blob.centroid_px, plane_z + .025)
+                if target:
+                    thing.aim_xy = target[:2]
+        elif robust and camera is not None and plane_z is not None and kind in ("ball", "cube"):
+            target = camera.on_plane(*blob.centroid_px, plane_z + .015)
+            if target:
+                thing.aim_xy = target[:2]
         things.append(thing)
         is_container_flags.append(container)
 
@@ -577,7 +680,7 @@ def annotate_truth(image_bgr: np.ndarray, scene: Scene, items, both_conventions:
     return canvas
 
 
-def annotate(image_bgr: np.ndarray, scene: Scene, title: str = "") -> np.ndarray:
+def annotate(image_bgr: np.ndarray, scene: Scene, title: str = "", lang: str | None = None) -> np.ndarray:
     """A copy of the image with every detection drawn on it, for the evidence PNGs."""
     canvas = image_bgr.copy()
     for thing in scene.everything:
@@ -587,9 +690,14 @@ def annotate(image_bgr: np.ndarray, scene: Scene, title: str = "") -> np.ndarray
         cu, cv_ = int(round(thing.centroid_px[0])), int(round(thing.centroid_px[1]))
         cv2.drawMarker(canvas, (cu, cv_), tint, cv2.MARKER_CROSS, 12, 2)
         label = f"#{thing.id} {thing.kind} {thing.color} {thing.confidence:.2f}"
+        if lang:
+            import describe
+            import unicodedata
+            label = f"#{thing.id} {describe.phrase(thing.kind, thing.color, 1, lang, bare=True)} {thing.confidence:.2f}"
+            label = unicodedata.normalize("NFKD", label).encode("ascii", "ignore").decode("ascii")
         cv2.putText(canvas, label, (x, max(14, y - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, tint, 1, cv2.LINE_AA)
     if scene.ground_px_per_m:
-        footer = f"{scene.ground_px_per_m:.0f} px/m on the table"
+        footer = f"{scene.ground_px_per_m:.0f} px/m " + ("sobre la mesa" if lang == "es" else "on the table")
         cv2.putText(canvas, footer, (8, canvas.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
     if title:
         cv2.putText(canvas, title, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)

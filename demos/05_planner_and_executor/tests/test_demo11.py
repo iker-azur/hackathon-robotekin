@@ -2179,6 +2179,74 @@ def test_scene_configuration_is_validated_and_reproducible():
         else: check(False, "invalid object was accepted")
 
 
+
+def test_hybrid_parser_keeps_counts_destinations_and_unknown_references():
+    from intent_parser import HybridParser
+    import scene_config
+    cfg,items=scene_config.load(); parser=HybridParser(catalog=scene_config.catalog(cfg,items))
+    for text in ["pon dos bolas rojas en la caja azul", "put two red balls in the blue box", "hartu bi bola gorri eta sartu kutxa urdinean"]:
+        result=parser.parse(text)
+        check(result["intent"]=="pick_and_place" and result["items"][0]["quantity"]==2 and result["place"]["color"]=="blue", "three languages preserve count and destination")
+        check(not result.get("errors"), "complete supported sentence is accepted")
+    name=cfg["containers"][0]["name"]
+    check(parser.parse("pon la bola roja en "+name)["place"].get("entity_id")==cfg["containers"][0]["id"], "catalog names resolve to stable identities")
+    for text in ["pon la bola magenta en la caja roja", "pon la bola roja en la caja inventada", "no cojas la bola roja", "coge la bola redwood"]:
+        check(bool(parser.parse(text).get("errors")), "unknown references or negation require clarification")
+    check(parser.parse("para")["intent"]=="stop", "stop uses the immediate rule path")
+
+
+def test_robust_perception_handles_brightness_and_touching_balls():
+    import cv2
+    import numpy as np
+    import perceive
+    image=np.zeros((150,200,3),dtype=np.uint8)
+    cv2.circle(image,(65,75),19,(0,0,180),-1)
+    cv2.circle(image,(99,75),19,(0,0,180),-1)
+    result=perceive.perceive(image,looking_for=["red"],robust=True)
+    check(len(result.objects)==2, "watershed separates a pair of touching balls")
+    check(all(o.kind=="ball" for o in result.objects), "separated objects retain their kind")
+    image=np.zeros((150,200,3),dtype=np.uint8);cv2.circle(image,(80,75),19,(0,0,115),-1)
+    result=perceive.perceive(image,looking_for=["red"],robust=True)
+    check(len(result.objects)==1 and result.objects[0].kind=="ball", "a shaded red ball stays detectable")
+
+
+def test_capacity_reserves_slots_and_refuses_overfill():
+    import capacity
+    import scene_config
+    from types import SimpleNamespace
+    cfg, items = scene_config.load()
+    tasks = [SimpleNamespace(pick=1, place=3), SimpleNamespace(pick=2, place=3)]
+    premise = {1: "cube", 2: "ball_red", 3: "box_red"}
+    check(len(capacity.allocate(tasks[:1], premise, items)) == 1, "one part fits the default cavity")
+    try:
+        capacity.allocate(tasks, premise, items)
+    except ValueError:
+        check(True, "two parts are refused before motion when the cavity is full")
+    else:
+        check(False, "overfilled cavity was accepted")
+    tray = next(i for i in items if i.prim == "box_red")
+    tray.inner = (.12, .08)
+    slots = capacity.allocate(tasks, premise, items)
+    check(slots["cube"][1] != slots["ball_red"][1], "larger cavities reserve distinct placements")
+    try:
+        capacity.allocate(tasks[1:], premise, scene_config.load()[1], {"cube": ("box_red", (0, 0))})
+    except ValueError:
+        check(True, "previous verified placements reserve space across commands")
+    else:
+        check(False, "occupied cavity was reused")
+
+
+def test_frame_encoder_publishes_and_closes():
+    import numpy as np
+    from frame_encoder import FrameEncoder
+    bus = telemetry.Bus(); errors = []
+    encoder = FrameEncoder(bus, errors.append)
+    encoder.offer(np.zeros((40, 60, 3), dtype=np.uint8), {"captured_at": 1}, 75)
+    encoder.close()
+    check(bus.frame()[1] is not None and bus.frame()[2]["captured_at"] == 1, "encoder drains the latest frame at shutdown")
+    check(not errors and not encoder.thread.is_alive(), "encoder worker closes cleanly")
+
+
 def main() -> int:
     # Demo 11 is imported once, here, before any test runs. Three tests need its classes, and each
     # one that went through `load_demo11` first would otherwise import it again - ~500 ms, almost
