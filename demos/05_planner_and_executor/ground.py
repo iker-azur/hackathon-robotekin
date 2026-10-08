@@ -331,6 +331,12 @@ def ground(scene: Scene, item: dict) -> Grounding:
             else "its position was not measured")
 
     matches = reachable
+    if quantity == "all":
+        if unreachable:
+            return Grounding(status="not_reachable", question={"es": "Hay piezas solicitadas fuera de alcance."})
+        return Grounding(status="ok", targets=scene.rank(matches, position), candidates=matches)
+    if type(quantity) is int and (quantity < 1 or quantity > len(matches)):
+        return Grounding(status="not_found", question={"es": f"Pides {quantity} piezas, pero solo identifico {len(matches)} alcanzables."})
 
     ranked = scene.rank(matches, position)
 
@@ -339,7 +345,7 @@ def ground(scene: Scene, item: dict) -> Grounding:
             return Grounding(status="ambiguous", candidates=matches,
                              question=ambiguous_question(scene, matches, color),
                              note=f"{position!r} does not tell these {len(matches)} apart")
-        return Grounding(status="ok_filtered", targets=ranked[:1], candidates=matches)
+        return Grounding(status="ok_filtered", targets=ranked[:quantity if type(quantity) is int else 1], candidates=matches)
 
     if isinstance(quantity, int) and 1 < quantity <= len(matches):
         # "coge dos bolas rojas" with three on the table: the word named a count, so take
@@ -367,6 +373,15 @@ def ground_place(scene: Scene, place: dict | None) -> Grounding:
     if not place:
         return Grounding(status="no_place")
     kind, color = place.get("kind"), place.get("color")
+    if place.get("entity_id"):
+        matches = [c for c in scene.containers if c.entity_id == place["entity_id"]
+                   and (not color or c.color == color)]
+        if len(matches) != 1:
+            return Grounding(status="no_place", question={"es": "No identifico el recipiente solicitado."})
+        tray = matches[0]
+        if not tray.pos_m or scene_spec.why_unreachable(*tray.pos_m[:2]):
+            return Grounding(status="no_place", question={"es": "El recipiente solicitado no es alcanzable."})
+        return Grounding(status="ok", place=tray)
     by_kind = scene.container(kind, color) if color else []
     if not by_kind and not color:
         by_kind = scene.container(kind, None)

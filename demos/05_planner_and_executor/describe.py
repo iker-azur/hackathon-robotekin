@@ -49,6 +49,7 @@ COLORS: dict[str, dict[str, tuple]] = {
     "yellow": {"es": ("amarillo", "amarilla", "amarillos", "amarillas"), "en": ("yellow",), "eu": ("hori", "horia")},
     "white": {"es": ("blanco", "blanca", "blancos", "blancas"), "en": ("white",), "eu": ("zuri", "zuria")},
     "black": {"es": ("negro", "negra", "negros", "negras"), "en": ("black",), "eu": ("beltz", "beltza")},
+    "purple": {"es": ("morado", "morada", "morados", "moradas"), "en": ("purple",), "eu": ("more", "morea")},
 }
 
 NUMBERS = {

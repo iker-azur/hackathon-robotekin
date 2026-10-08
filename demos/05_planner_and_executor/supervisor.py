@@ -133,6 +133,14 @@ class Supervisor:
         self.result = None
         self.stop_at = None
         self.bus.set_state(phase="waiting_start", sim="stopped", report=None)
+        import scene_config
+        saved = HERE / "out11" / "scene_config.json"
+        try:
+            config, items = scene_config.load(getattr(args, "scene_config", None) or (saved if saved.exists() else None))
+            self.bus.set_state(scene_config=config, catalog=scene_config.catalog(config, items),
+                               available_colors=list(scene_config.AVAILABLE_COLORS))
+        except (ValueError, OSError) as exc:
+            self.bus.set_state(error=f"No se pudo leer la escena: {exc}", phase="failed")
 
     def start(self, control):
         cid = control["id"]
@@ -140,6 +148,14 @@ class Supervisor:
             self.bus.set_command_state(cid, telemetry.FAILED, "Ya hay una sesión activa.")
             return
         arguments = vars(self.args).copy()
+        import scene_config
+        try:
+            config = control["params"].get("scene_config") or self.bus.snapshot()["state"].get("scene_config")
+            config, items = scene_config.build(config)
+        except (ValueError, TypeError) as exc:
+            self.bus.set_command_state(cid, telemetry.FAILED, f"Escena no válida: {exc}")
+            return
+        arguments["scene_data"] = config
         for key in ("variant", "camera", "rounds", "seed"):
             if key in control["params"]:
                 arguments[key] = control["params"][key]
@@ -165,6 +181,8 @@ class Supervisor:
         self.started_at = time.monotonic()
         self.bus.prepare_session(self.session_id)
         self.bus.set_state(phase="loading", error="", status="", session_id=self.session_id,
+                           scene_config=config, catalog=scene_config.catalog(config, items),
+                           available_colors=list(scene_config.AVAILABLE_COLORS),
                            runtime_log=str(self.log_path), **{k: arguments[k] for k in ("variant", "camera", "rounds", "seed")})
         self.child = self.context.Process(target=self.target, args=(arguments, self.inbox, self.updates,
                                          self.snapshots, self.stopping, str(self.report_path), str(self.log_path)))

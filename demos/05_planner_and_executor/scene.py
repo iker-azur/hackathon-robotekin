@@ -272,6 +272,10 @@ class Thing:
     hollow: bool | None = None
     footprint_m: list[float] | None = None
     base_centre_m: list[float] | None = None
+    entity_id: str | None = None
+    display_name: str | None = None
+    size_m: list[float] | None = None
+    cavity_m: list[float] | None = None
 
     def anchor(self, width: int, height: int) -> np.ndarray:
         """A 2D position in the scene's space: metres if known, else the pixel."""
@@ -296,7 +300,7 @@ class Thing:
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        for optional in ("inner_rect_m", "track_id", "pos_m", "pos_m_depth", "elongation", "fill", "hollow", "footprint_m", "base_centre_m"):
+        for optional in ("inner_rect_m", "track_id", "pos_m", "pos_m_depth", "elongation", "fill", "hollow", "footprint_m", "base_centre_m", "entity_id", "display_name", "size_m", "cavity_m"):
             if getattr(self, optional) is None:
                 del data[optional]
         return data
@@ -304,7 +308,7 @@ class Thing:
     @classmethod
     def from_dict(cls, data: dict) -> Thing:
         data = dict(data)
-        for optional in ("inner_rect_m", "track_id", "pos_m", "pos_m_depth", "elongation", "fill", "hollow", "footprint_m", "base_centre_m"):
+        for optional in ("inner_rect_m", "track_id", "pos_m", "pos_m_depth", "elongation", "fill", "hollow", "footprint_m", "base_centre_m", "entity_id", "display_name", "size_m", "cavity_m"):
             data.setdefault(optional, None)
         return cls(**data)
 

@@ -233,6 +233,27 @@ def test_missing_destination_color_never_chooses_another_box():
           "a missing green box must never select the red box")
 
 
+
+def test_quantity_is_not_silently_reduced_and_clear_keeps_its_filter():
+    import ground
+    s=scene()
+    result=ground.ground(s,item("ball","red",quantity=2))
+    check(not result.ok, "asking for two red balls cannot select the only one")
+    result=ground.ground(s,item("ball",None,quantity="all"))
+    check(result.ok and len(result.targets)==len([o for o in s.objects if o.kind=="ball"]), "all means all matching balls")
+    plan=planner.plan_command(command("clear",[item("cube","purple")],{"kind":"box","color":"red"}),s)
+    check(not plan.moves and bool(plan.question), "missing clear filter must not clear everything")
+
+
+def test_named_container_and_declared_geometry():
+    import ground
+    s=scene(); tray=s.containers[0];tray.entity_id="bin_a";tray.size_m=[.07,.07,.03]
+    result=ground.ground_place(s,{"entity_id":"bin_a","kind":"box","color":tray.color})
+    check(result.ok and result.place is tray, "named container resolves by identity")
+    check(abs(planner.place_pose(tray)[2]-(scene_spec.TABLE_TOP_Z+.03+planner.RELEASE_CLEARANCE))<1e-9,
+          "release follows the configured container height")
+
+
 def main() -> int:
     for name, function in sorted(globals().items()):
         if name.startswith("test_") and callable(function):

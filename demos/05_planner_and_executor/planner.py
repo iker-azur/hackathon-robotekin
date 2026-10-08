@@ -150,7 +150,7 @@ def grasp_pose(thing: Thing, offset: tuple[float, float] = (0.0, 0.0)) -> tuple[
     """
     x, y = scene_spec.aim_point(thing.pos_m)
     x, y = x + offset[0], y + offset[1]
-    height = OBJECT_HEIGHT.get(thing.kind, DEFAULT_HEIGHT)
+    height = thing.size_m[2] if thing.size_m else OBJECT_HEIGHT.get(thing.kind, DEFAULT_HEIGHT)
     return (x, y, scene_spec.TABLE_TOP_Z + height / 2.0)
 
 
@@ -172,7 +172,7 @@ def place_pose(thing: Thing) -> tuple[float, float, float]:
     lands on the floor, which is the only place it can rest that counts as "in the tray".
     """
     x, y = scene_spec.aim_point(thing.pos_m, container=True)
-    rim = scene_spec.TABLE_TOP_Z + _TRAY.height
+    rim = scene_spec.TABLE_TOP_Z + (thing.size_m[2] if thing.size_m else _TRAY.height)
     return (x, y, rim + RELEASE_CLEARANCE)
 
 
@@ -398,6 +398,11 @@ def _plan_clear(plan: Plan, scene: Scene, resolved: dict, offset) -> Plan:
         return plan
     tray = place.place
 
+    missing = [entry for entry in resolved["items"] if not entry.ok]
+    if missing:
+        plan.reply = "No se puede resolver el filtro solicitado."
+        plan.question = missing[0].question or {"es": plan.reply}
+        return plan
     named = [entry for entry in resolved["items"] if entry.ok]
     if named:
         things = [t for entry in named for t in entry.targets]

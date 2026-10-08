@@ -422,6 +422,20 @@
           <div class="start-bar" id="start-bar" hidden><div class="start-bar-fill"></div></div>
           <div class="hint" id="start-note"></div>
         </div>
+        <details id="scene-editor" style="margin-top:8px">
+          <summary>Personalizar piezas y recipientes</summary>
+          <p class="hint">Los cambios se aplican a la siguiente sesión. Solo se ofrecen colores validados.</p>
+          <div id="scene-objects"></div>
+          <button id="scene-add-object">añadir grupo de piezas</button>
+          <div id="scene-containers"></div>
+          <button id="scene-add-container">añadir recipiente</button>
+          <div class="row"><button id="scene-save">guardar escena</button><button id="scene-simple">escena simple</button></div>
+          <details><summary>Configuración JSON y medidas</summary>
+            <textarea id="scene-json" rows="8" style="width:100%" aria-label="Configuración de escena JSON"></textarea>
+            <button id="scene-import">aplicar JSON</button>
+          </details>
+          <div class="hint" id="scene-message" role="status"></div>
+        </details>
         <div class="row fit" style="margin-top:8px">
           <label class="field"><span>variante</span>
             <select id="variant-sel">
@@ -1626,6 +1640,59 @@ function stopMic() {
 }
 el("mic").onclick = toggleMic;
 
+let sceneConfig = null;
+let availableColors = ["red", "green", "blue"];
+const SCENE_COLOR_ES = {red:"rojo", green:"verde", blue:"azul", yellow:"amarillo", purple:"morado"};
+function sceneSelect(values, selected, change) {
+  const input = document.createElement("select");
+  for (const [value, label] of values) {
+    const option = document.createElement("option"); option.value=value; option.textContent=label;
+    option.selected = value === selected; input.appendChild(option);
+  }
+  input.onchange = () => change(input.value);
+  return input;
+}
+function sceneRow(entry, container, index) {
+  const row=document.createElement("div"); row.className="row fit";
+  const change = (key, value) => { entry[key]=value; delete entry.x; delete entry.y; syncSceneJSON(); };
+  if (container) {
+    const name=document.createElement("input"); name.value=entry.name; name.setAttribute("aria-label", "Nombre del recipiente");
+    name.onchange=()=>{entry.name=name.value; syncSceneJSON();}; row.appendChild(name);
+  } else {
+    row.appendChild(sceneSelect([["cube","cubos"],["ball","bolas"]],entry.kind,v=>change("kind",v)));
+    const count=document.createElement("input"); count.type="number"; count.min=1; count.max=64; count.value=entry.count||1;
+    count.setAttribute("aria-label", "Cantidad de piezas"); count.onchange=()=>change("count",Number(count.value)); row.appendChild(count);
+  }
+  row.appendChild(sceneSelect(availableColors.map(c=>[c,SCENE_COLOR_ES[c]||c]),entry.color,v=>change("color",v)));
+  const remove=document.createElement("button"); remove.textContent="quitar";
+  remove.onclick=()=>{sceneConfig[container?"containers":"objects"].splice(index,1); paintSceneEditor();}; row.appendChild(remove);
+  return row;
+}
+function syncSceneJSON() { if(sceneConfig) el("scene-json").value=JSON.stringify(sceneConfig,null,2); }
+function paintSceneEditor() {
+  if (!sceneConfig) return;
+  for (const [group,id,container] of [["objects","scene-objects",false],["containers","scene-containers",true]]) {
+    const box=el(id); box.textContent=""; sceneConfig[group].forEach((entry,index)=>box.appendChild(sceneRow(entry,container,index)));
+  }
+  syncSceneJSON();
+}
+function sceneIdentifier(prefix) {
+  const used=new Set([...sceneConfig.objects,...sceneConfig.containers].map(e=>e.id)); let index=1;
+  while(used.has(prefix+index)) index++; return prefix+index;
+}
+el("scene-add-object").onclick=()=>{if(!sceneConfig)return;sceneConfig.objects.push({id:sceneIdentifier("pieza_"),kind:"ball",color:"red",count:1,size_mm:30});paintSceneEditor();};
+el("scene-add-container").onclick=()=>{if(!sceneConfig)return;const id=sceneIdentifier("caja_");sceneConfig.containers.push({id,name:"Recipiente "+id,color:"red",aliases:[],size_mm:[70,70,30],cavity_mm:[56,56],wall_mm:7,floor_mm:6});paintSceneEditor();};
+async function saveScene() {
+  const answer=await post("/api/config",sceneConfig);
+  text("scene-message",answer&&answer.ok?"Escena guardada; se aplicará al iniciar.":answer&&answer.error||"No se pudo guardar la escena.");
+  if(answer&&answer.ok){sceneConfig=answer.config;paintSceneEditor();}
+}
+el("scene-save").onclick=saveScene;
+el("scene-import").onclick=()=>{try{sceneConfig=JSON.parse(el("scene-json").value);if(!Array.isArray(sceneConfig.objects)||!Array.isArray(sceneConfig.containers))throw Error("Faltan listas de piezas o recipientes.");paintSceneEditor();saveScene();}catch(error){text("scene-message","JSON no válido: "+error.message);}};
+el("scene-simple").onclick=()=>{
+  sceneConfig={version:1,objects:[{id:"ball_red",kind:"ball",color:"red",count:1,size_mm:30,x:.36,y:-.435},{id:"cube_blue",kind:"cube",color:"blue",count:1,size_mm:30,x:.43,y:-.435}],containers:[{id:"tray_blue",name:"Azul A",color:"blue",x:.32,y:-.5,size_mm:[70,70,30],cavity_mm:[56,56],wall_mm:7,floor_mm:6,aliases:[]},{id:"box_red",name:"Roja A",color:"red",x:.44,y:-.5,size_mm:[70,70,30],cavity_mm:[56,56],wall_mm:7,floor_mm:6,aliases:[]}]};paintSceneEditor();saveScene();
+};
+fetch("/api/config").then(r=>r.json()).then(data=>{sceneConfig=data.config;availableColors=data.available_colors;paintSceneEditor();}).catch(()=>text("scene-message","No se pudo leer la configuración."));
 fetch("/api/state").then(r => r.json()).then(applySnapshot).then(startPolling);
 connect();
 </script>

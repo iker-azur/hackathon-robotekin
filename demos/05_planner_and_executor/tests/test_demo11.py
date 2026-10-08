@@ -2156,6 +2156,29 @@ def test_supervisor_can_stop_keep_the_report_and_start_a_new_process():
             supervisor.terminate()
 
 
+
+def test_scene_configuration_is_validated_and_reproducible():
+    import copy
+    import scene_config
+    config, items = scene_config.load()
+    check(len(items) == len(scene_spec.DEFAULT_SCENE), "default catalog covers the scene")
+    check(scene_config.build(config)[1] == items, "scene generation is deterministic")
+    custom = {"version":1, "objects":[{"id":"balls","kind":"ball","color":"red","count":2}],
+              "containers":[{"id":"left_box","name":"Izquierda","color":"red"},
+                            {"id":"right_box","name":"Derecha","color":"blue"}]}
+    _, custom_items = scene_config.build(custom)
+    check(len(custom_items) == 4, "counts expand into stable physical identities")
+    for bad in [dict(custom, version=2), dict(custom, surprise=True)]:
+        try: scene_config.build(bad)
+        except ValueError: check(True, "invalid scene is refused")
+        else: check(False, "invalid scene was accepted")
+    for field, value in [("color","pink"),("count",0),("count",65),("size_mm",40),("x",float("nan"))]:
+        bad=copy.deepcopy(custom); bad["objects"][0][field]=value
+        try: scene_config.build(bad)
+        except ValueError: check(True, "invalid object is refused")
+        else: check(False, "invalid object was accepted")
+
+
 def main() -> int:
     # Demo 11 is imported once, here, before any test runs. Three tests need its classes, and each
     # one that went through `load_demo11` first would otherwise import it again - ~500 ms, almost

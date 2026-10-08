@@ -77,6 +77,7 @@ import planner  # noqa: E402
 import real_world  # noqa: E402
 import scene_spec  # noqa: E402
 import telemetry  # noqa: E402
+import scene_config  # noqa: E402
 import viewer as viewer_module  # noqa: E402
 from command_model_v2.command_model import CommandModel  # noqa: E402
 
@@ -1073,6 +1074,12 @@ class MonitoredRobot(load_demo10().Robot):
         # The verdict per task for the whole run; the final result is derived from it alone.
         self.ledger = TaskLedger()
         super().__init__(env, sensor, args, viewer=viewer, model=model)
+        if getattr(args, "scene_items", None):
+            self.base = list(args.scene_items)
+            self.layout = list(self.base)
+            self.tracked_xy = {i.prim: (i.x, i.y) for i in self.base}
+        self.catalog = scene_config.catalog(getattr(args, "scene_data", scene_config.default_config()), self.base)
+        self._initial_layout = list(self.base)
         # Its own out/ folder: these frames are annotated for the dashboard and saved on
         # request, and mixing them into demo 10's would make either run's folder a mixture.
         self.writer = viewer_module.FrameWriter(
@@ -1487,6 +1494,16 @@ class MonitoredRobot(load_demo10().Robot):
 
     def link(self, seen):
         mapping = super().link(seen)
+        by_name = {i.prim: i for i in self.layout}
+        names = {entry["id"]: entry["name"] for entry in self.catalog}
+        for thing in seen.everything:
+            item = by_name.get(mapping.get(thing.id))
+            if item:
+                thing.entity_id = item.prim
+                thing.display_name = names.get(item.prim, item.prim)
+                thing.size_m = list(item.size)
+                if item.container:
+                    thing.cavity_m = list(item.inner)
         self.bus.node("link", telemetry.OK if mapping else telemetry.WARN,
                       f"{len(mapping)}/{len(seen.everything)} blob(s) matched a part")
         return mapping
@@ -1512,7 +1529,7 @@ class MonitoredRobot(load_demo10().Robot):
         trays = [item for item in self.layout if item.container]
         if not trays:
             return plan
-        floor = min(real_world.safe_release_z(tray) for tray in trays)
+        floor = max(real_world.safe_release_z(tray) for tray in trays)
         raised = 0
         steps = []
         for step in plan.steps:
@@ -2134,6 +2151,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="print the bench sheet and serve the dashboard; do not start Isaac")
     parser.add_argument("--startup-timeout", type=float, default=300.0,
                         help="maximum session startup time in seconds")
+    parser.add_argument("--scene-config", help="versioned scene JSON file")
     parser.add_argument("--stop-timeout", type=float, default=10.0,
                         help="grace period before terminating a stalled session")
     parser.add_argument("--work-x", type=float, nargs=2, default=list(DEFAULT_WORK_X),
@@ -2167,6 +2185,9 @@ def main(args=None, bus=None) -> int:
         from supervisor import run
         return run(args)
 
+    args.scene_data, args.scene_items = scene_config.build(args.scene_data) if getattr(args, "scene_data", None) else scene_config.load(args.scene_config)
+    args.detect = sorted({i.color for i in args.scene_items})
+
     bus = bus or telemetry.Bus()
     bus.node("setup", telemetry.ACTIVE, "choosing the environment")
     bus.set_state(phase="setup", variant=args.variant, seed=args.seed, voice="off",
@@ -2176,11 +2197,11 @@ def main(args=None, bus=None) -> int:
 
     # The setup sheet before anything else, so the dashboard is useful even if Isaac never
     # starts: this is the part of the demo that transfers to a real bench.
-    sheet = real_world.setup_sheet(scene_spec.DEFAULT_SCENE, camera=args.camera)
+    sheet = real_world.setup_sheet(args.scene_items, camera=args.camera)
     print("\n".join(sheet), flush=True)
     for line in sheet:
         bus.log(line)
-    findings = real_world.preflight(scene_spec.DEFAULT_SCENE, camera=args.camera)
+    findings = real_world.preflight(args.scene_items, camera=args.camera)
     bus.set_state(findings=findings)
     for level, text in findings:
         bus.log(f"{level}: {text}", level="fail" if level == "fail" else
@@ -2253,13 +2274,20 @@ def main(args=None, bus=None) -> int:
                       f"{scene_spec.why_unreachable(*scene_spec.OUT_OF_REACH_ITEMS[item])}",
                       flush=True)
         else:
-            env, sensor = build_real_env(args.camera, list(scene_spec.DEFAULT_SCENE),
+            env, sensor = build_real_env(args.camera, list(args.scene_items),
                                          pen=args.variant == "contained",
                                          grip_stiffness=args.grip_stiffness)
             if args.variant == "contained":
                 print(f"  working area walled in: a {pen_module.PEN_HEIGHT * 100:.1f} cm kerb around "
                       f"x {scene_spec.WORK_X} y {scene_spec.WORK_Y}", flush=True)
         env.reset()
+        if scene_spec.SHIPPED_CUBE not in {i.prim for i in args.scene_items}:
+            import torch
+            hidden = env.scene[scene_spec.SHIPPED_CUBE]
+            pose = hidden.data.root_state_w[:, :7].clone()
+            pose[:, 2] = -10.0
+            hidden.write_root_pose_to_sim(pose)
+            hidden.write_root_velocity_to_sim(torch.zeros_like(hidden.data.root_state_w[:, 7:13]))
         isaac_io.aim_camera(env, args.camera, sensor)
         was = set_gripper(env, args.close_command)
         print(f"  jaws close to {args.close_command:.2f} rad (was {was:.2f} rad, which grips nothing "
@@ -2289,8 +2317,8 @@ def main(args=None, bus=None) -> int:
         robot.base = clamp_layout(robot.base, tuple(args.work_x))
         robot.bot.with_layout(robot.base)
         for item in robot.base:
-            if not item.container and abs(item.x - scene_spec.DEFAULT_SCENE[
-                    [i.prim for i in scene_spec.DEFAULT_SCENE].index(item.prim)].x) > 1e-9:
+            original = next((i for i in robot._initial_layout if i.prim == item.prim), item)
+            if not item.container and abs(item.x - original.x) > 1e-9:
                 robot.say(f"  {item.prim} moved to x {item.x:.3f}: the arm cannot hold a part "
                           f"outside x {args.work_x[0]:.2f}..{args.work_x[1]:.2f}")
         if args.variant == "out_of_reach":
@@ -2318,6 +2346,12 @@ def main(args=None, bus=None) -> int:
                 robot.say(f"\n=== round {round_index} (static layout) ===")
             else:
                 layout = dynamics.randomize(robot.base, seed, spread=args.spread)
+                try:
+                    for item in layout:
+                        scene_config._check_position(item, [other for other in layout if other is not item])
+                except ValueError:
+                    layout = list(robot.base)
+                    robot.say("La variación no deja separación segura; se conserva la disposición validada.")
                 robot.say(f"\n=== round {round_index} (seed {seed}) ===")
             bus.set_state(round=round_index, seed=seed, phase="scene")
 

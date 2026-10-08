@@ -142,6 +142,41 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
     """
     app = FastAPI(title="leisaac demo 11", docs_url=None, redoc_url=None)
 
+    @app.get("/api/config")
+    def config():
+        import scene_config
+        state = bus.snapshot()["state"]
+        return {"config": state.get("scene_config", scene_config.default_config()),
+                "available_colors": list(scene_config.AVAILABLE_COLORS)}
+
+    @app.post("/api/config")
+    def save_config(payload: dict):
+        import scene_config
+        from supervisor import atomic_json
+        if bus.snapshot()["state"].get("sim") == "running" or bus.snapshot()["state"].get("phase") in ("loading", "starting", "stopping"):
+            return JSONResponse({"error": "Detén el entorno antes de cambiar la escena."}, status_code=409)
+        try:
+            canonical, items = scene_config.build(payload)
+        except (ValueError, TypeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        atomic_json(HERE.parent / "out11" / "scene_config.json", canonical)
+        bus.set_state(scene_config=canonical, catalog=scene_config.catalog(canonical, items), error="")
+        return {"ok": True, "config": canonical}
+
+    @app.get("/api/report")
+    def report():
+        result = bus.snapshot()["state"].get("report")
+        if result is None:
+            return JSONResponse({"error": "Todavía no hay un informe de sesión."}, status_code=404)
+        return result
+
+    @app.get("/api/runtime-log")
+    def runtime_log():
+        name = bus.snapshot()["state"].get("runtime_log")
+        if not name or not Path(name).exists():
+            return JSONResponse({"error": "Todavía no hay registro de ejecución."}, status_code=404)
+        return FileResponse(name, media_type="text/plain", filename="registro-sesion.log")
+
     @app.post("/api/voice")
     async def voice(request: Request) -> dict:
         """The browser's microphone recording, transcribed.
