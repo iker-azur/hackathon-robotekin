@@ -2089,6 +2089,39 @@ def test_the_page_names_every_status_command_state_and_phase_the_robot_can_publi
           "the checklist speaks the four task states in Spanish")
 
 
+
+def test_start_is_running_until_the_environment_is_ready():
+    from types import SimpleNamespace
+    module = load_demo11()
+    bus = telemetry.Bus()
+    cid = bus.send_control("start", camera="top")
+    args = SimpleNamespace(variant="contained", camera="top", rounds=1, seed=0)
+    module.apply_start_params(args, bus)
+    check(bus.command_state(cid)["state"] == telemetry.RUNNING,
+          "start is not successful before Isaac is ready")
+
+
+def test_pending_tasks_cannot_produce_success():
+    ledger = load_demo11().TaskLedger()
+    ledger.expect("command-one:ball:red-box", "bola roja")
+    check(ledger.status() == "FAILED", "an expected but unverified task prevents success")
+    ledger.record("command-one:ball:red-box", True)
+    ledger.expect("command-two:ball:blue-box")
+    check(ledger.counts() == (1, 1), "a second order on the same ball is a separate task")
+
+
+def test_controls_do_not_replace_the_running_text_identity():
+    bus = telemetry.Bus()
+    cid = bus.submit("coge la bola roja")
+    bus.take_command()
+    bus.send_control("relook")
+    bus.take_control()
+    check(bus.active_command_id() == cid, "controls cannot steal the active text id")
+    bus.set_command_state(cid, telemetry.NEEDS_CLARIFICATION, "?Qu? caja?")
+    check(bus.command_state(cid)["state"] == telemetry.NEEDS_CLARIFICATION,
+          "a clarification is an explicit terminal outcome")
+
+
 def main() -> int:
     # Demo 11 is imported once, here, before any test runs. Three tests need its classes, and each
     # one that went through `load_demo11` first would otherwise import it again - ~500 ms, almost

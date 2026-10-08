@@ -982,7 +982,7 @@ class TaskLedger:
     same key the executor's own logs use.
     """
 
-    OK, FAILED = "ok", "failed"
+    OK, FAILED, PENDING = "ok", "failed", "pending"
 
     def __init__(self):
         self._verdict: dict[str, str] = {}
@@ -993,16 +993,20 @@ class TaskLedger:
         if label:
             self._label.setdefault(key, label)
 
+    def expect(self, key: str, label: str = "") -> None:
+        self._verdict.setdefault(key, self.PENDING)
+        self._label.setdefault(key, label or key)
+
     def verdict(self, key: str) -> str | None:
         return self._verdict.get(key)
 
     def counts(self) -> tuple[int, int]:
         values = list(self._verdict.values())
-        return values.count(self.OK), values.count(self.FAILED)
+        return values.count(self.OK), values.count(self.FAILED) + values.count(self.PENDING)
 
     def failed_labels(self) -> list[str]:
         return [self._label.get(key, key) for key, value in self._verdict.items()
-                if value == self.FAILED]
+                if value != self.OK]
 
     def status(self, aborted: bool = False) -> str:
         """SUCCESS, PARTIAL_SUCCESS, FAILED, ABORTED or NO_TASKS, from the verdicts only."""
@@ -1264,15 +1268,17 @@ class MonitoredRobot(load_demo10().Robot):
                          "done": False, "state": "todo"})
         return rows
 
-    @staticmethod
-    def _task_key(task, premise: dict | None) -> str:
+    def _task_key(self, task, premise: dict | None) -> str:
         """What identifies a task across re-plans and in the ledger: the part's name, else its id.
 
         The same key the ledger uses (``thing #<id>``), so a task that could not be named from
         the frame is one task with one verdict, not a row that never matches anything.
         """
         prim = (premise or {}).get(task.pick)
-        return prim if prim else f"thing #{task.pick}"
+        source = prim if prim else f"thing #{task.pick}"
+        cid = getattr(self, "_active_cid", "")
+        destination = (premise or {}).get(task.place, task.place)
+        return f"{cid}:{source}:{destination}" if cid else source
 
     def _note_tasks(self, plan, premise: dict | None = None) -> None:
         """Fold this plan's tasks into the command's list, keeping what is already done.
@@ -1285,6 +1291,7 @@ class MonitoredRobot(load_demo10().Robot):
         job, which is the thing being asked for.
         """
         for row in self.plan_tasks(plan, premise):
+            self.ledger.expect(row["key"], row["label"])
             previous = self._task_rows.get(row["key"])
             if previous:
                 # A task that was already settled keeps its verdict: re-planning it is not a new
@@ -1323,7 +1330,8 @@ class MonitoredRobot(load_demo10().Robot):
             tray = (next((i for i in self.layout if i.prim == tray_prim), None)
                     if tray_prim else None)
             placed = prim is not None and tray is not None and self._inside(prim, tray)
-            key = prim if prim else f"thing #{pick_id}"
+            task = next((t for t in plan.tasks if t.pick == pick_id), None)
+            key = self._task_key(task, premise) if task else (prim or f"thing #{pick_id}")
             out.append((key, placed, prim))
         return out
 
@@ -1393,8 +1401,9 @@ class MonitoredRobot(load_demo10().Robot):
         self.bus.node("perceive", telemetry.WARN if not seen.objects else telemetry.OK, note)
         try:
             mapping = self.link(seen)
-        except Exception:  # noqa: BLE001 - a bad frame must not stop the run
-            mapping = {}
+        except Exception as exc:
+            self.bus.node("link", telemetry.FAIL, f"No se pudo asociar la escena: {exc}")
+            raise
         self.bus.set_state(detections=self._detection_rows(seen, mapping),
                            frame_note=note, frames=self.frames)
         self._publish_frame(note)
@@ -1419,10 +1428,20 @@ class MonitoredRobot(load_demo10().Robot):
             ok, encoded = cv2.imencode(".jpg", self.shown,
                                        [int(cv2.IMWRITE_JPEG_QUALITY), FRAME_JPEG_QUALITY])
             if ok:
-                self.bus.put_frame(encoded.tobytes(), {"note": note, "annotated": True})
+                self.bus.put_frame(encoded.tobytes(), {"note": note, "annotated": True, "captured_at": time.time()})
                 self.bus.tick("camera")
-        except Exception:  # noqa: BLE001 - encoding is a convenience, never a requirement
-            return
+                self.bus.set_state(camera_error="")
+            else:
+                self._camera_error("No se pudo codificar la imagen.")
+        except Exception as exc:
+            self._camera_error(str(exc))
+
+    def _camera_error(self, reason: str) -> None:
+        last = getattr(self, "_camera_error_at", 0.0)
+        self.bus.set_state(camera_error=reason)
+        if time.monotonic() - last > 5:
+            self.bus.log(f"La cámara no se actualiza: {reason}", level="warn", node="capture")
+            self._camera_error_at = time.monotonic()
 
     def cam_pump(self) -> None:
         """A raw frame while the arm moves, throttled to ``cam_fps``.
@@ -1458,10 +1477,13 @@ class MonitoredRobot(load_demo10().Robot):
             ok, encoded = cv2.imencode(".jpg", small,
                                        [int(cv2.IMWRITE_JPEG_QUALITY), FRAME_PUMP_QUALITY])
             if ok:
-                self.bus.put_frame(encoded.tobytes(), {"note": "en vivo", "annotated": False})
+                self.bus.put_frame(encoded.tobytes(), {"note": "en vivo", "annotated": False, "captured_at": time.time()})
                 self.bus.tick("camera")
-        except Exception:  # noqa: BLE001 - a lost frame must never stop a descent
-            return
+                self.bus.set_state(camera_error="")
+            else:
+                self._camera_error("No se pudo codificar el vídeo.")
+        except Exception as exc:
+            self._camera_error(str(exc))
 
     def link(self, seen):
         mapping = super().link(seen)
@@ -1519,6 +1541,10 @@ class MonitoredRobot(load_demo10().Robot):
         return copy
 
     def run_plan(self, plan, premise, command):
+        if hasattr(self, "_command_began") and not self._first_motion:
+            self._first_motion = True
+            self.bus.set_metric("command_to_task_motion_ms", round(
+                (time.perf_counter() - self._command_began) * 1000, 1))
         plan = self._release_adjusted(plan)
         self._publish_plan(plan, note="", increment=False)
         # The whole job, before the per-object re-plans start: this is the plan the person asked
@@ -1536,7 +1562,8 @@ class MonitoredRobot(load_demo10().Robot):
             # placed; if none comes - for example when the command runs out of attempts - the
             # failure stands. A user abort is not a failure and is not recorded here.
             for pick_id in plan.picks:
-                key = premise.get(pick_id) or f"thing #{pick_id}"
+                task = next((t for t in plan.tasks if t.pick == pick_id), None)
+                key = self._task_key(task, premise) if task else (premise.get(pick_id) or f"thing #{pick_id}")
                 self.ledger.record(key, False, self._task_label(plan, key, premise))
             self._settle_rows()
         if self.bot.refused > refused_before:
@@ -1675,7 +1702,87 @@ class MonitoredRobot(load_demo10().Robot):
         telemetry.reset_nodes(self.bus)
         self.bus.node("input", telemetry.ACTIVE, text)
         self.bus.set_state(phase="command", command=text)
-        return super().handle(text)
+        cid = self.bus.active_command_id()
+        current = self.bus.command_state(cid) or {}
+        if current.get("state") != telemetry.RUNNING or current.get("text") != text:
+            cid = self.bus.new_command("command", "script", text=text)
+            self.bus.set_command_state(cid, telemetry.QUEUED)
+            self.bus.set_command_state(cid, telemetry.RUNNING)
+        self._active_cid = cid
+        began = time.perf_counter()
+        self._command_began = began
+        self._first_motion = False
+        outcome, reason = telemetry.FAILED, "La orden no se ha completado."
+        try:
+            command = self.model.parse(text)
+            if command.get("intent") in ("stop", "cancel"):
+                self.bus.request_stop()
+                self.quit = True
+                outcome, reason = telemetry.CANCELLED, "Parada solicitada."
+                return False
+            if command.get("errors"):
+                outcome, reason = telemetry.NEEDS_CLARIFICATION, "; ".join(command["errors"])
+                return True
+            if command.get("intent") in planner.NO_MOTION:
+                outcome, reason = telemetry.SUCCESS, "Orden atendida sin movimiento."
+                self.bus.set_state(reply=reason)
+                return True
+            # Observe without moving first. Unresolved orders must not park the arm.
+            seen = self.look("Observando para resolver la orden")
+            premise = self.link(seen)
+            plan = planner.plan_command(command, seen, offset=self.args.offset)
+            if plan.question or plan.unresolved or not plan.moves:
+                reason = plan.question.get("es") or "; ".join(plan.unresolved) or plan.reply
+                outcome = telemetry.NEEDS_CLARIFICATION
+                return True
+            if any(pick not in premise for pick in plan.picks) or any(
+                    place not in premise for place in plan.places):
+                outcome, reason = telemetry.NEEDS_CLARIFICATION, "No puedo identificar todas las piezas y sus destinos."
+                return True
+            self._note_tasks(plan, premise)
+            if len(plan.picks) > 1:
+                self._one_at_a_time(command, plan)
+            else:
+                for attempt in range(1 + self.args.regrasp):
+                    run = self.run_plan(plan, premise, command)
+                    if run.aborted or self.bus.stop_requested():
+                        outcome, reason = telemetry.CANCELLED, "Ejecución interrumpida."
+                        return False
+                    if not run.stale_grasps:
+                        if plan.places:
+                            self.check(plan, premise)
+                        else:
+                            for task in plan.tasks:
+                                self.ledger.record(self._task_key(task, premise),
+                                                   bool(run.real_grasps and self.bot.holding))
+                            self._settle_rows()
+                        break
+                    if attempt < self.args.regrasp:
+                        self.park()
+                        seen = self.look("Reintentando tras perder la pieza")
+                        premise = self.link(seen)
+                        plan = planner.plan_command(command, seen, offset=self.args.offset)
+                        if not plan.moves or plan.question or plan.unresolved:
+                            break
+            rows = list(self._task_rows.values())
+            done = sum(row.get("state") == "done" for row in rows)
+            outcome = (telemetry.SUCCESS if rows and done == len(rows) else
+                       telemetry.PARTIAL_SUCCESS if done else telemetry.FAILED)
+            reason = f"{done}/{len(rows)} tareas verificadas."
+            if self.bus.stop_requested():
+                outcome, reason = telemetry.CANCELLED, "Ejecución interrumpida."
+            return not self.bus.stop_requested()
+        except Exception as exc:
+            reason = f"No se pudo ejecutar la orden: {type(exc).__name__}: {exc}"
+            self.bus.log(reason, level="fail")
+            self.bus.node("execute", telemetry.FAIL, reason)
+            return True
+        finally:
+            self.bus.set_command_state(cid, outcome, reason)
+            self.bus.set_state(command_result={"id": cid, "status": outcome, "reason": reason}, reply=reason)
+            self.bus.node("report", telemetry.OK if outcome == telemetry.SUCCESS else telemetry.WARN
+                          if outcome == telemetry.NEEDS_CLARIFICATION else telemetry.FAIL, reason)
+            self.bus.set_metric("command_total_ms", round((time.perf_counter() - began) * 1000, 1))
 
     def ask(self) -> str:
         """One command, from the browser, the microphone or the keyboard - in that order.
@@ -1868,7 +1975,7 @@ def apply_start_params(args, bus: telemetry.Bus) -> None:
             bus.set_command_state(control.get("id", ""), telemetry.CANCELLED,
                                   "llegó antes de iniciar el entorno")
     if start_id:
-        bus.set_command_state(start_id, telemetry.SUCCESS)
+        bus.set_state(start_command_id=start_id)
     for key in ("variant", "camera", "rounds", "seed"):
         if key in params:
             try:
@@ -2070,7 +2177,12 @@ def main() -> int:
     # Isaac takes 0xC0000005 inside gliner2's from_pretrained, and two heavy native libraries
     # loading at once did the same thing before that.
     bus.set_state(phase="loading")
-    model = CommandModel()
+    try:
+        model = CommandModel()
+    except Exception as exc:
+        bus.set_state(phase="failed", error=f"No se pudo cargar el modelo: {exc}")
+        bus.fail_active(str(exc))
+        raise
     listener = None
     if args.voice:
         import voice
@@ -2148,6 +2260,9 @@ def main() -> int:
         # and two threads calling ``input()`` is not a thing to do on purpose.
         robot.keyboard = _terminal_reader(bus) if not args.text else None
         bus.set_state(phase="ready", sim="running")
+        start_id = bus.snapshot()["state"].get("start_command_id")
+        if start_id:
+            bus.set_command_state(start_id, telemetry.SUCCESS, "Entorno listo.")
         bus.node("setup", telemetry.OK, f"Isaac running; variant {args.variant}, camera "
                                         f"{args.camera}")
         robot.findings()

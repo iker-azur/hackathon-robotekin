@@ -51,10 +51,11 @@ STATES = (IDLE, ACTIVE, OK, WARN, FAIL)
 # it ended. Only the transitions in ALLOWED are legal; anything else is refused.
 RECEIVED, QUEUED, RUNNING = "RECEIVED", "QUEUED", "RUNNING"
 SUCCESS, FAILED, CANCELLED = "SUCCESS", "FAILED", "CANCELLED"
+NEEDS_CLARIFICATION, PARTIAL_SUCCESS = "NEEDS_CLARIFICATION", "PARTIAL_SUCCESS"
 ALLOWED = {
     RECEIVED: {QUEUED, FAILED, CANCELLED},
     QUEUED: {RUNNING, CANCELLED, FAILED},
-    RUNNING: {SUCCESS, FAILED, CANCELLED},
+    RUNNING: {SUCCESS, FAILED, CANCELLED, NEEDS_CLARIFICATION, PARTIAL_SUCCESS},
 }
 # How many sentences and controls may wait. Past these, the request is answered FAILED, never
 # silently dropped, and the robot never has to chew through an unbounded backlog.
@@ -164,6 +165,7 @@ class Bus:
             maxsize=MAX_QUEUED_COMMANDS)
         self._last_command_source = ""
         self._last_command_id = ""
+        self._active_command_id = ""
         self._controls: queue.Queue[dict] = queue.Queue(maxsize=MAX_QUEUED_CONTROLS)
         self._pending_actions: set[str] = set()
         self._cmd_seq = 0
@@ -355,6 +357,7 @@ class Bus:
             return None
         self._last_command_source = source
         self._last_command_id = cid
+        self._active_command_id = cid
         # Latency from the moment the page's request was received to the moment the robot took it.
         with self._lock:
             cmd = self._cmd_log.get(cid)
@@ -445,6 +448,17 @@ class Bus:
     def last_command_id(self) -> str:
         """The id of the command that ``take_command`` or ``take_control`` returned last."""
         return self._last_command_id
+
+    def active_command_id(self) -> str:
+        """Text request identity, unaffected by controls consumed during motion."""
+        return self._active_command_id
+
+    def fail_active(self, reason: str) -> None:
+        with self._lock:
+            active = [cid for cid, cmd in self._cmd_log.items()
+                      if cmd["state"] in (RECEIVED, QUEUED, RUNNING)]
+        for cid in active:
+            self.set_command_state(cid, FAILED, reason)
 
     # -- stop ------------------------------------------------------------------
 

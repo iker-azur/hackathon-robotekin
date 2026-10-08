@@ -368,10 +368,11 @@ def ground_place(scene: Scene, place: dict | None) -> Grounding:
         return Grounding(status="no_place")
     kind, color = place.get("kind"), place.get("color")
     by_kind = scene.container(kind, color) if color else []
-    if not by_kind:
+    if not by_kind and not color:
         by_kind = scene.container(kind, None)
     if not by_kind and kind in ("any", "other", None, ""):
-        by_kind = sorted(scene.containers, key=lambda c: -c.area_px)
+        by_kind = sorted([c for c in scene.containers if not color or c.color == color],
+                         key=lambda c: -c.area_px)
 
     # ADDED FOR THE out_of_reach VARIANT: a destination the arm cannot get to is refused for
     # the same reason an object is. A tray outside the working area is as unreachable as a

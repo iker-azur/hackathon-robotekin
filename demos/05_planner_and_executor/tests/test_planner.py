@@ -223,6 +223,16 @@ def test_every_fixture():
                 check(step.pose is not None, f"{path.name} {intent}: a step has no pose")
 
 
+
+def test_missing_destination_color_never_chooses_another_box():
+    import ground
+    s = scene()
+    s.containers = [c for c in s.containers if c.color == "red"]
+    result = ground.ground_place(s, {"kind": "box", "color": "green"})
+    check(result.status != "ok" and result.place is None,
+          "a missing green box must never select the red box")
+
+
 def main() -> int:
     for name, function in sorted(globals().items()):
         if name.startswith("test_") and callable(function):
