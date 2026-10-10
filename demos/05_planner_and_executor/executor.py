@@ -74,12 +74,43 @@ DEFAULT_STEPS = 100
 # because the object is being knocked *continuously* while the arm is moving. The old remedy was
 # to re-aim once, after the hover; this re-aims throughout, so the jaws arrive where the object
 # is rather than where it was.
-TRACK_TRAVEL_STEPS = 150
-TRACK_DESCEND_STEPS = 200
+# **The travel count was reduced and the descent count was put back, and that asymmetry is
+# the finding.** The simulation runs at half real time - measured with the demo 11 environment,
+# 33.0 ms per step against a 1/60 s timestep, a real-time factor of 0.505 - so 150 steps of
+# travel were 5 s of wall clock for a move above the parts, with nothing at stake.
+#
+# 150 -> 120 on TRAVEL was kept: it is a move in free air, no part is touched, and every camera
+# re-aim on the way is preserved (TRACK_EVERY is 20, so 120 steps is 6 re-aims).
+#
+# 200 -> 100 on DESCENT was tried in the same run and REVERTED, because it made the pick
+# UNRELIABLE, not just faster: 14.9 s instead of 33.1 s, and one stale grasp - the arm
+# reporting that the part was no longer between the jaws when they closed. ``grip_and_release.md``
+# says why: the tool-centre servo keeps correcting down to LAST_CORRECTION_Z, and a descent that
+# reaches the bottom before the servo has converged closes the jaws on where the part WAS.
+# ``approach_drift.md`` sweeps the other direction - a descent that is too slow leans the forearm
+# on the part - so there are two ways to fail and 200 steps is the one that was measured to
+# work. A travel step that is too long wastes time; a descent step that is too short loses the
 
+TRACK_TRAVEL_STEPS = 120
+TRACK_DESCEND_STEPS = 200
 # How often to re-look while moving. 20 steps is a third of a second: often enough to follow a
 # roll, rare enough that a descent is not dominated by rendering.
 TRACK_EVERY = 20
+
+# Stop the per-step render while an Executor is driving. MEASURED, not assumed, with
+# tools/probe_step_cost.py on this machine: a motion step (`env.step`) costs ~32 ms, while the
+# same step with physics only (`env.sim.step(render=False)`) costs ~3.9 ms. The other ~28 ms is a
+# ``sim.render()`` that ManagerBasedEnv.step issues on EVERY physics step while an RTX sensor is
+# present - and that render is redundant here, because the dashboard's live picture and every
+# tracked re-aim read the camera through ``isaac_io.capture``/``capture_rgb``, which call
+# ``sim.render()`` themselves. That per-step render is the whole reason the simulation runs at
+# half real time; removing it turns each motion step back into a physics step.
+#
+# Setting the render interval this high means the motion loop essentially never auto-renders (a
+# command is a couple thousand steps at most), while the pump's explicit renders still publish
+# frames at up to ``cam_fps``. Physics is untouched - render does not change the simulation - so
+# grasp validation and placement verification behave exactly as before.
+MOTION_RENDER_INTERVAL = 1_000_000
 
 # How far the aim may be corrected in one update before it is treated as "this is a different
 # object" rather than "this object got knocked". A shove moves a ball 33-45 mm
@@ -104,6 +135,13 @@ SETTLE_UNTIL_STILL_STEPS = 400
 # Below this speed an object counts as stopped, so that it will not move appreciably during
 # the camera capture that follows.
 STILL_M = 0.001
+
+# How many ``settle`` steps between two calls to ``settle_hook``. One frame is one
+# ``sim.render()``, and a render between two physics steps is the most expensive
+# thing the dashboard can ask for - so the waits that issue no action still publish a
+# picture, but at 1/15th of their steps, which keeps the dashboard moving without
+# paying for a picture of the same still table 30 times.
+SETTLE_HOOK_EVERY = 15
 
 # How close an object must still be to where the plan aimed when the jaws finish closing.
 # This is the check that was missing, and its absence is why the demo reported successes it
@@ -244,6 +282,21 @@ class Executor:
         self.env = env
         self.items = list(items or [])
         self.log = log
+        # Turn off the per-step render while we drive: see MOTION_RENDER_INTERVAL. The camera's
+        # own renders (cam_pump -> isaac_io.capture_rgb, look -> isaac_io.capture) are explicit
+        # and unaffected; physics is identical, so grasps and verification do not change.
+        try:
+            self.env.cfg.sim.render_interval = MOTION_RENDER_INTERVAL
+        except Exception:
+            pass
+        # Called while physics runs but nothing is being commanded: ``settle`` waits
+        # for a released part to come to rest, and a descent's re-aim ticks. Demo 11
+        # uses it to keep the dashboard's picture moving, because those are exactly
+        # the stretches where the camera used to go stale and the panel reported
+        # "imagen sin actualizar" while the robot was measuring. ``do`` already had
+        # ``frame_hook`` for the same reason; this is the hook for the waits that
+        # issue no action at all.
+        self.settle_hook = None
         self.torch = torch
         self.device = env.device
         self.robot = env.scene["robot"]
@@ -632,12 +685,22 @@ class Executor:
     # -- settling -------------------------------------------------------------
 
     def settle(self, steps: int = 30) -> None:
-        """Let physics finish after a release. Demo 05 uses 30."""
+        """Let physics finish after a release. Demo 05 uses 30.
+
+        ``settle_hook`` is called every ``SETTLE_HOOK_EVERY`` steps, not every step:
+        a frame is a render, and a render between two physics steps is the single most
+        expensive thing the dashboard asks the simulation to do. 15 steps is a quarter
+        of a second at 60 Hz, which is what a published picture needs to read as live
+        and is 15x cheaper than every step. ``park`` goes through ``do`` and already
+        publishes at its own rate, so it needs nothing here.
+        """
         action = self._action(self.current, OPEN)
         with self.torch.no_grad():
-            for _ in range(steps):
+            for index in range(steps):
                 self.env.step(action)
                 self._carry_if_held()
+                if self.settle_hook is not None and (index + 1) % SETTLE_HOOK_EVERY == 0:
+                    self.settle_hook()
 
     def park(self, steps: int = PARK_STEPS) -> StepResult:
         """Fold the arm out of the camera's view, by driving it there.
