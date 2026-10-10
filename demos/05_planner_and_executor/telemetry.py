@@ -116,7 +116,7 @@ EDGES: tuple[tuple[str, str, str], ...] = (
     ("input", "understand", "frase"),
     ("understand", "capture", "mirar"),
     ("capture", "perceive", "fotograma"),
-    ("perceive", "link", "manchas"),
+    ("perceive", "link", "colores"),
     ("link", "ground", "piezas"),
     ("ground", "plan", "objetivos"),
     ("plan", "execute", "pasos"),

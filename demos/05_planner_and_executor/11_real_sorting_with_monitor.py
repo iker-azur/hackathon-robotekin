@@ -832,6 +832,12 @@ class ModelSpy:
         # intent, what to act on (each item's kind and colour, and its own destination when the
         # sentence gave one), the shared destination and the sort key. ``place`` on the command
         # is what the sentence as a whole was aiming at, ``sort_by`` what a sort ordered by.
+        # One sentence saying what was understood, so the panel never has to reassemble a decision
+        # out of a grid of options. Built here, from `describe` and `ui_spanish`, because that is
+        # where the Spanish agreement lives. It is published twice on purpose - once in the state,
+        # for the card, and once as this box's own note, which is what the diagram shows - and both
+        # are the same words, so there is nothing to disagree.
+        summary = describe.understood(command)
         self._bus.set_state(classification={
             "intent": command.get("intent"),
             "items": [{"kind": item.get("kind"), "color": item.get("color"),
@@ -839,6 +845,7 @@ class ModelSpy:
                       for item in command.get("items", [])],
             "place": command.get("place"),
             "sort_by": command.get("sort_by"),
+            "summary": summary,
             # The model's own score for each field it decided, so the panel can say which one it
             # was unsure of instead of only reporting the weakest of them as a single number.
             "confidences": command.get("confidences") or {},
@@ -847,10 +854,7 @@ class ModelSpy:
             "errors": command.get("errors", []),
         })
         self._bus.set_metric("parse_ms", command.get("parse_ms"))
-        import ui_spanish
-        items = " ".join(describe.phrase(item.get("kind"), item.get("color"), 1, "es", bare=True) for item in command.get("items", []))
-        self._bus.node("understand", telemetry.OK,
-                       f"{ui_spanish.INTENTS.get(command.get('intent'), 'orden')} [{items.strip() or 'sin piezas'}]")
+        self._bus.node("understand", telemetry.OK, summary)
         return command
 
 
@@ -1073,6 +1077,9 @@ class MonitoredRobot(load_demo10().Robot):
         self.cam_fps = float(getattr(args, "cam_fps", 0.0) or 0.0)
         self._last_pump = 0.0
         self._plan_n = 0
+        # Which step of the running plan the arm is on, counted by the executor's own callback.
+        # `run_plan` publishes the total, which is where it is known.
+        self._step_i = 0
         # The command's tasks and which are done, keyed by part name so a re-plan recognises
         # the same task instead of adding a second row for it. Cleared per command in `handle`.
         self._task_rows: dict[str, dict] = {}
@@ -1097,6 +1104,12 @@ class MonitoredRobot(load_demo10().Robot):
         self.bot = StrictExecutor(env, log=self.say, allow_kinematic=args.allow_kinematic)
         self.bot.log = self._step_logged
         self.bot.frame_hook = self.cam_pump if self.cam_fps > 0.0 else None
+        # The waits that issue no action at all - ``settle`` after a release, and the
+        # settling between a placement and its measurement - used to run with no
+        # frame published, which is several seconds of frozen camera exactly when
+        # the audience is looking at it. ``cam_pump`` is throttled internally, so
+        # calling it here costs nothing when a frame was published recently.
+        self.bot.settle_hook = self.cam_pump if self.cam_fps > 0.0 else None
         self.model = ModelSpy(model, bus)
         install_plan_spy()
         if self not in _PLAN_SPIES:
@@ -1123,6 +1136,11 @@ class MonitoredRobot(load_demo10().Robot):
             import ui_spanish
             self.bus.set_state(progress=head[0])
             self.bus.node("execute", telemetry.ACTIVE, ui_spanish.ACTIONS.get(head[0], "Comprobando ejecución"))
+            # One call is one step executed, counted against the total the plan published, so the
+            # panel can say "paso 3 de 8". The counter is reset by `run_plan`, which is where the
+            # total is known.
+            self._step_i = getattr(self, "_step_i", 0) + 1
+            self.bus.set_state(step_index=self._step_i)
 
     # -- the environment -------------------------------------------------------
 
@@ -1243,6 +1261,11 @@ class MonitoredRobot(load_demo10().Robot):
             "n": self._plan_n,
             "intent": getattr(plan, "intent", ""),
             "note": note,
+            # The question and the unresolved references are what this plan IS when it could not
+            # decide something: a plan that stops to ask "which red ball?" has no steps, and the
+            # panel's classification box reads these two rather than showing a grid of options.
+            "question": (plan.question or {}).get("es", ""),
+            "unresolved": list(getattr(plan, "unresolved", []) or []),
             "picks": [str(pick) for pick in getattr(plan, "picks", [])],
             "tasks": self.plan_tasks(plan),
             "steps": [{"action": step.action, "note": step.note,
@@ -1318,6 +1341,25 @@ class MonitoredRobot(load_demo10().Robot):
                 row["done"] = bool(previous.get("done"))
                 row["state"] = previous.get("state", "done" if row["done"] else "todo")
             self._task_rows[row["key"]] = row
+        self._publish_tasks()
+
+    def _mark_doing(self, plan, premise: dict | None = None) -> None:
+        """Say which checklist rows this plan is executing, so the panel can answer "which one now?".
+
+        ``_one_at_a_time`` re-plans around one object at a time, so the plan that runs holds a
+        single task and the whole job is the checklist. Marking the running plan's rows - and only
+        those - is what makes "tarea 2 de 3" true rather than inferred.
+
+        A row that ``check`` has already settled is left alone: re-planning it is not a new
+        attempt, and a row that went back to "en curso" would say the measurement is pending when
+        it has been taken. Rows that are not part of this plan go back to pending, which is honest
+        between attempts of the same command.
+        """
+        keys = {self._task_key(task, premise) for task in getattr(plan, "tasks", None) or []}
+        for key, row in self._task_rows.items():
+            if row["state"] in ("done", "fail"):
+                continue
+            row["state"] = "doing" if key in keys else "todo"
         self._publish_tasks()
 
     def _settle_rows(self) -> None:
@@ -1675,11 +1717,20 @@ class MonitoredRobot(load_demo10().Robot):
         # The whole job, before the per-object re-plans start: this is the plan the person asked
         # for, and it is where the checklist gets all of its rows from.
         self._note_tasks(plan, premise)
+        # The plan that runs now is the job the arm is on, so its rows say so. Nothing else writes
+        # "doing": the panel cannot infer it, because what it can see - a step's action word - is
+        # not the same thing as which part that step belongs to.
+        self._mark_doing(plan, premise)
         for step in plan.steps:
             pose = "" if step.pose is None else " ".join(f"{v:+.3f}" for v in step.pose)
             import ui_spanish
             self.bus.log(f"Plan: {ui_spanish.ACTIONS.get(step.action, 'movimiento')} {pose}", node="plan")
+        # How far along the plan is, as "paso 3 de 8": the total is the plan's own, and the counter
+        # is per step executed, so the pair moves with the arm rather than with the publishing.
+        self._step_i = 0
+        self.bus.set_state(step_total=len(plan.steps), step_index=self._step_i)
         self.bus.node("execute", telemetry.ACTIVE, f"{len(plan.steps)} pasos")
+        self._motion_started(len(plan.steps))
         refused_before = self.bot.refused
         # Demo 10's retarget callback replans the whole original command. That can
         # change identities, destinations and release heights inside a single task.
@@ -1715,7 +1766,28 @@ class MonitoredRobot(load_demo10().Robot):
                            reaimed=self.reaimed, refused_grasps=self.bot.refused,
                            recentred=self.bot.corrected,
                            kinematic_grasps=self.bot.kinematic)
+        self._motion_finished()
         return run
+
+    def _motion_finished(self) -> None:
+        """Say the arm has stopped, in the three fields the panel reads as motion.
+
+        ``progress``, ``step_index`` and ``step_total`` are written by
+        ``_step_logged`` and ``run_plan`` but were never cleared, so after the last
+        step of a plan the panel kept asserting the last verb - «ahora: retirar ·
+        paso 8 de 8» - through the whole of verification, recovery and the report.
+        The stage being shown then disagreed with what the arm was doing, which is
+        the one thing a demo's dashboard cannot get wrong.
+
+        ``moving`` is the honest single flag: true only between the first and the
+        last step of a plan. It is published rather than inferred, because the
+        phase is still ``command`` or ``sorting`` throughout verification - only
+        the robot knows whether the arm is following steps right now.
+        """
+        self.bus.set_state(progress="", step_index=0, step_total=0, moving=False)
+
+    def _motion_started(self, total: int) -> None:
+        self.bus.set_state(step_index=0, step_total=total, moving=True)
 
     def _retry_one(self, prim: str) -> bool:
         """One masked retry: the arm is painted out of the frame for the whole approach.
@@ -1730,9 +1802,11 @@ class MonitoredRobot(load_demo10().Robot):
         was = getattr(self, "mask_arm", False)
         self.mask_arm = True
         try:
+            self.bus.set_state(phase="recovering", moving=True)
             done = self._retry_placed(prim)
         finally:
             self.mask_arm = was
+            self.bus.set_state(phase="verifying", moving=False)
         self.bus.node("recover", telemetry.OK if done else telemetry.FAIL,
                       f"{prim}: {'recuperada' if done else 'no se pudo recuperar'}")
         return done
@@ -1851,9 +1925,13 @@ class MonitoredRobot(load_demo10().Robot):
         return matches[0] if len(matches) == 1 else None
 
     def check(self, plan, premise, announce: bool = True):
+        self._motion_finished()
+        self.bus.set_state(phase="verifying")
         self.bus.node("verify", telemetry.ACTIVE,
                       f"Comprobando {len(plan.picks)} colocaciones")
         misses = self._verify_and_retry(plan, premise, announce)
+        self._motion_finished()
+        self.bus.set_state(phase="sorting" if getattr(self, "_one_at_a_time_run", False) else "command")
         # The verdict per task. `check` has just re-perceived and measured where every part came
         # to rest, so this is the moment the checklist has an answer: `misses` is the parts that
         # are not in the tray they were sent to.
@@ -1914,6 +1992,9 @@ class MonitoredRobot(load_demo10().Robot):
         began = time.perf_counter()
         self._command_began = began
         self._first_motion = False
+        # A new command starts with the arm still: nothing from the previous plan's
+        # steps may be described as happening now.
+        self._motion_finished()
         outcome, reason = telemetry.FAILED, "La orden no se ha completado."
         try:
             if text.lower() in self.demo10.QUIT_WORDS:
@@ -2295,6 +2376,7 @@ def enter_starts_the_run(bus: telemetry.Bus) -> threading.Thread | None:
 
 def build_parser() -> argparse.ArgumentParser:
     """Demo 10's arguments, unchanged, plus the dashboard and the real-world ones."""
+    import supervisor as supervisor_module  # one constant, and only when the parser is built
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     # -- demo 10's flags, verbatim, so the muscle memory still works
@@ -2357,6 +2439,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--intent-backend", choices=["hybrid", "model", "rules"], default="hybrid")
     parser.add_argument("--stop-timeout", type=float, default=10.0,
                         help="grace period before terminating a stalled session")
+    parser.add_argument("--start-attempts", type=int, default=supervisor_module.MAX_START_ATTEMPTS,
+                        metavar="N",
+                        help="how many times a session is launched before giving up when "
+                             "Isaac faults during start-up")
     parser.add_argument("--work-x", type=float, nargs=2, default=list(DEFAULT_WORK_X),
                         metavar=("XMIN", "XMAX"),
                         help="where the robot may put a part down to be picked up. Demo 10's "
