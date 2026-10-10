@@ -30,6 +30,54 @@ def parse_source(source: str) -> tuple[str, str]:
     return repository, path
 
 
+# Extensions Kit crashes on while loading, and which this project never uses.
+#
+# Measured on this machine, every Kit start-up - successful or not - reports
+#
+#   [Error] [omni.ext.plugin] Could not load ... generic_mo_io.dll
+#   ImportError: DLL load failed while importing _generic_model_output
+#   [Error] [carb] [Plugin: omni.sensors.nv.lidar.plugin.dll] ... a dependent
+#                  library failed to load
+#   [Error] [carb] [Plugin: omni.sensors.nv.radar.plugin.dll] ... a dependent
+#                  library failed to load
+#   Windows fatal exception: code 0xc0000139        (STATUS_ENTRYPOINT_NOT_FOUND)
+#   Windows fatal exception: access violation
+#
+# with two Python threads caught inside ``omni.graph.tools``'s own extension
+# scanner, i.e. on a thread with no frame of this repository's. Those extensions
+# are lidar, radar, ultrasonic and the RTX generic-model-output sensor: none of
+# them is a dependency of a pick-and-place on a table, and every one of them tries
+# to resolve a native DLL that is not on this machine's loader path.
+#
+# ``0xc0000139`` is ``STATUS_ENTRYPOINT_NOT_FOUND``: a DLL that loaded but does
+# not export a symbol another DLL expects. It is the signature of a *partially
+# satisfiable* native dependency - a dependent library that LoadLibrary accepts
+# and GetProcAddress then fails on - and it cannot be caught or handled, because
+# it happens on Kit's loader thread, before any Python frame exists.
+#
+# Disabling them is the fix that works, and the only lever this repository can
+# pull is ``--/app/extensions/disabled`` on Kit's own command line, injected
+# through ``AppLauncher(kit_args=...)`` (isaaclab/app/app_launcher.py:773 appends
+# them to ``sys.argv``, which is what ``SimulationApp`` parses). ``tools/run_demo11.py``
+# records that a carb *setting* was tried first and was ignored - which is what
+# the code below explains.
+DISABLED_EXTENSIONS = (
+    "isaacsim.sensors.rtx",          # generic_model_output / _generic_model_output
+    "omni.sensors.nv.lidar",        # lidar plugin DLL
+    "omni.sensors.nv.radar",        # radar plugin DLL
+    "omni.sensors.nv.ultrasonic",   # same sensor family, same loader path
+)
+
+
+def disable_unused_sensor_extensions() -> str:
+    """Return Kit arguments that stop the sensor extensions above from loading.
+
+    Deliberately a function rather than a module-level constant so the string is
+    built once, at the moment it is used, and can be logged by whoever calls it.
+    """
+    return "--/app/extensions/disabled=" + ",".join(DISABLED_EXTENSIONS)
+
+
 def accept_omniverse_eula() -> None:
     """Accept the NVIDIA Omniverse EULA non-interactively.
 
@@ -37,6 +85,7 @@ def accept_omniverse_eula() -> None:
     bootstrap fails with 'Unable to bootstrap inner kit kernel'.
     """
     os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
+
 
 
 def _import_hub_module(local_file: str) -> Any:
@@ -79,7 +128,13 @@ def prepare_runtime(headless: bool = False) -> Path:
     # for every isaaclab module that reaches for it at import time.
     from isaaclab.app import AppLauncher
 
-    _ = AppLauncher({"enable_cameras": True})
+    # The one change that stops Kit's loader thread from taking the process with it:
+    # the sensor extensions whose native DLLs this machine cannot resolve are told
+    # not to load. ``kit_args`` is the route in - AppLauncher appends it to sys.argv,
+    # and sys.argv is what SimulationApp reads - so the setting lands in Kit's own
+    # argument parser, where a carb setting at runtime is ignored.
+    _ = AppLauncher({"enable_cameras": True,
+                     "kit_args": disable_unused_sensor_extensions()})
 
     return assets_root
 
