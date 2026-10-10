@@ -172,6 +172,45 @@ def where_is(scene: Scene, thing: Thing, lang: str = "es") -> str:
     return {"es": f"Está {where}.", "en": f"It is {where}.", "eu": f"{where.capitalize()} dago."}[lang]
 
 
+def understood(command: dict) -> str:
+    """One sentence saying what the robot understood, for the panel's classification box.
+
+    The dashboard used to show the command model's whole option space - every intent, every
+    colour, every destination - as a grid with the chosen ones lit. Answering "what is the robot
+    going to do?" took reading seven rows and reassembling them in your head. This is the opposite
+    shape: one sentence, built from the decision itself, so the box says what was understood
+    instead of what the decoder can choose between.
+
+    The wording comes from ``ui_spanish.SAY`` and the phrases from ``phrase``, so the agreement is
+    the same one the log notes and the questions use - there is no second Spanish in here.
+    """
+    import ui_spanish
+
+    intent = command.get("intent") or ""
+    verb = ui_spanish.SAY.get(intent)
+    if verb is None:
+        return "no he entendido la orden"
+    place = command.get("place") or None
+    items = command.get("items") or []
+    things = " y ".join(phrase(item.get("kind"), item.get("color"),
+                               item.get("quantity") or item.get("count") or 1, "es")
+                        for item in items)
+    dest = phrase(place.get("kind"), place.get("color"), 1, "es") if place else ""
+    if intent == "sort":
+        # "separar las piezas por color": what is being sorted is the items when the sentence named
+        # them, and the whole table when it did not.
+        what = things or "las piezas"
+        return " ".join(part for part in (verb, what, ui_spanish.ORDER.get(command.get("sort_by"), "")) if part)
+    if intent == "clear":
+        return f"{verb} todo lo que hay en la mesa"
+    if intent in ("repeat", "stop", "cancel", "greeting", "off_topic", "question"):
+        # These carry no object: repeating needs no object, and a question is answered from the
+        # scene, not from the words - so the sentence stops at the verb.
+        tail = {"question": "qué hay en la mesa"}.get(intent, "")
+        return " ".join(part for part in (verb, tail) if part)
+    return " ".join(part for part in (verb, things, f"en {dest}" if dest else "") if part)
+
+
 def answer(scene: Scene, command: dict, lang: str = "es") -> str:
     """The reply for a ``question`` intent, choosing the question that was asked.
 
