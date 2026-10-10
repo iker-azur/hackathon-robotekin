@@ -21,6 +21,11 @@
 // snapshots. What it painted is then counted and returned. The DOM shim is deliberately honest
 // about its one hard part: ``innerHTML`` does not parse, but it does register the ids inside it,
 // because looking up ``#note-<id>`` after assigning markup is exactly what the real page does.
+//
+// What is read out of the page is the shape the panel now has: the classification box as three
+// fixed lines (what was understood, what was not sure, the doubt) instead of a grid of options,
+// and the "ahora" line above the map. There is no grid left to count, so what is reported is the
+// text of each line, which is what a person reads.
 
 "use strict";
 
@@ -222,8 +227,6 @@ function layoutOf(id) {
   const g = flowSvg.children.find(c => c.tagName === "g" && c.dataset.id === id);
   return g && g.dataset.box ? JSON.parse(g.dataset.box) : null;
 }
-const planSteps = page.querySelector("#exec-steps");
-const intentRow = page.querySelector("#row-intent");
 
 function htmlOf(id) {
   const node = page.querySelector("#" + id);
@@ -238,17 +241,54 @@ function tagCount(id, tag) {
   return node ? node.tags.filter(t => t === tag).length : 0;
 }
 
+// The classification box's option space, field by field.
+//
+// The box shows every option of every field the command model can choose between, and the whole
+// point of it is that a field is never empty: a run with a sort command still shows the sixteen
+// intents, and seeing "separar" next to "recoger" and "parar" is what makes the chosen one mean
+// anything. So what is counted per row is the options offered, the one chosen, and how many of
+// them exist on the table (the ones marked as realistic, with a dot).
+const OPTION_ROWS = ["opt-intent", "opt-kind", "opt-color", "opt-count", "opt-place", "opt-sort"];
+function optionsReport() {
+  return Object.fromEntries(OPTION_ROWS.map(id => {
+    const row = page.querySelector("#" + id);
+    const html = row ? String(row.innerHTML) : "";
+    return [id, {
+      total: (html.match(/class="opt/g) || []).length,
+      chosen: (html.match(/opt chosen"/g) || []).length,
+      here: (html.match(/opt here"/g) || []).length,
+      divs: (html.match(/<span class="opt/g) || []).length,
+      score: (/<span class="p">(\d+)%</.exec(html) || [])[1] || "",
+    }];
+  }));
+}
+
 // The run's own state, captured BEFORE the stress batch is replayed over it. The stress batch
 // deliberately replaces the classification and the plan with enormous strings, so anything read
 // after it would answer a different question than the one being asked.
 const RUN = {
-  intentHtml: htmlOf("row-intent"),
-  clsOverall: textOf("cls-overall"),
+  // What was understood, in the one element the classification box has for it: the generic
+  // machinery writes the stage's live note there, and the classification's own sentence comes
+  // after and wins.
+  said: textOf("note-understand"),
+  clsSure: textOf("cls-sure"),
+  clsWarn: textOf("cls-warn"),
+  // The option space, field by field: how many options each field offers, which one is the
+  // chosen one, and how many exist on the table.
+  options: optionsReport(),
+  routeNow: textOf("route-now"),
   tasks: htmlOf("plan-tasks"),
   taskRows: tagCount("plan-tasks", "li"),
   command: textOf("cmd-text"),
   planHeader: textOf("note-plan"),
   planRows: tagCount("exec-steps", "tr"),
+  stepColumns: (() => {
+    // How many task columns the movement matrix has, read from its numbered header cells. The
+    // matrix has no pose or millimetre cells on purpose: those are the session log's job.
+    const table = page.querySelector("#exec-steps");
+    const markup = table ? String(table.innerHTML) : "";
+    return (markup.match(/<th>\d+<\/th>/g) || []).length;
+  })(),
   tally: textOf("tally"),
   notes: Object.fromEntries(groups().map(g => [g.dataset.id, noteOf(g)])),
   logLines: page.querySelector("#log").children.length,
@@ -302,50 +342,65 @@ paintError: page.querySelector("#paint-error") ? page.querySelector("#paint-erro
   // `run` is the run's own content, read before the stress batch replaced it. `notes` and the
   // counts at the top level are the final state, after everything.
   run: RUN,
-  clsOverall: textOf("cls-overall"),
+  // The classification box, after the run and after everything.
+  said: textOf("note-understand"),
+  clsSure: textOf("cls-sure"),
+  clsWarn: textOf("cls-warn"),
+  options: optionsReport(),
+  // The raw markup of each row and the scores it carries, so a test can ask "is the chosen one
+  // among the offered ones" and "whose score is that" without re-deriving it.
+  optionHtml: Object.fromEntries(OPTION_ROWS.map(id => [id, htmlOf(id)])),
+  optionScores: Object.fromEntries(OPTION_ROWS.map(id => {
+    const html = htmlOf(id);
+    return [id, [...String(html).matchAll(/<span class="p">(\d+)%</g)].map(m => m[1])];
+  })),
+  // What is happening now, in the fixed line above the map.
+  routeNow: textOf("route-now"),
+  stepColumns: (() => {
+    // How many columns the steps table has, from its own header row. The pose in millimetres
+    // and the blob code went away on purpose, so this is one.
+    const table = page.querySelector("#exec-steps");
+    const markup = table ? String(table.innerHTML) : "";
+    return (markup.match(/<th>\d+<\/th>/g) || []).length;
+  })(),
   notes: Object.fromEntries(groups().map(g => [g.dataset.id, noteOf(g)])),
   logLines: page.querySelector("#log").children.length,
-  planRows: tagCount("exec-steps", "tr"),
-  tally: textOf("tally"),
-  planHeader: textOf("note-plan"),
-  command: textOf("cmd-text"),
-  // La tabla de la intención: una celda por opción, con la elegida resaltada y su probabilidad.
-  //
-  // The row count comes from the page's own markup rather than from the shim's tree: `table.intent`
-  // is drawn by assigning innerHTML to a <table>, and this shim's innerHTML only registers the ids
-  // inside it, so the <tr>s never become children for anything here to count. The browser parses
-  // them, and the markup is what it parses.
-  intentRows: (() => {
-    const markup = /<table class="intent">([\s\S]*?)<\/table>/.exec(HTML);
-    return markup ? (markup[1].match(/<tr>/g) || []).length : 0;
-  })(),
-  // Cells per row, and how many are a div rather than a span. The second is the whole point of
-  // this change: a matrix cell has to be a block with a width of its own, and a <span> laid out
-  // inline is exactly what made the options read as a wrapped list before.
-  cells: Object.fromEntries(["row-intent", "row-kind", "row-color", "row-count",
-                             "row-place", "row-sort", "row-desk"].map(id => {
-    const row = page.querySelector("#" + id);
-    const html = row ? String(row.innerHTML) : "";
-    return [id, {
-      total: (html.match(/class="opt/g) || []).length,
-      divs: (html.match(/<div class="opt/g) || []).length,
-      spans: (html.match(/<span class="opt/g) || []).length,
-      selected: (html.match(/class="opt sel"/g) || []).length,
-    }];
-  })),
-  // the grid the cells sit in, per row
-  grids: Object.fromEntries(["row-intent", "row-kind", "row-color", "row-count",
-                             "row-place", "row-sort", "row-desk"].map(id => {
-    const row = page.querySelector("#" + id);
-    return [id, row ? row.className : null];
-  })),
-  intentHtml: intentRow ? intentRow.innerHTML : "",
   tasks: htmlOf("plan-tasks"),
   taskRows: tagCount("plan-tasks", "li"),
+  tally: textOf("tally"),
   phase: textOf("phase"),
   verified: textOf("verified"),
   missed: textOf("missed"),
   resultCommand: textOf("result-command"),
   resultSession: textOf("result-session"),
   examples: (page.querySelector("#scene-examples") || {children:[]}).children.map(e => e.textContent),
+  exampleCommands: (page.querySelector("#scene-examples") || {children:[]}).children.map(e => (e.dataset || {}).cmd),
+  // What the presentation layer paints: the six-stage rail, the objective and tasks, and the
+  // one-click demo status line. Read the way the page paints them - the rail from the elements
+  // it built (className), the hero from the markup it wrote - so a test can check the
+  // presentation is driven by real telemetry and never invents a state.
+  present: (() => {
+    const rail = page.querySelector("#stage-rail");
+    const stages = (rail && rail.children ? rail.children : [])
+      .filter(c => typeof c.className === "string" && c.className.split(" ").includes("stage"));
+    const heroTasks = String(htmlOf("hero-tasks-list"));
+    return {
+      stageCount: stages.length,
+      stageNames: stages.map(s => (s.children[0] && s.children[0].children[1] ? s.children[0].children[1].textContent : "")),
+      stageClasses: stages.map(s => s.className),
+      stageNotes: stages.map(s => (s.children[1] ? s.children[1].textContent : "")),
+      heroObjective: textOf("hero-objective"),
+      heroTaskRows: (heroTasks.match(/<li/g) || []).length,
+      heroStates: {
+        doing: (heroTasks.match(/class="doing"/g) || []).length,
+        done: (heroTasks.match(/class="done"/g) || []).length,
+        fail: (heroTasks.match(/class="fail"/g) || []).length,
+        todo: (heroTasks.match(/class="todo"/g) || []).length,
+      },
+      heroTally: textOf("hero-tally"),
+      heroRecovering: (heroTasks.match(/RECUPERANDO/g) || []).length,
+      demoStatus: (() => { const b = page.querySelector("#demo-status"); return b ? b.className + " | " + b.textContent : ""; })(),
+      demoMessage: typeof sandbox._demoMsg === "string" ? sandbox._demoMsg : "",
+    };
+  })(),
 }));

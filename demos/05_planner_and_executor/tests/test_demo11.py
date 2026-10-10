@@ -481,6 +481,9 @@ def test_the_dashboard_reports_what_the_model_and_the_plan_said():
         picks = [3]
         steps = [FakeStep("above", "pass to hover", (0.29, 0.06, 0.22))]
         moves = True
+        # what grounding could not decide, as a real plan carries it
+        question = {}
+        unresolved = []
 
     spy_robot = module.MonitoredRobot.__new__(module.MonitoredRobot)
     spy_robot.bus = bus
@@ -1001,10 +1004,13 @@ def test_nothing_can_paint_outside_its_own_box():
     # the live note of a plain box, and the note of a box with content, both carry a clip
     check(re.search(r'<div class="live clip-2" id="live-\$\{node.id\}">', page),
           "the live note must carry a clipping class")
-    for node_id in ("input", "understand", "plan"):
-        block = page[page.index(f'nodeId === "{node_id}"'):]
-        check("clip-1" in block[:block.index("return null")],
-              f"the {node_id} box's note must be clipped")
+    block = page[page.index('nodeId === "input"'):]
+    check("clip-1" in block[:block.index("return null")], "the input box's note must be clipped")
+    # understand and plan are no longer route boxes: they live on the main screen, where the
+    # sentence and the option rows clip on their own elements
+    check('class="said clip-2" id="note-understand"' in page,
+          "the understanding sentence must clip to two lines on the main screen")
+    check('class="sure clip-1" id="cls-sure"' in page, "the confidence line must clip to one line")
     check("text-overflow: ellipsis" in page,
           "an edge label that cannot ellipsis will run over the box beside it")
     # the plan's own rows, one per line
@@ -1090,7 +1096,7 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
               ("setup", telemetry.OK, "Isaac running; variant contained, camera top"),
               ("input", telemetry.ACTIVE, "separa las piezas por colores"),
               ("understand", telemetry.ACTIVE, "separa las piezas por colores"),
-              ("understand", telemetry.OK, "sort [cube ball]"),
+              ("understand", telemetry.OK, "separar las piezas por color"),
               ("capture", telemetry.ACTIVE, "frame"),
               ("capture", telemetry.OK, "rendered one frame"),
               ("perceive", telemetry.OK, "4 object(s), 2 container(s)"),
@@ -1123,6 +1129,9 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
                    "items": [{"kind": "cube", "color": "red", "count": 1,
                               "place": {"kind": "box", "color": "red"}}],
                    "place": {"kind": "box", "color": "red"},
+                   # the sentence the robot publishes, so the panel never has to reassemble the
+                   # decision out of a grid of options
+                   "summary": "separar las piezas por color",
                    # the model's own per-field scores, as `parse` now publishes them
                    "confidence": 0.742,
                    "confidences": {"intent": 0.98, "place_kind": 0.91,
@@ -1130,7 +1139,10 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
               {"phase": "command", "command": "separa las piezas por colores",
                "tasks": TASKS},
               {"phase": "command", "command": "separa las piezas por colores",
+               # where in the plan the arm is: which step it is running, of how many
+               "progress": "above", "step_index": 3, "step_total": 8,
                "plan": {"n": 1, "intent": "sort", "picks": ["3"],
+                        "question": "", "unresolved": [],
                         "steps": [{"action": "above", "note": "above #3",
                                    "pose": [0.3, -0.4, 0.12]}]}},
               {"phase": "done", "verified": 2, "missed": 1}]
@@ -1138,7 +1150,10 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
     snapshots = []
     for index, (node_id, state, note) in enumerate(stages):
         bus.node(node_id, state, note)
-        bus.log(f"  etapa {node_id} -> {state}", node=node_id)
+        # The log line is the stage's own note, not a wrapper around it, because the page reads
+        # the first word of an execute line as the step in progress: a wrapper there made every
+        # plan/execute line read as the word "etapa".
+        bus.log(note, node=node_id)
         if index < len(states):
             bus.set_state(**states[index])
         snapshots.append(bus.snapshot())
@@ -1173,8 +1188,6 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
           f"the command box must show the sentence, got {run['command']!r}")
     check(report["run"]["planRows"] >= 1,
           f"the plan card must fill its steps table, got {run['planRows']} rows")
-    check(report["cells"]["row-intent"]["total"] > 0,
-          "the classification card must offer its options")
     check(report["run"]["logLines"] > 0, "the log must grow as the run publishes")
     check(report["run"]["phase"] == "terminado", f"the phase pill must follow the run, got "
                                      f"{run['phase']!r}")
@@ -1234,6 +1247,8 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
           f"the one finished task must be marked done: {tasks_html[:200]}")
     check("1 de 3" in run["tally"],
           f"the tally, bottom right of the plan, must say how far along it is: {run['tally']!r}")
+    check("tarea 3 de 3" in run["tally"],
+          f"and which task is the one being moved, not just how many are left: {run['tally']!r}")
     check("1 fallida" in run["tally"],
           f"and how many failed: {run['tally']!r}")
     for wanted in ("bola roja", "cesta roja", "cubo azul", "cesta azul"):
@@ -1259,34 +1274,409 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
     check(len(set(marks.values())) == 4,
           f"and the four marks must be four different glyphs, got {marks}")
 
-    # ---- la intención: tabla, celdas, elección resaltada y probabilidad --------------------
-    check(report["intentRows"] == 7,
-          f"the intention must be a row per field, got {report['intentRows']} rows")
-    check(report["cells"]["row-intent"]["total"] > 0,
-          "the intent row must offer its options as cells")
-
-    # ---- cada opción es una celda de una matriz, no una etiqueta suelta ------------------
+    # ---- la clasificación: la frase, la fiabilidad, y el abanico completo --------------------
     #
-    # Eran <span> en línea que se envolvían, y eso se leía como una lista corrida: no había forma
-    # de ver qué opciones competían entre sí dentro de un campo. Una celda de matriz es un bloque
-    # con anchura propia dentro de una rejilla, y eso es lo que se comprueba aquí.
-    for row_id, cells in report["cells"].items():
-        if cells["total"]:
-            check(cells["divs"] == cells["total"],
-                  f"every option in {row_id} must be a block cell, not an inline span: {cells}")
-            check(cells["spans"] == 0,
-                  f"{row_id} must have no inline option left over: {cells}")
-    for row_id, cls in report["grids"].items():
-        check("opts" in (cls or ""),
-              f"{row_id} must sit in the option grid, got {cls!r}")
+    # La caja responde a dos preguntas, no a una. «¿Qué ha dicho el robot?» la responde la frase.
+    # «¿Qué podría haber dicho?» la responde el abanico: todas las opciones de cada campo, porque
+    # ver «separar» al lado de «recoger» y de «parar» es lo que hace que la elegida signifique algo.
+    # Sin el abanico, la frase se lee como un resultado y no como una decisión.
+    check(run["said"] == "separar las piezas por color",
+          f"the classification box must say what was understood in one sentence, "
+          f"got {run['said']!r}")
+    # La fiabilidad sólo aparece cuando es baja, y nombra el campo flojo: un número sin dueño
+    # ("74%") no permite arreglar nada, "el color del destino (74%)" sí.
+    check(run["clsSure"] == "lo menos claro: el color del destino (74%)",
+          f"the weakest field must be named, not a bare number, got {run['clsSure']!r}")
+    check(run["clsWarn"] == "", f"this run doubted nothing, got {run['clsWarn']!r}")
 
-    # and the chosen one is a cell, highlighted, carrying the model's own probability
-    check('class="opt sel"' in run["intentHtml"],
-          f"the chosen option must be highlighted: {run['intentHtml'][:200]}")
-    check("98%" in run["intentHtml"],
-          f"the chosen option must show the model's probability: {run['intentHtml'][:200]}")
-    check("74%" in run["clsOverall"],
-          f"the card must show the overall confidence, got {run['clsOverall']!r}")
+    # El abanico: seis campos, cada uno con TODAS sus opciones, y exactamente una elegida.
+    # Los recuentos son los del vocabulario del modelo, no de esta ronda.
+    for field, expected in (("opt-intent", 16), ("opt-kind", 4), ("opt-color", 9),
+                            ("opt-count", 6), ("opt-place", 8), ("opt-sort", 3)):
+        row = run["options"][field]
+        check(row["total"] == expected,
+              f"{field} must offer all {expected} of its options, got {row['total']}")
+        check(row["chosen"] <= 1,
+              f"at most one option per field may be the chosen one, got {row}")
+        check(row["divs"] == row["total"],
+              f"every option in {field} must be a pill, not stray markup: {row}")
+    # This run: a sort, by colour, over every part, so the chosen ones are those three.
+    check(run["options"]["opt-intent"]["chosen"] == 1,
+          f"the run decided an intent, so one must be lit: {run['options']['opt-intent']}")
+    check(run["options"]["opt-sort"]["chosen"] == 1,
+          f"the run ordered by something: {run['options']['opt-sort']}")
+    # The probability belongs to the chosen option only, and the run's intent was trusted at 98%:
+    # that number has to be on the intent pill, and nowhere else in the row.
+    check("separar" in report["optionHtml"]["opt-intent"],
+          "the chosen intent must be among the ones offered")
+    check("98%" in report["optionHtml"]["opt-intent"],
+          f"the chosen intent must carry the model's own score: "
+          f"{report['optionHtml']['opt-intent'][:200]}")
+    for field in ("opt-intent", "opt-kind", "opt-color", "opt-count", "opt-place", "opt-sort"):
+        scores = [mark for mark in report["optionScores"][field]]
+        check(len(scores) <= 1,
+              f"only the chosen option in {field} may carry a score, got {scores}")
+    # Nothing is on the table in this run's data, so nothing may be marked as existing there.
+    check(sum(row["here"] for row in run["options"].values()) == 0,
+          f"no detection means no option may claim to be on the table: {run['options']}")
+
+    # ---- la línea "ahora", sobre el mapa -------------------------------------------------
+    # La pregunta que un mapa no responde de un vistazo: qué hace el brazo EN ESTE INSTANTE. Se
+    # monta de lo que el robot publica -la palabra de acción, la tarea marcada como en curso, y el
+    # contador de pasos-, no de lo que la página deduzca. Lo que se ve aquí es el final de la
+    # ronda: la orden ya se ejecutó, así que la línea NO sigue hablando en presente.
+    check(run["routeNow"] == "terminado",
+          f"a finished run must leave the line at its phase, not claim motion that ended, "
+          f"got {run['routeNow']!r}")
+    # Y una orden recién dada, sin ningún paso todavía, se dice como orden: qué tiene el robot
+    # entre manos, que es la misma pregunta.
+    check(report["routeNow"] == "orden: \u00absepara las piezas por colores\u00bb",
+          f"a command with no step yet must show as the command it is, "
+          f"got {report['routeNow']!r}")
+
+    # ---- los pasos: sólo el verbo ---------------------------------------------------------
+    # La matriz tiene una columna por tarea y una fila por movimiento. La pose en milímetros y el
+    # código "#2" se han ido a propósito: nadie mueve un brazo con esos números, y su sitio es el
+    # registro.
+    check(run["stepColumns"] >= 1,
+          f"the movement matrix must have a column per task, got {run['stepColumns']}")
+    check("pose" not in run["tasks"] and "mm" not in run["tasks"],
+          "no millimetres in the panel")
+
+
+def test_the_dout_is_the_plan_s_question_and_the_panel_sees_it():
+    """La duda vive en el plan, y la caja la lee de ahí.
+
+    Era una línea muerta: ``paintClassification`` leía ``unresolved`` y ``question`` de
+    ``classification``, y ``parse`` nunca los publicó allí -viven en el plan, que es quien para a
+    preguntar «¿cuál de las dos rojas?»-. La línea existía en la página y no se veía nunca. Ahora
+    ``_publish_plan`` los publica y la caja los lee de ``window.state.plan``.
+
+    Un solo snapshot basta: la pregunta se pinta en cuanto el plan llega, que es lo que se comprueba.
+    """
+    if shutil.which("node") is None:
+        print("  (node not found: the page's own script was not exercised)")
+        return
+    bus = telemetry.Bus()
+    bus.node("ground", telemetry.WARN, "Aclaración: hay dos bolas rojas")
+    bus.set_state(phase="command", command="coge la bola roja",
+                  classification={"intent": "pick", "items": [{"kind": "ball", "color": "red"}],
+                                  "summary": "coger una bola roja"},
+                  plan={"question": "hay dos bolas rojas, ¿cuál?",
+                        "unresolved": ["la bola roja: dos candidatos"]})
+    report = dashboard_client_report([[bus.snapshot()]])
+    if report is None:
+        print("  (SKIPPED the doubt line: node is not installed, so the page was never loaded "
+              "and there is nothing to read.)")
+        return
+    check(not report.get("loadError"), f"the page must load: {report.get('loadError')}")
+    check(not report["throws"], f"a snapshot must never throw: {report['throws']}")
+    run = report["run"]
+    check("hay dos bolas rojas" in run["clsWarn"],
+          f"the robot's question must reach the classification box, got {run['clsWarn']!r}")
+    check("dos candidatos" in run["clsWarn"],
+          f"and so must what it could not resolve, got {run['clsWarn']!r}")
+    check(run["said"] == "coger una bola roja",
+          f"and the box still says what was understood, got {run['said']!r}")
+
+
+def test_the_line_above_the_map_says_what_the_arm_is_doing():
+    """«ahora: trasladar · cubo azul → cesta azul · paso 3 de 8», while it is happening.
+
+    The map answers "where is this command going", which is a question about the process. The one
+    asked while watching is "what is the robot doing RIGHT NOW", and it used to be assembled by eye
+    out of the execution box's note, the lit row of the plan and the action word of the step. It is
+    one line now, built from what the robot publishes: the step it is on, of how many, and the task
+    it marked as being executed.
+    """
+    if shutil.which("node") is None:
+        print("  (node not found: the page's own script was not exercised)")
+        return
+    bus = telemetry.Bus()
+    bus.node("execute", telemetry.ACTIVE, "trasladar")
+    bus.set_state(phase="sorting", command="separa las piezas por colores",
+                  moving=True,
+                  progress="carry", step_index=3, step_total=8,
+                  tasks=[{"key": "c:bola roja:cesta roja", "label": "bola roja \u2192 cesta roja",
+                          "done": True, "state": "done"},
+                         {"key": "c:cubo azul:cesta azul", "label": "cubo azul \u2192 cesta azul",
+                          "done": False, "state": "doing"}],
+                  plan={"steps": [{"action": "carry", "note": "carry #7", "pose": None}]})
+    report = dashboard_client_report([[bus.snapshot()]])
+    if report is None:
+        print("  (SKIPPED the now line: node is not installed, so the page was never loaded "
+              "and there is nothing to read.)")
+        return
+    check(not report.get("loadError"), f"the page must load: {report.get('loadError')}")
+    check(not report["throws"], f"a snapshot must never throw: {report['throws']}")
+    check(report["routeNow"] == "ahora: trasladar \u00b7 cubo azul \u2192 cesta azul \u00b7 paso 3 de 8",
+          f"the line must say what is happening now, with the part and the step, "
+          f"got {report['routeNow']!r}")
+
+
+def test_the_now_line_stops_saying_the_arm_is_moving_when_it_is_not():
+    """The verb in the present tense only while the robot says the arm is moving.
+
+    ``progress``, ``step_index`` and ``step_total`` are written per step and were never
+    cleared, and the phase stays ``command``/``sorting`` throughout verification and
+    recovery. So after the last step of a plan the panel kept asserting the last verb -
+    «ahora: retirar · paso 8 de 8» - while the robot was measuring where the part came
+    to rest. The robot now publishes ``moving``, and the page keys its present tense on
+    that flag instead of on the phase.
+
+    This is the regression test for a dashboard that lies about what the arm is doing,
+    which is the one failure a live demo cannot survive.
+    """
+    if shutil.which("node") is None:
+        print("  (node not found: the page's own script was not exercised)")
+        return
+    # A finished plan: the step counter and the action word are still there, and the
+    # phase is still the command's, and the task is still the one being placed.
+    bus = telemetry.Bus()
+    bus.node("execute", telemetry.OK, "8 pasos, 1 agarre(s)")
+    bus.set_state(phase="sorting", command="separa las piezas por colores",
+                  moving=False, progress="retreat", step_index=0, step_total=0,
+                  tasks=[{"key": "c:cubo azul:cesta azul", "label": "cubo azul \u2192 cesta azul",
+                          "done": True, "state": "done"}])
+    report = dashboard_client_report([[bus.snapshot()]])
+    if report is None:
+        print("  (SKIPPED the now line: node is not installed, so the page was never loaded "
+              "and there is nothing to read.)")
+        return
+    said = report["routeNow"]
+    check("retreat" not in said and "paso" not in said,
+          f"a finished plan must not still name its last step, got {said!r}")
+    check(not said.startswith("ahora:"),
+          f"a finished plan must not claim the arm is moving, got {said!r}")
+
+    # And the two phases that are not motion at all get their own sentence.
+    for phase, expected in (("verifying", "midiendo"), ("recovering", "recuperando")):
+        bus = telemetry.Bus()
+        bus.set_state(phase=phase, command="separa las piezas por colores",
+                      moving=False, progress="", step_index=0, step_total=0, tasks=[])
+        report = dashboard_client_report([[bus.snapshot()]])
+        if report is None:
+            print("  (SKIPPED the now line: node is not installed)")
+            return
+        check(expected in report["routeNow"],
+              f"{phase} has to say what it is doing, got {report['routeNow']!r}")
+
+
+def test_the_option_space_is_there_before_any_command():
+    """El abanico completo está desde el primer fotograma, y los puntos siguen a la percepción.
+
+    Dos cosas, y las dos son de la misma idea: la caja de clasificación es ESTÁTICA.
+
+    1. El espacio de opciones no depende de la orden -¿qué podría haber dicho el modelo?- así que
+       aparece con la página y lo único que cambia con el tiempo es qué opción va resaltada.
+       Pintarlo al llegar la primera clasificación dejaba la caja vacía justo el rato en el que
+       alguien se está preguntando para qué sirve.
+    2. Los puntos verdes -"esta opción existe de verdad en la mesa"- dependen de la percepción, no
+       de la orden, así que se repintan cuando llegan detecciones nuevas. Sin eso se quedaban con
+       las de la primera mirada para siempre, porque la clasificación no había cambiado y el
+       repintado estaba colgado de ella.
+    """
+    if shutil.which("node") is None:
+        print("  (node not found: the page's own script was not exercised)")
+        return
+    SPACE = (("opt-intent", 16), ("opt-kind", 4), ("opt-color", 9), ("opt-count", 6),
+             ("opt-place", 8), ("opt-sort", 3))
+
+    # 1. Nothing has been understood yet: the whole space is on screen, nothing lit.
+    bus = telemetry.Bus()
+    bus.node("setup", telemetry.OK, "Isaac running; variant contained, camera top")
+    bus.set_state(phase="ready", sim="running")
+    first = dashboard_client_report([[bus.snapshot()]])
+    if first is None:
+        print("  (SKIPPED the option space: node is not installed, so the page was never "
+              "loaded and there is nothing to read.)")
+        return
+    check(not first.get("loadError"), f"the page must load: {first.get('loadError')}")
+    for field, expected in SPACE:
+        row = first["options"][field]
+        check(row["total"] == expected,
+              f"{field} must offer all {expected} of its options from the start, got {row['total']}")
+        check(row["chosen"] == 0, f"nothing is chosen before a command: {row}")
+        check(row["here"] == 0, f"nothing is on the table before the first look: {row}")
+    # Before any command the sentence only says that it is waiting; it never states a decision.
+    check(first["said"] in ("", "esperando una orden…"),
+          f"the sentence must not state a decision until something is understood, "
+          f"got {first['said']!r}")
+
+    # 2. A command is understood with nothing on the table yet, and then the robot looks.
+    bus = telemetry.Bus()
+    bus.node("understand", telemetry.OK, "coger y colocar un cubo rojo en una cesta roja")
+    bus.set_state(phase="command", command="pon el cubo rojo en la caja roja",
+                  classification={
+                      "intent": "pick_and_place", "sort_by": "none",
+                      "items": [{"kind": "cube", "color": "red",
+                                 "place": {"kind": "box", "color": "red"}}],
+                      "place": {"kind": "box", "color": "red"},
+                      "summary": "coger y colocar un cubo rojo en una cesta roja",
+                      "confidence": 0.74, "confidences": {"intent": 0.98}})
+    before_looking = bus.snapshot()
+    bus.set_state(detections=[{"id": 1, "kind": "cube", "color": "red", "prim": "cube_red",
+                               "container": False},
+                              {"id": 2, "kind": "box", "color": "red", "prim": "box_red",
+                               "container": True},
+                              {"id": 3, "kind": "tray", "color": "green", "prim": "tray_green",
+                               "container": True},
+                              {"id": 4, "kind": "ball", "color": "blue", "prim": "ball_blue",
+                               "container": False}])
+    after_looking = bus.snapshot()
+    report = dashboard_client_report([[before_looking], [after_looking]])
+    check(report is not None and not report.get("loadError"),
+          f"the page must load: {report and report.get('loadError')}")
+    check(not report["throws"], f"a snapshot must never throw: {report['throws']}")
+    options = report["options"]
+    # The command's own choices are lit, and only those. A chosen pill is not counted as "exists
+    # on the table" - it is the decision, and the dot says the other thing - so the two are added
+    # to get "everything that is real for this field".
+    check(options["opt-intent"]["chosen"] == 1, f"one intent is chosen: {options['opt-intent']}")
+    check(options["opt-kind"]["chosen"] == 1, f"one kind is chosen: {options['opt-kind']}")
+    check(options["opt-color"]["chosen"] == 1, f"one colour is chosen: {options['opt-color']}")
+    check(options["opt-place"]["chosen"] == 1, f"one destination is chosen: {options['opt-place']}")
+    # And the dots follow the look, which arrived with the classification unchanged: the balls and
+    # the trays are on the table even though nothing was said about them.
+    marked_kinds = options["opt-kind"]["chosen"] + options["opt-kind"]["here"]
+    check(marked_kinds == 2,
+          f"cube and ball are both on the table: {options['opt-kind']}")
+    marked_colours = options["opt-color"]["chosen"] + options["opt-color"]["here"]
+    check(marked_colours == 3,
+          f"red, green and blue are all on the table: {options['opt-color']}")
+    check(marked_colours < 9,
+          f"but not the six the model knows and this table does not have: {options['opt-color']}")
+    marked_places = options["opt-place"]["chosen"] + options["opt-place"]["here"]
+    check(marked_places == 2,
+          f"box and tray are both destinations on the table: {options['opt-place']}")
+    # The chosen one keeps its score through all of it.
+    check("98%" in report["optionHtml"]["opt-intent"],
+          "the chosen intent still carries its own score")
+    # And "sin ordenar" is lit, because this command is not a sort: the model decided there is no
+    # order. The difference against the case above - nothing decided yet, nothing lit - is the
+    # whole point of the pill.
+    check(options["opt-sort"]["chosen"] == 1,
+          f"this command orders nothing, and that is a decision: {options['opt-sort']}")
+
+
+def test_the_robot_says_what_it_understood_in_one_sentence():
+    """``separar las piezas por color``, not a highlighted cell in a grid of options.
+
+    The panel's classification box reads one sentence, and the sentence is built by
+    ``describe.understood`` from the decision itself - the same ``phrase`` the log notes and the
+    grounding questions use, so there is no third Spanish in the system. What is checked here is
+    that each intent reads as something a person would say, and that a destination is included
+    only when the sentence named one.
+    """
+    module = load_demo11()
+    module.load_demo10()
+    import describe
+
+    cases = [
+        # (command, expected)
+        ({"intent": "sort", "items": [], "sort_by": "color", "place": None},
+         "separar las piezas por color"),
+        ({"intent": "sort", "items": [{"kind": "cube", "color": "red", "quantity": 1}],
+          "sort_by": "kind", "place": None},
+         "separar un cubo rojo por tipo"),
+        ({"intent": "pick_and_place",
+          "items": [{"kind": "cube", "color": "red", "quantity": 1}],
+          "place": {"kind": "box", "color": "red"}, "sort_by": "none"},
+         "coger y colocar un cubo rojo en una cesta roja"),
+        # A pick with nowhere to put it says so by not saying a destination.
+        ({"intent": "pick", "items": [{"kind": "ball", "color": "green", "quantity": 1}],
+          "place": None, "sort_by": "none"},
+         "coger una bola verde"),
+        ({"intent": "pick", "items": [{"kind": "ball", "color": "blue", "quantity": 3}],
+          "place": None, "sort_by": "none"},
+         "coger tres bolas azules"),
+        ({"intent": "clear", "items": [], "place": None, "sort_by": "none"},
+         "recoger todo lo que hay en la mesa"),
+        # An intent the model does not use is not translated into a broken sentence.
+        ({"intent": "not_an_intent", "items": [], "place": None, "sort_by": "none"},
+         "no he entendido la orden"),
+    ]
+    for command, expected in cases:
+        got = describe.understood(command)
+        check(got == expected, f"{command['intent']}: expected {expected!r}, got {got!r}")
+    # And the demo publishes it, so the page never builds a sentence of its own.
+    bus = telemetry.Bus()
+
+    class Model:
+        def parse(self, text):
+            return {"intent": "sort", "items": [], "sort_by": "color", "place": None,
+                    "confidences": {"intent": 0.9}, "confidence": 0.9, "parser": "rules"}
+
+    module.ModelSpy(Model(), bus).parse("separa las piezas por colores")
+    classification = bus.snapshot()["state"]["classification"]
+    check(classification["summary"] == "separar las piezas por color",
+          f"parse must publish the sentence, got {classification.get('summary')!r}")
+
+
+def test_the_plan_marks_the_task_the_arm_is_on():
+    """``doing`` lo pone el robot, no la página: es el único que sabe qué pieza está moviendo.
+
+    The panel used to infer "in progress" by comparing a row's key (a part's name) with the action
+    word the executor published ("lift"), and the two never match, so the row never lit up in a
+    real run. ``run_plan`` marks the tasks of the plan it starts, and leaves alone the ones
+    ``check`` has already measured.
+    """
+    module = load_demo11()
+    module.load_demo10()
+    import planner
+
+    class NS:
+        lang = "es"
+
+    class Stub(module.MonitoredRobot):
+        def __init__(self):
+            self.bus = telemetry.Bus()
+            self.args = NS()
+            self._task_rows = {}
+            self._plan_n = 0
+            self._step_i = self._step_n = 0
+            self.ledger = module.TaskLedger()
+
+    from scene import Scene
+
+    recorded = next((Scene.read(path) for path in sorted((ROOT / "tests" / "fixtures").glob("*.json"))
+                     if len(Scene.read(path).containers) >= 2
+                     and len(Scene.read(path).objects) >= 2), None)
+    check(recorded is not None, "a recorded scene with two baskets is needed for this")
+    if recorded is None:
+        return
+    plan = planner.plan_command({"intent": "sort", "sort_by": "color", "items": [],
+                                 "sort_filter": []}, recorded)
+    premise = {pick: f"thing#{pick}" for pick in plan.picks}
+    for place in plan.places:
+        premise.setdefault(place, f"tray#{place}")
+
+    robot = Stub()
+    robot._note_tasks(plan, premise)
+    states = [row["state"] for row in robot.bus.snapshot()["state"]["tasks"]]
+    check(all(state == "todo" for state in states),
+          f"nothing is in progress until a plan runs, got {states}")
+
+    def one_of(task):
+        sub = planner.Plan(intent=plan.intent)
+        sub.picks = [task.pick]
+        sub.places = [task.place]
+        sub.tasks = [task]
+        return sub
+
+    robot._mark_doing(one_of(plan.tasks[0]), premise)
+    rows = robot.bus.snapshot()["state"]["tasks"]
+    check(rows[0]["state"] == "doing",
+          f"the running plan's task must say it is being done: {rows[0]}")
+    check(all(row["state"] == "todo" for row in rows[1:]),
+          "and the rest must be back to pending, not left as if they were running")
+    # A finished one keeps its verdict: re-planning it is not a new attempt.
+    robot.ledger.record(robot._task_key(plan.tasks[-1], premise), True)
+    robot._settle_rows()
+    robot._mark_doing(one_of(plan.tasks[-1]), premise)
+    done = [row for row in robot.bus.snapshot()["state"]["tasks"] if row["done"]]
+    check(len(done) == 1 and done[0]["state"] == "done",
+          f"a verified task must not go back to in progress: {done}")
 
 
 def test_the_plan_lists_its_tasks_and_ticks_off_the_finished_ones():
@@ -2028,40 +2418,314 @@ def test_the_log_is_a_popup_behind_an_icon_button_in_the_header_and_not_on_the_m
     check('id="log"' in popup and 'id="diag"' in popup, "the log and diagnostics are in its popup")
 
 
-def test_the_right_column_pairs_camera_and_perception_and_merges_control_with_the_environment():
-    """Camera and perception share one fixed row; control and environment are one panel with a
-    moving start bar, and the camera says it is not connected until a frame arrives."""
+def test_the_camera_leads_the_screen_and_control_sits_with_the_environment():
+    """From the top: the stage rail, then entorno and comando side by side, then what the robot
+    understood (70% of the width) beside the objective (30%), then the camera, the perception and the
+    plan in one row, the camera widest. Start, stop and the moving bar share the entorno card, and
+    without a frame the camera says it is not connected.
+
+    The first version of this page had the camera nested in a control column that was never closed:
+    it was 2 px tall at 1366x768 and nothing caught it, because the old check only read strings.
+    The layout itself is measured in a browser by the screenshot run; this test pins the order of
+    the blocks so a column cannot silently move to the wrong place.
+    """
     page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
-    pair = page[page.index('class="pair"'):page.index("</main>")]
-    check('id="frame"' in pair and 'id="detections"' in pair,
-          "the camera and the perception table are in the same row")
-    check('id="cam-empty"' in page and "cámara aún no conectada" in page,
-          "without a frame the camera says it is not connected")
-    entorno = page[page.index('id="entorno-card"'):page.index('id="comando-card"')]
-    check(page.index('id="entorno-card"') < page.index('id="comando-card"') < page.index('class="pair"'),
-          "the right column reads top to bottom: control and environment, command, then camera and perception")
-    check('class="help"' in page[page.index('id="comando-card"'):page.index('class="pair"')]
-          and 'class="help"' in entorno,
-          "the command and environment panels each carry an info icon in their title bar")
-    check('id="start"' in entorno and 'id="stop"' in entorno and 'id="start-bar"' in entorno,
-          "start, stop and the moving bar sit in the same panel as the environment settings")
+    check(page.index('id="stage-rail"') < page.index('class="ctrl-row"')
+          < page.index('class="top-row"') < page.index('class="row4"'),
+          "the order is: stage rail, entorno and comando, the top row, then camera, perception and plan")
+    top = page[page.index('class="top-row"'):page.index('class="row4"')]
+    understand = top[top.index('class="card understand-card"'):top.index('id="objetivo-card"')]
+    objetivo = top[top.index('id="objetivo-card"'):]
+    row4 = page[page.index('class="row4"'):page.index('id="paint-error"')]
+    camera = row4[row4.index('class="card cam-card"'):row4.index('class="card perc-card"')]
+    perc = row4[row4.index('class="card perc-card"'):row4.index('class="card plan-card"')]
+    plan = row4[row4.index('class="card plan-card"'):]
+    check('id="note-understand"' in understand and 'id="opt-intent"' in understand,
+          "what the robot understood sits in the wide card of the top row")
+    check('id="hero-tasks-list"' in objetivo and 'id="result-command"' in objetivo,
+          "the objective and its tasks sit beside it, in the narrow card")
+    check('id="frame"' in camera and 'id="cam-empty"' in camera and 'id="route-now"' in camera,
+          "the camera, with the line that says what the arm is doing, is in the row")
+    check('id="detections"' in perc, "the perception table is the middle card of the row")
+    check('id="plan-tasks"' in plan and 'id="exec-steps"' in plan, "the plan and its steps are the last card")
+    check(row4.index('class="card cam-card"') < row4.index('class="card perc-card"') < row4.index('class="card plan-card"'),
+          "the cards of the row read camera, perception, plan, left to right")
+    check("cámara aún no conectada" in page, "without a frame the camera says it is not connected")
+    bar = page[page.index('class="ctrl-row"'):page.index('class="top-row"')]
+    check('id="start"' in bar and 'id="stop"' in bar and 'id="start-bar"' in bar,
+          "start, stop and the moving bar sit in the entorno card")
+    check('id="env-summary"' in bar and 'id="send"' in bar,
+          "the environment summary and the command box share the row")
+    check('class="help"' in understand and 'class="help"' in objetivo,
+          "the understanding and the objective each carry an info icon in their title bar")
     check("startPending" in page and "RUNNING_PHASES" in page,
           "a press blocks the start button until the environment is running")
 
 
-def test_the_plan_box_lists_tasks_and_the_steps_with_their_poses_live_in_execution():
-    """Plan says what will be moved; Ejecución says how, step by step, with the pose of each."""
+def test_the_environment_configuration_is_one_popup_opened_left_of_the_start_button():
+    """The configuration used to be an expandable panel inside the environment card, which grew the
+    right column until the camera was below the fold: what a watched run needs is the state and the
+    camera, and what a one-off start needs is a form. Now every setting that decides how the
+    environment is built lives in a single popup, opened by a button to the left of "iniciar
+    entorno", and the environment group is left saying in one line what will be used."""
     page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
-    plan_block = page[page.index('if (nodeId === "plan")'):page.index('if (nodeId === "execute")')]
-    exec_block = page[page.index('if (nodeId === "execute")'):]
-    exec_block = exec_block[:exec_block.index("return null")]
-    check('id="plan-tasks"' in plan_block, "the plan box lists its tasks")
-    check("exec-steps" not in plan_block and '<table' not in plan_block,
-          "the plan box carries no steps and no poses")
-    check('id="exec-steps"' in exec_block and 'id="note-execute"' in exec_block,
-          "the execution box holds the steps and what is running now")
+    main_part = page[page.index("<main>"):page.index("</main>")]
+    entorno = main_part[main_part.index('id="env-group"'):main_part.index('id="cmd-group"')]
+    popup = page[page.index('id="env-modal"'):page.index("<main>")]
+    button = entorno[entorno.index('id="env-config"'):]
+    check(entorno.index('id="env-config"') < entorno.index('id="start"'),
+          "the configuration button sits to the left of iniciar entorno")
+    check("<svg" in button[:button.index("</button>")], "and it carries an icon, not a word on its own")
+    for name in ("scene-objects", "scene-containers", "scene-add-object", "scene-add-container",
+                 "scene-save", "scene-simple", "scene-start", "scene-message",
+                 "variant-sel", "camera-sel", "rounds", "seed-in"):
+        check(f'id="{name}"' in popup, f"{name} lives in the configuration popup")
+        check(f'id="{name}"' not in entorno, f"and no longer inside the environment panel")
+    check('id="scene-editor"' not in page and 'id="scene-json"' not in page
+          and 'id="scene-import"' not in page,
+          "the expandable panel and the JSON text box are gone")
+    check('id="scene-map"' in popup and 'id="scene-summary"' in popup,
+          "the popup draws the table and states in one line what is on it")
+    check(popup.index('id="variant-sel"') < popup.index('id="scene-map"'),
+          "the session comes first, and the table under it")
+    check(popup.index('id="scene-map"') < popup.index('id="scene-objects"'),
+          "the table is read before the lists it comes from")
+    check('class="split"' in popup and popup.index('id="scene-objects"') < popup.index('id="scene-containers"'),
+          "the pieces and the receptacles sit side by side, each with its own heading")
+    check('{ modal: "env-modal", open: "env-config", close: "env-close" }' in page,
+          "the popup opens and closes with that button, and with Escape and a click outside")
+    check('setPopupOpen(POPUPS.find(p => p.modal === "env-modal"), false)' in page,
+          "starting the environment closes it, so the start bar is visible while Isaac boots")
+    check('id="env-summary"' in entorno and "paintEnvSummary()" in page,
+          "the environment group still states, in one line, what the next start will use")
+    foot = popup[popup.index('id="scene-message"'):]
+    for name in ("scene-simple", "scene-save", "scene-start"):
+        check(f'id="{name}"' in foot, f"{name} is an action of the footer, not a stray in the form")
+    check(".modal-foot .actions button { flex: 1 1 0;" in page,
+          "the three actions share the width of the footer, a third each")
+
+
+def run_dashboard_controls():
+    """Load the shipped page, press its configuration button, and report what each press did.
+
+    ``tests/dashboard_controls.js`` runs the page's own script against a DOM that keeps the
+    handlers it was given, so a click is a click and a change is a change - the part of "is this
+    button wired to that window" that no amount of markup reading can answer. Returns None when
+    node is not installed, and a report with a ``loadError`` when the page's script threw.
+    """
+    node = shutil.which("node")
+    if node is None:
+        return None
+    done = subprocess.run([node, str(ROOT / "tests" / "dashboard_controls.js"),
+                           str(ROOT / "monitor" / "static" / "index.html")],
+                          capture_output=True, text=True, encoding="utf-8", timeout=60)
+    if done.returncode != 0:
+        return {"loadError": done.stderr[-400:]}
+    return json.loads(done.stdout)
+
+
+def test_the_environment_button_opens_the_popup_and_start_reads_what_it_holds():
+    """Markup can be perfect and the button dead; this presses it, for real, in the page.
+
+    The configuration moved out of the panel and into a window, and the risk of a move like that
+    is silent: the ids are in the page either way, so a markup test passes on a button wired to
+    nothing. So the page's own script runs here, the button is clicked, the form is changed, and
+    the start press is watched to see what it would have sent.
+    """
+    report = run_dashboard_controls()
+    if report is None:
+        print("  (node not found: the dashboard's own controls were not exercised)")
+        return
+    check(not report.get("loadError"), f"the page's script loads ({report.get('loadError')})")
+    for entry in report.get("steps", []):
+        check(entry["ok"], f"{entry['name']}" + (f": {entry['detail']}" if not entry["ok"] else ""))
+    check(not report.get("warnings"), f"nothing on the page warns: {report.get('warnings')}")
+
+
+def _presentation_snapshot(phase, node_states, tasks=None, detections=None,
+                           command="", classification=None, status=""):
+    """A real bus snapshot shaped for the presentation layer test."""
+    bus = telemetry.Bus()
+    for node_id, (state, note) in node_states.items():
+        bus.node(node_id, state, note)
+    fields = {"phase": phase, "moving": phase in ("sorting", "command")}
+    if tasks is not None:
+        fields["tasks"] = tasks
+    if detections is not None:
+        fields["detections"] = detections
+    if command:
+        fields["command"] = command
+    if classification is not None:
+        fields["classification"] = classification
+    if status:
+        fields["status"] = status
+    bus.set_state(**fields)
+    return [bus.snapshot()]
+
+
+def test_the_presentation_rail_and_tasks_mirror_real_telemetry():
+    """The judge-facing six-stage rail, the objective and the task list are read from the robot's
+    own state, never invented. The rail groups the twelve map stages into VER, ENTENDER,
+    PLANIFICAR, ACTUAR, VERIFICAR, RECUPERARSE; the task list never marks a task completed before
+    the robot says so.
+    """
+    report = dashboard_client_report([
+        _presentation_snapshot(
+            "sorting",
+            {"capture": (telemetry.OK, "2 cubos"), "perceive": (telemetry.OK, ""),
+             "link": (telemetry.OK, ""), "ground": (telemetry.OK, ""),
+             "understand": (telemetry.OK, "ordenar por color"), "plan": (telemetry.OK, "2 pasos"),
+             "execute": (telemetry.ACTIVE, "trasladar")},
+            tasks=[{"key": "a", "part": "cubo rojo", "destination": "roja",
+                    "label": "cubo rojo \u2192 roja", "done": True, "state": "done"},
+                   {"key": "b", "part": "cubo azul", "destination": "azul",
+                    "label": "cubo azul \u2192 azul", "done": False, "state": "doing"}],
+            detections=[{"id": 0, "kind": "cube", "color": "red", "prim": "red", "container": False},
+                        {"id": 1, "kind": "cube", "color": "blue", "prim": "blue", "container": False}],
+            command="separa las piezas por colores",
+            classification={"summary": "ordenar las piezas por color"}),
+    ])
+    if report is None:
+        print("  (SKIPPED: node is not installed, so the page was never loaded)")
+        return
+    check(not report.get("loadError"), f"the page loads: {report.get('loadError')}")
+    check(not report["throws"], f"painting the presentation must not throw: {report['throws']}")
+    p = report.get("present") or {}
+    check(p.get("stageCount") == 6, f"six stages, got {p.get('stageCount')}")
+    check(p.get("stageNames") == ["VER", "ENTENDER", "PLANIFICAR", "ACTUAR", "VERIFICAR", "RECUPERARSE"],
+          f"the stages read as the story: {p.get('stageNames')}")
+    check(p.get("stageClasses", [])[:3] == ["stage ok", "stage ok", "stage ok"],
+          f"ver, entender and plan have finished: {p.get('stageClasses')}")
+    check(p.get("stageClasses", [None] * 4)[3] == "stage active", "the acting stage is highlighted")
+    check(p.get("stageClasses", [None] * 6)[4] == "stage pending"
+          and p.get("stageClasses", [None] * 6)[5] == "stage pending",
+          "verify and recover stay pending until they happen")
+    check(p.get("heroObjective", "").startswith("Objetivo: ")
+          and "separa las piezas por colores" in p.get("heroObjective", ""),
+          f"the objective is the real command: {p.get('heroObjective')}")
+    check(p.get("heroTaskRows") == 2, f"both tasks are listed: {p.get('heroTaskRows')}")
+    check(p.get("heroStates") == {"doing": 1, "done": 1, "fail": 0, "todo": 0},
+          f"the task states mirror the robot, done only after verification: {p.get('heroStates')}")
+    check("1 de 2 completadas" in p.get("heroTally", ""), f"the tally counts verified tasks: {p.get('heroTally')}")
+    check(p.get("demoMessage", "").startswith("En curso"),
+          f"the demo line names what is moving now: {p.get('demoMessage')}")
+
+
+def test_the_presentation_reports_success_and_recovery_honestly():
+    """A finished run reads as completed, a recovery reads as recovering - not as either success or
+    a hard failure - and nothing is completed that was not physically verified.
+    """
+    done = dashboard_client_report([
+        _presentation_snapshot(
+            "done",
+            {"capture": (telemetry.OK, ""), "perceive": (telemetry.OK, ""), "link": (telemetry.OK, ""),
+             "ground": (telemetry.OK, ""), "understand": (telemetry.OK, ""), "plan": (telemetry.OK, ""),
+             "execute": (telemetry.OK, ""), "verify": (telemetry.OK, "")},
+            tasks=[{"key": "a", "label": "a", "done": True, "state": "done"},
+                   {"key": "b", "label": "b", "done": True, "state": "done"}],
+            command="separa las piezas por colores", status="SUCCESS"),
+    ])
+    rec = dashboard_client_report([
+        _presentation_snapshot(
+            "recovering",
+            {"capture": (telemetry.OK, ""), "execute": (telemetry.OK, ""), "plan": (telemetry.OK, ""),
+             "verify": (telemetry.WARN, "no dentro"), "recover": (telemetry.ACTIVE, "reintentando")},
+            tasks=[{"key": "a", "label": "a", "done": True, "state": "done"},
+                   {"key": "b", "label": "b", "done": False, "state": "doing"}],
+            command="separa las piezas por colores"),
+    ])
+    if done is None or rec is None:
+        print("  (SKIPPED: node is not installed, so the page was never loaded)")
+        return
+    dp = done.get("present") or {}
+    check(dp.get("demoStatus", "").startswith("ok"), f"a full success reads ok: {dp.get('demoStatus')}")
+    check("completado" in dp.get("demoMessage", ""), f"and says completed: {dp.get('demoMessage')}")
+    check(dp.get("heroStates", {}).get("done") == 2 and dp.get("heroStates", {}).get("fail") == 0,
+          f"both tasks completed after physical verification: {dp.get('heroStates')}")
+    rp = rec.get("present") or {}
+    check(rp.get("demoStatus", "").startswith("warn"), f"recovery reads warn, not a failure: {rp.get('demoStatus')}")
+    check(rp.get("heroRecovering") >= 1, f"the piece being retried says RECUPERANDO: {rp.get('heroRecovering')}")
+    check(rp.get("heroStates", {}).get("done") == 1 and rp.get("heroStates", {}).get("doing") == 1,
+          f"one verified, one still in recovery: {rp.get('heroStates')}")
+
+
+def test_the_presentation_does_not_invent_a_scene_before_it_exists():
+    """An idle dashboard shows every stage pending and says so, rather than inventing progress."""
+    report = dashboard_client_report([_presentation_snapshot("waiting_start", {})])
+    if report is None:
+        print("  (SKIPPED: node is not installed, so the page was never loaded)")
+        return
+    p = report.get("present") or {}
+    check(p.get("stageCount") == 6 and all(c == "stage pending" for c in p.get("stageClasses", [])),
+          f"every stage is pending before anything happens: {p.get('stageClasses')}")
+    check("Sin orden" in p.get("heroObjective", ""), f"no objective is invented: {p.get('heroObjective')}")
+    check(p.get("demoStatus", "").startswith("idle"), f"an idle dashboard says so: {p.get('demoStatus')}")
+
+
+def test_the_one_click_demo_is_in_the_header_and_the_advanced_controls_stay_reachable():
+    """The primary action is one button in the header; the environment, the full route and the log
+    stay reachable behind their buttons, and the camera keeps its place as the biggest element.
+    """
+    page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
+    header = page[page.index("<header>"):page.index("</header>")]
+    check('id="demo-run"' in header and "Iniciar demo" in header,
+          "the one-click demo is the header's primary action")
+    check('id="route-btn"' in header and 'id="route-modal"' in page
+          and 'id="flow-svg"' in page and 'id="route-now"' in page,
+          "the full twelve-stage route stays reachable in its own window")
+    check('id="stage-rail"' in page, "the six-stage rail is on the main screen")
+    for name in ("hero-objective", "hero-tasks-list", "hero-tally", "demo-status"):
+        check(f'id="{name}"' in page, f"{name} is declared for the presentation")
+    main_part = page[page.index("<main>"):page.index("</main>")]
+    check('id="stage-rail"' in main_part and 'id="demo-status"' in main_part,
+          "the rail and the demo status are in the main screen, not hidden in a window")
+    check('id="findings"' not in main_part and 'id="log"' not in main_part,
+          "findings and the log stay off the main screen")
+
+
+def test_the_motion_loop_does_not_render_every_physics_step():
+    """The per-step render is what ran the simulation at half real time; it is turned off while an
+    Executor drives, and the camera still gets its frames from explicit renders.
+
+    Measured with tools/probe_step_cost.py: a motion step is ~32 ms with a render and ~4 ms of
+    physics without, so the render was ~88% of the step - and it is redundant, because the live
+    picture and every tracked re-aim read the camera through ``isaac_io.capture``/``capture_rgb``,
+    which render themselves. This guards the two halves: the Executor raises the render interval,
+    and the capture path still renders.
+    """
+    source = (ROOT / "executor.py").read_text(encoding="utf-8")
+    check(re.search(r"MOTION_RENDER_INTERVAL\s*=\s*(1000000|1_000_000)", source) is not None,
+          "the render interval the motion loop uses is far beyond any single command's step count")
+    check("self.env.cfg.sim.render_interval = MOTION_RENDER_INTERVAL" in source,
+          "the Executor turns off the per-step render while it drives")
+    io_source = (ROOT / "isaac_io.py").read_text(encoding="utf-8")
+    for name in ("capture_rgb", "capture"):
+        idx = io_source.index(f"def {name}(")
+        nxt = io_source.find("\ndef ", idx + 1)
+        block = io_source[idx: nxt if nxt > 0 else len(io_source)]
+        check("env.sim.render()" in block, f"{name} still renders explicitly, so the camera is fed")
+
+
+def test_the_plan_box_lists_tasks_and_the_steps_live_in_execution():
+    """Plan says what will be moved; the steps say how, one verb per step.
+
+    The poses in millimetres and the blob code are gone on purpose: nobody moves an arm with those
+    numbers. The tasks and the steps share one card, tasks first, and the line "ahora" next to the
+    camera says what is in progress. The detail stays in the session log.
+    """
+    page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
+    plan_card = page[page.index('class="card plan-card"'):page.index("</main>")]
+    check('id="plan-tasks"' in plan_card, "the plan card lists its tasks")
+    check('id="exec-steps"' in plan_card and plan_card.index('id="plan-tasks"') < plan_card.index('id="exec-steps"'),
+          "the steps sit under the tasks, in the same card")
+    check('id="route-now"' in page, "what is in progress is said in one line, next to the camera")
     check("paintSteps(plan)" in page and 'el("exec-steps")' in page,
-          "the steps are painted into the execution box, from the plan")
+          "the steps are painted into the plan card, from the plan")
+    steps = page[page.index("function paintSteps("):]
+    steps = steps[:steps.index("\n}\n")]
+    code = "\n".join(line for line in steps.splitlines() if not line.strip().startswith("//"))
+    check("pose" not in code, "no millimetres in the steps table: their place is the session log")
+    check("step.pose" not in steps, "the pose is not even read into the panel")
 
 
 def test_the_page_names_every_status_command_state_and_phase_the_robot_can_publish():
@@ -2160,27 +2824,322 @@ def test_supervisor_can_stop_keep_the_report_and_start_a_new_process():
             supervisor.terminate()
 
 
+# --- arranque: reintentos automáticos cuando Isaac muere antes de estar listo ----------
+#
+# Isaac Sim faults natively during start-up on this machine - a thread with no Python frame
+# dies with STATUS_ENTRYPOINT_NOT_FOUND inside Kit's extension loader - and the supervisor
+# used to answer that by terminating the session and leaving the dashboard saying "no ha
+# arrancado". These tests exercise the retry with a child that dies on demand instead of a
+# real Isaac, so they run in seconds and can be run by anyone.
+
+
+def _fake_supervisor(directory, fail_times=1, start_attempts=3, signature="",
+                     startup_timeout=30, hang=False):
+    """A supervisor whose child fails ``fail_times`` launches, then behaves.
+
+    ``fail_times`` and the fault signature travel with the session arguments, because the
+    child is re-spawned per attempt and gets a fresh copy of its own module each time -
+    only the arguments survive. What the test asserts on is what the **supervisor**
+    publishes, which is the right thing anyway: ``start_attempt`` is the field the
+    dashboard renders, so asserting on it tests what the person actually sees.
+    """
+    from types import SimpleNamespace
+    from supervisor import Supervisor
+    import fake_session
+    args = SimpleNamespace(camera="top", variant="contained", rounds=1, seed=0,
+                           startup_timeout=startup_timeout, stop_timeout=1,
+                           session_dir=directory, start_attempts=start_attempts,
+                           fail_times=fail_times, signature=signature,
+                           hang_until=time.monotonic() + 120 if hang else 0.0)
+    return Supervisor(args, target=fake_session.run)
+
+
+def _start_and_wait(supervisor, timeout=60):
+    """Press start and poll until the session is ready or the child gives up."""
+    bus = supervisor.bus
+    cid = bus.send_control("start")
+    supervisor.start(bus.take_control())
+    deadline = time.monotonic() + timeout
+    while supervisor.child is not None and not supervisor.ready and time.monotonic() < deadline:
+        supervisor.poll()
+        time.sleep(.02)
+    return cid
+
+
+def test_a_failed_launch_is_retried_and_the_second_attempt_succeeds():
+    """One dead worker, then a good one: the session has to reach READY by itself.
+
+    This is the whole point of the retry. The properties that matter are that the attempt
+    number is published (so the dashboard can say «intento 2/3»), that the scene survives
+    the relaunch, and that nobody had to press start twice.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        supervisor = _fake_supervisor(directory, fail_times=1)
+        bus = supervisor.bus
+        cid = _start_and_wait(supervisor, timeout=40)
+        try:
+            check(supervisor.ready, "the session recovered on its own")
+            check(bus.snapshot()["state"].get("start_attempt") == "",
+                  "the attempt counter is cleared once ready")
+            check(bus.command_state(cid)["state"] == telemetry.SUCCESS,
+                  "start ends SUCCESS once the camera is up, even after a retry")
+            snapshot_state = bus.snapshot()["state"]
+            check(len(snapshot_state.get("catalog") or []) > 0,
+                  "the scene the person chose survives a relaunch")
+            check(any("intento 2 de 3" in event["message"]
+                      for event in bus.snapshot()["events"]),
+                  "the retry is visible in the log, not silent")
+            check(any("Reintentando" in event["message"] or "Error de arranque" in event["message"]
+                      for event in bus.snapshot()["events"]),
+                  "the reason for the retry is in the log")
+        finally:
+            bus.request_stop()
+            supervisor.terminate()
+
+
+def test_exhausted_attempts_report_a_reason_and_stop():
+    """Three dead workers: the dashboard must say why, and must not loop for ever."""
+    with tempfile.TemporaryDirectory() as directory:
+        supervisor = _fake_supervisor(directory, fail_times=9, start_attempts=3,
+                                      signature="entry point")
+        bus = supervisor.bus
+        cid = _start_and_wait(supervisor, timeout=60)
+        try:
+            check(bus.snapshot()["state"].get("phase") == "failed",
+                  "the session gives up with a failed phase")
+            check(bus.command_state(cid)["state"] == telemetry.FAILED,
+                  "the start command ends FAILED with a reason, not RUNNING")
+            reason = bus.snapshot()["state"].get("error", "")
+            check("3 intentos" in reason and "ENTRYPOINT" in reason.upper(),
+                  f"the reason names both the count and the fault, got {reason!r}")
+        finally:
+            supervisor.terminate()
+
+
+def test_an_intentional_stop_is_never_retried():
+    """A stop pressed by a person is a decision, not a failure: it must not relaunch."""
+    with tempfile.TemporaryDirectory() as directory:
+        supervisor = _fake_supervisor(directory, fail_times=0)
+        bus = supervisor.bus
+        _start_and_wait(supervisor, timeout=20)
+        bus.request_stop()
+        deadline = time.monotonic() + 20
+        while supervisor.child is not None and time.monotonic() < deadline:
+            supervisor.poll()
+            time.sleep(.02)
+        time.sleep(.4)
+        supervisor.poll()
+        try:
+            check(bus.snapshot()["state"].get("phase") in (None, "stopped", "failed"),
+                  f"the phase after a stop is terminal, got {bus.snapshot()['state'].get('phase')!r}")
+            check(not any("Reintentando" in event["message"]
+                          for event in bus.snapshot()["events"]),
+                  "an intentional stop relaunches nothing")
+        finally:
+            supervisor.terminate()
+
+
+def test_a_hung_startup_is_retried_too():
+    """A launch that says nothing is the other half of the native fault.
+
+    A faulted Kit kernel can hold the GPU, and the next launch then stalls behind it with no
+    output - so the timeout path has to retry just like the crash path does. A child that
+    produces nothing until the timeout stands in for it.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        supervisor = _fake_supervisor(directory, fail_times=0, start_attempts=2,
+                                      startup_timeout=2, hang=True)
+        bus = supervisor.bus
+        _start_and_wait(supervisor, timeout=60)
+        try:
+            check(any("intento 2 de 2" in event["message"]
+                      for event in bus.snapshot()["events"]),
+                  "a hung launch was relaunched")
+            check(bus.snapshot()["state"].get("phase") == "failed",
+                  "and then gave up with a failed phase")
+            reason = bus.snapshot()["state"].get("error", "")
+            check("2 intentos" in reason, f"the give-up reason names the count, got {reason!r}")
+        finally:
+            supervisor.terminate()
+
+
+def test_a_hung_startup_is_retried_too():
+    """A launch that says nothing is the other half of the native fault.
+
+    A faulted Kit kernel can hold the GPU, and the next launch then stalls behind it with no
+    output - so the timeout path has to retry just like the crash path does. A child that
+    produces nothing until the timeout stands in for it.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        supervisor = _fake_supervisor(directory, fail_times=0, start_attempts=2,
+                                      startup_timeout=2, hang=True)
+        bus = supervisor.bus
+        _start_and_wait(supervisor, timeout=90)
+        try:
+            check(any("intento 2 de 2" in event["message"]
+                      for event in bus.snapshot()["events"]),
+                  "a hung launch was relaunched")
+            check(bus.snapshot()["state"].get("phase") == "failed",
+                  "and then gave up with a failed phase")
+            reason = bus.snapshot()["state"].get("error", "")
+            check("2 intentos" in reason, f"the give-up reason names the count, got {reason!r}")
+        finally:
+            supervisor.terminate()
+
+
+
+def test_session_log_survives_kit_taking_the_standard_streams_over():
+    """The 19:26 session died on a print, not on physics: see ``supervisor.SessionLog``.
+
+    Isaac Lab's ``AppLauncher._create_app`` replaces ``sys.stdout`` with devnull while Kit boots
+    and then restores ``sys.__stdout__``; Kit's ``omni.kit.app`` installs a ``StreamInterceptor``
+    that forwards to the ``sys.__std*__`` pair it captured. The last thing in that chain is fd 1,
+    a descriptor the worker dup2'd onto the log and has no other claim on, and a write into it
+    raised ``OSError: [WinError 6] Controlador no válido`` at the first print of
+    ``isaaclab_tasks.utils.parse_cfg``. This replays that sequence in a child process - the same
+    arrangement the worker runs in - and asks whether the session log still receives it, which is
+    the property that keeps a logging failure from being reported as "el entorno no ha arrancado".
+
+    The child says it finished by writing a sentinel, not by exiting 0: a print that raises takes
+    the session down, and it is that survival this test is about.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        log_path = Path(directory) / "runtime.log"
+        done_path = Path(directory) / "done"
+        child = (
+            "import os, sys\n"
+            "sys.path.insert(0, %r)\n"
+            "from pathlib import Path\n"
+            "from supervisor import SessionLog\n"
+            "log = SessionLog(Path(%r))\n"
+            "captured_out, captured_err = sys.__stdout__, sys.__stderr__\n"
+            "sys.stdout = open(os.devnull, 'w')  # noqa: SIM115 - AppLauncher's devnull\n"
+            "os.close(1)  # the handle the restore dance lands on, gone: WinError 6 from inside\n"
+            "sys.stdout = sys.__stdout__  # AppLauncher's restore after Kit booted\n"
+            "sys.stderr = captured_err  # what Kit's StreamInterceptor leaves behind\n"
+            "print('[INFO]: Parsing configuration from: leisaac.tasks.lift_cube', flush=True)\n"
+            "captured_out.write('[py stdout]: forwarded\\n')\n"
+            "captured_err.write('[py stderr]: forwarded\\n')\n"
+            "log.flush()\n"
+            "Path(%r).write_text('done', encoding='utf-8')\n"
+        ) % (str(ROOT), str(log_path), str(done_path))
+        finished = subprocess.run([sys.executable, "-c", child], capture_output=True, text=True,
+                                  encoding="utf-8", timeout=60)
+        text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+        check(finished.returncode == 0 and done_path.exists(),
+              f"the worker survives AppLauncher and Kit swapping the streams over "
+              f"(rc={finished.returncode}, stderr={finished.stderr[-200:]!r})")
+        check("Parsing configuration from: leisaac" in text,
+              "a print after the restore still reaches the session log")
+        check("[py stdout]: forwarded" in text and "[py stderr]: forwarded" in text,
+              "a write on the streams Kit captured still reaches the session log")
+
+
+def test_session_log_retries_a_write_whose_handle_died():
+    """A log that cannot be written must not be able to take the run down with it."""
+    with tempfile.TemporaryDirectory() as directory:
+        log_path = Path(directory) / "runtime.log"
+        done_path = Path(directory) / "done"
+        child = (
+            "import sys\n"
+            "sys.path.insert(0, %r)\n"
+            "from pathlib import Path\n"
+            "from supervisor import SessionLog\n"
+            "log = SessionLog(Path(%r))\n"
+            "log.write('before the handle died\\n')\n"
+            "log._stream.close()  # what OSError WinError 6 feels like from the inside\n"
+            "log.write('after the handle died\\n')\n"
+            "log.flush()\n"
+            "Path(%r).write_text('done', encoding='utf-8')\n"
+        ) % (str(ROOT), str(log_path), str(done_path))
+        finished = subprocess.run([sys.executable, "-c", child], capture_output=True, text=True,
+                                  encoding="utf-8", timeout=60)
+        check(finished.returncode == 0 and done_path.exists(),
+              f"a write through a dead handle does not raise (rc={finished.returncode}, "
+              f"stderr={finished.stderr[-200:]!r})")
+        text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+        check("before the handle died" in text, "what was written before the handle died is kept")
+        check("after the handle died" in text, "a retried write lands in the reopened log")
+
 
 def test_scene_configuration_is_validated_and_reproducible():
     import copy
     import scene_config
-    config, items = scene_config.load()
-    check(len(items) == len(scene_spec.DEFAULT_SCENE), "default catalog covers the scene")
-    check(scene_config.build(config)[1] == items, "scene generation is deterministic")
-    custom = {"version":1, "objects":[{"id":"balls","kind":"ball","color":"red","count":2}],
-              "containers":[{"id":"left_box","name":"Izquierda","color":"red"},
-                            {"id":"right_box","name":"Derecha","color":"blue"}]}
-    _, custom_items = scene_config.build(custom)
-    check(len(custom_items) == 4, "counts expand into stable physical identities")
-    for bad in [dict(custom, version=2), dict(custom, surprise=True)]:
-        try: scene_config.build(bad)
-        except ValueError: check(True, "invalid scene is refused")
-        else: check(False, "invalid scene was accepted")
-    for field, value in [("color","pink"),("count",0),("count",65),("size_mm",40),("x",float("nan"))]:
-        bad=copy.deepcopy(custom); bad["objects"][0][field]=value
-        try: scene_config.build(bad)
-        except ValueError: check(True, "invalid object is refused")
-        else: check(False, "invalid object was accepted")
+    from unittest import mock
+    # Isolate from the saved scene: this test is about the DEFAULT catalog, and a file
+    # left on disk by a dashboard session must not decide what "default" means here.
+    with mock.patch.object(scene_config, "SAVED_SCENE",
+                           Path("no-existe-scene-config.json")):
+        config, items = scene_config.load()
+        check(len(items) == len(scene_spec.DEFAULT_SCENE), "default catalog covers the scene")
+        check(scene_config.build(config)[1] == items, "scene generation is deterministic")
+        custom = {"version":1, "objects":[{"id":"balls","kind":"ball","color":"red","count":2}],
+                  "containers":[{"id":"left_box","name":"Izquierda","color":"red"},
+                                {"id":"right_box","name":"Derecha","color":"blue"}]}
+        _, custom_items = scene_config.build(custom)
+        check(len(custom_items) == 4, "counts expand into stable physical identities")
+        for bad in [dict(custom, version=2), dict(custom, surprise=True)]:
+            try: scene_config.build(bad)
+            except ValueError: check(True, "invalid scene is refused")
+            else: check(False, "invalid scene was accepted")
+        for field, value in [("color","pink"),("count",0),("count",65),("size_mm",40),("x",float("nan"))]:
+            bad=copy.deepcopy(custom); bad["objects"][0][field]=value
+            try: scene_config.build(bad)
+            except ValueError: check(True, "invalid object is refused")
+            else: check(False, "invalid object was accepted")
+
+
+def test_the_saved_scene_is_what_a_plain_run_loads():
+    """A scene saved in the dashboard is the scene a bare ``python 11_…`` runs.
+
+    ``scene_config.load(None)`` used to mean ``default_config()``, so a run with no
+    ``--scene-config`` silently ignored the file the panel had written and put four
+    parts - two of them balls - on the table. For a live demo that is the difference
+    between the scene that was measured and one that was not, and the fix is that
+    ``load()`` falls back to the saved file before it falls back to the default.
+    """
+    import scene_config
+    from unittest import mock
+    with tempfile.TemporaryDirectory() as directory:
+        saved = Path(directory) / "scene_config.json"
+        saved.write_text(json.dumps(scene_config.demo_config()), encoding="utf-8")
+        with mock.patch.object(scene_config, "SAVED_SCENE", saved):
+            _, items = scene_config.load(None)
+            check([i.prim for i in items if not i.container] == ["cube_red", "cube_blue"],
+                  f"the saved scene is loaded, got {[i.prim for i in items]}")
+            check(not any(i.kind == "ball" for i in items),
+                  "the saved two-cube preset has no balls")
+            # And with no file there, the default scene is still the default.
+            saved.unlink()
+            _, items = scene_config.load(None)
+            check(len(items) == len(scene_spec.DEFAULT_SCENE),
+                  "with no saved file the default scene is used")
+
+
+def test_the_demo_preset_is_the_measured_two_cube_scene():
+    """The preset for a live demo: two cubes, two trays, positions that were run.
+
+    Balls are the failure mode this avoids. Measured over the recorded sessions, a ball
+    command ended FAILED with 0/1 verified and the seeds that finished needed refused
+    grasps; the seed that finished 2/2 with zero refusals was the two-cube one. The
+    preset is that scene written down, so a preset and a measurement cannot drift.
+    """
+    import scene_config
+    config, items = scene_config.build(scene_config.demo_config())
+    loose = [i for i in items if not i.container]
+    check(len(loose) == 2 and all(i.kind == "cube" for i in loose),
+          "the demo preset is two cubes, not balls")
+    check(len([i for i in items if i.container]) == 2,
+          "and two trays, one of each colour")
+    colours = {i.color for i in loose}
+    check(colours == {t.color for t in items if t.container},
+          f"each part has a tray of its own colour, got {sorted(colours)}")
+    for item in items:
+        check(scene_spec.WORK_X[0] <= item.x <= scene_spec.WORK_X[1]
+              and scene_spec.WORK_Y[0] <= item.y <= scene_spec.WORK_Y[1],
+              f"{item.prim} is inside the working area")
+    check(abs(loose[0].x - loose[1].x) >= 0.045,
+          "the two cubes are far enough apart for the segmentation to separate them")
 
 
 
@@ -2218,7 +3177,12 @@ def test_capacity_reserves_slots_and_refuses_overfill():
     import capacity
     import scene_config
     from types import SimpleNamespace
-    cfg, items = scene_config.load()
+    from unittest import mock
+    # The default scene, not whatever the dashboard last saved: this test names the
+    # prims of that scene.
+    with mock.patch.object(scene_config, "SAVED_SCENE",
+                           Path("no-existe-scene-config.json")):
+        cfg, items = scene_config.load()
     tasks = [SimpleNamespace(pick=1, place=3), SimpleNamespace(pick=2, place=3)]
     premise = {1: "cube", 2: "ball_red", 3: "box_red"}
     check(len(capacity.allocate(tasks[:1], premise, items)) == 1, "one part fits the default cavity")
@@ -2232,8 +3196,11 @@ def test_capacity_reserves_slots_and_refuses_overfill():
     tray.inner = (.12, .08)
     slots = capacity.allocate(tasks, premise, items)
     check(slots["cube"][1] != slots["ball_red"][1], "larger cavities reserve distinct placements")
+    with mock.patch.object(scene_config, "SAVED_SCENE",
+                           Path("no-existe-scene-config.json")):
+        fresh = scene_config.load()[1]
     try:
-        capacity.allocate(tasks[1:], premise, scene_config.load()[1], {"cube": ("box_red", (0, 0))})
+        capacity.allocate(tasks[1:], premise, fresh, {"cube": ("box_red", (0, 0))})
     except ValueError:
         check(True, "previous verified placements reserve space across commands")
     else:
@@ -2268,8 +3235,15 @@ def test_forwarding_does_not_mark_queued_commands_as_running():
 def test_catalog_prevents_occluded_parts_and_hidden_box_ambiguity():
     module = load_demo11()
     import scene_config
+    from unittest import mock
     robot = module.MonitoredRobot.__new__(module.MonitoredRobot)
-    _, robot.layout = scene_config.load(); robot._placed_slots = {}
+    # The four-part scene, which is the one this test is about: it has a red ball AND a red
+    # cube, so hiding one of them is a real ambiguity. (A dashboard session may have left a
+    # two-cube file on disk, and that scene has no red ball to occlude.)
+    with mock.patch.object(scene_config, "SAVED_SCENE",
+                           Path("no-existe-scene-config.json")):
+        _, robot.layout = scene_config.load()
+    robot._placed_slots = {}
     premise = {index:item.prim for index,item in enumerate(robot.layout) if item.prim != "ball_red"}
     check(bool(robot._catalog_gaps({"intent":"sort","items":[]},premise)), "an occluded piece cannot disappear from all")
     check(not robot._catalog_gaps({"intent":"pick","items":[{"kind":"cube","color":"blue"}]},premise), "unrelated occlusions do not block a fully resolved reference")
@@ -2366,6 +3340,49 @@ def test_handle_finishes_failure_and_diagram_without_motion():
         snap = robot.bus.snapshot()
         check(snap["commands"][-1]["state"] == expected, "parser errors and nonmoving intents have honest terminal states")
         check(not any(n["state"] == telemetry.ACTIVE for n in snap["nodes"]), "completed commands leave no stale active stage")
+
+def test_every_example_button_is_a_command_the_scene_can_carry_out():
+    """The example buttons are built from the scene being run, so each one names pieces and boxes
+    that exist in it. Every command a button sends must read without errors into an action the robot
+    knows, and for the demo scene each one must plan motion without asking anything.
+
+    What is covered: the rule parser, which is what reads these sentences without the GPU model, and
+    the planner, against a recorded scene that has the demo's two cubes and two boxes (its balls are
+    removed so the demo's colour sort is the same problem). What is not covered here: the model
+    itself, which takes the sentences the rules do not read.
+    """
+    import scene_config
+    import intent_parser
+    import planner
+    from scene import Scene
+    demo_commands, demo_catalog = [], None
+    for preset in ("demo", "default"):
+        canonical, parts = scene_config.build(scene_config.PRESETS[preset]())
+        catalog = scene_config.catalog(canonical, parts)
+        bus = telemetry.Bus()
+        bus.set_state(catalog=catalog)
+        report = dashboard_client_report([[bus.snapshot()]])
+        if report is None:
+            print("  (SKIPPED: node is not installed, so the example buttons were never built)")
+            return
+        commands = [text for text in report.get("exampleCommands", []) if text]
+        check(0 < len(commands) <= 12, f"{preset}: one to twelve examples, got {len(commands)}")
+        parser = intent_parser.HybridParser(fallback=None, catalog=catalog)
+        for text in commands:
+            command = parser.parse(text)
+            check(command["intent"] in ("pick", "pick_and_place", "sort") and not command.get("errors"),
+                  f"{preset}: '{text}' must read as an action without errors, got "
+                  f"{command['intent']} {command.get('errors')}")
+        if preset == "demo":
+            demo_commands, demo_catalog = commands, catalog
+    recorded = Scene.read(ROOT / "tests" / "fixtures" / "trial001.json")
+    recorded.objects = [thing for thing in recorded.objects if thing.kind == "cube"]
+    for text in demo_commands:
+        command = intent_parser.HybridParser(fallback=None, catalog=demo_catalog).parse(text)
+        plan = planner.plan_command(command, recorded)
+        check(plan.moves and not plan.question and not plan.unresolved,
+              f"the demo's '{text}' must plan motion without asking: {plan.unresolved} {plan.question}")
+
 
 def main() -> int:
     # Demo 11 is imported once, here, before any test runs. Three tests need its classes, and each
