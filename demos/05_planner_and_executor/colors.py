@@ -249,30 +249,18 @@ COLORS: dict[str, Color] = {
 
 # What the perception half actually looks for, in order.
 #
-# UNCHANGED from demo 09 on purpose. red, green and blue are the only three measured over
-# 20 trials of a full scene (117/120 kinds correct), and adding a fourth colour to this
-# tuple changes what every mask in the frame contains, so it has to earn its place the
-# same way those three did.
+# WIDENED to red, green, blue, yellow and purple, which is ``WIDER_DETECT`` below in
+# full. Each of the two added bands is measured separable from every other one in this
+# set - yellow peaks at H 29 (>= 20 hue units from red at 1, green at 69 and blue at
+# 110) and purple at H 153 - so nothing here can claim another's pixels by hue.
 #
-# What the nine-colour measurement (tools/calibrate_colours.py, results/
-# colour_calibration.md) established, for whoever wants to widen this:
-#
-#   usable   red H1, green H69, blue H110, yellow H29, purple H153,
-#            white (S0-1, V216-223), black (V67-69)
-#   unusable orange  H24 - a hue gap of 5 from yellow, saturation and value overlapping
-#            pink    H170 - a hue gap of 11 from red across the wrap, saturation 19-202
-#
-# White and black are separable, but not by hue: white has no saturation (0-1) and black
-# has no value above 69, and both are far from every other colour's range. They are off
-# by default for a different reason - the background beyond the table measures as white
-# and the robot's own links measure as black, so including them turns the whole frame
-# into detections. Yellow is off because it needs S >= 130 to clear the wood table, which
-# its measured S 167-180 supports; purple is off because it has never been through a
-# 20-trial check.
-#
-# So the next colour to try adding is purple, and `WIDER_DETECT` below is the list to
-# measure against demo 09's baseline before believing it.
-DEFAULT_DETECT = ("red", "green", "blue")
+# What this widening costs, and it is a real cost: neither of the two has been through
+# the 20-trial, full-scene check that the original three had. Yellow is the thin one
+# because it needs S >= 130 to clear the wood table (the table peaks at 95). The demo
+# reports both colours, so a wrong detection shows up as a wrong report rather than as a
+# silent mistake. ``--detect`` still accepts any single colour for whoever wants to
+# check one on its own.
+DEFAULT_DETECT = ("red", "green", "blue", "yellow", "purple")
 
 # Every colour the measurement says is separable from every other. NOT the detect set:
 # this is the candidate list, and widening DEFAULT_DETECT to it has to be re-measured

@@ -152,8 +152,43 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
     def config():
         import scene_config
         state = bus.snapshot()["state"]
-        return {"config": state.get("scene_config", scene_config.default_config()),
-                "available_colors": list(scene_config.AVAILABLE_COLORS)}
+        saved = state.get("scene_config", scene_config.default_config())
+        catalog = state.get("catalog")
+        if catalog is None:
+            # No session has built one yet (a fresh supervisor, or a page opened before starting):
+            # the same items the robot would build, so the table map is never empty on purpose.
+            try:
+                _, items = scene_config.build(saved)
+                catalog = scene_config.catalog(saved, items)
+            except (ValueError, TypeError):
+                catalog = []
+        return {"config": saved, "available_colors": list(scene_config.AVAILABLE_COLORS),
+                "catalog": catalog, "layout": scene_config.layout(),
+                # The presets are served rather than written in the page, so the
+                # button and the tests read the same scene. ``demo`` is the one a
+                # live presentation should start from; ``simple`` is the two-cube
+                # minimal one; ``default`` is the full four-part scene.
+                "presets": {name: scene_config.PRESETS[name]()
+                            for name in scene_config.PRESET_NAMES}}
+
+    @app.get("/api/config/preset/{name}")
+    def preset(name: str):
+        import scene_config
+        if name not in scene_config.PRESETS:
+            return JSONResponse({"error": f"Escena predefinida desconocida: {name}."},
+                                status_code=404)
+        try:
+            canonical, items = scene_config.build(scene_config.PRESETS[name]())
+        except (ValueError, TypeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        # Saved as well as returned: the supervisor reads its scene from the bus
+        # state and from disk, so a preset chosen here has to be both.
+        from supervisor import atomic_json
+        atomic_json(HERE.parent / "out11" / "scene_config.json", canonical)
+        catalog = scene_config.catalog(canonical, items)
+        bus.set_state(scene_config=canonical, catalog=catalog, error="")
+        return {"ok": True, "config": canonical, "catalog": catalog,
+                "layout": scene_config.layout()}
 
     @app.post("/api/config")
     def save_config(payload: dict):
@@ -166,8 +201,12 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
         except (ValueError, TypeError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
         atomic_json(HERE.parent / "out11" / "scene_config.json", canonical)
-        bus.set_state(scene_config=canonical, catalog=scene_config.catalog(canonical, items), error="")
-        return {"ok": True, "config": canonical}
+        catalog = scene_config.catalog(canonical, items)
+        bus.set_state(scene_config=canonical, catalog=catalog, error="")
+        # The catalog comes back with the answer because building it is what proves the scene is
+        # buildable: the page draws the table it just saved, so a scene that cannot be placed is
+        # reported before a two-minute start rather than during it.
+        return {"ok": True, "config": canonical, "catalog": catalog, "layout": scene_config.layout()}
 
     @app.get("/api/report")
     def report():
@@ -215,10 +254,14 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
         return {"ok": True, "text": text}
 
     @app.get("/")
-    def index() -> FileResponse:
+    def index():
         if not INDEX.exists():
             return JSONResponse({"error": "No se encuentra el archivo del panel."}, status_code=500)
-        return FileResponse(INDEX, media_type="text/html")
+        # La página se edita en caliente; sin esto el navegador servía una copia guardada y el
+        # panel no reflejaba los cambios hasta vaciar la caché a mano.
+        return FileResponse(INDEX, media_type="text/html",
+                            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                                     "Pragma": "no-cache", "Expires": "0"})
 
     @app.get("/api/health")
     def health() -> dict:

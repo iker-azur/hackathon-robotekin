@@ -13,8 +13,23 @@ import colors
 import real_world
 import scene_spec
 
-# Additional colours remain unavailable until a recorded validation earns them a place.
-AVAILABLE_COLORS = ("red", "green", "blue")
+# The colours a scene may be built from.
+#
+# WIDENED from three to five, and the widening is the interesting part: yellow and
+# purple are the two colours ``colors.py`` measured as separable from every other
+# ``WIDER_DETECT`` band (yellow H 29, purple H 153, both >= 20 hue units away from
+# red, green and blue), so a part of either colour can be SPAWNED and SEEN instead of
+# being accepted here and then never detected.
+#
+# What has NOT been earned yet, recorded so it is not forgotten: neither has been
+# through the 20-trial, full-scene check that red, green and blue had (117/120 kinds
+# correct). Yellow is the thin one - it needs S >= 130 to clear the wood table, which
+# its measured S 167-180 supports, but the table's saturation peaks at 95. White and
+# black stay out because the background beyond the table measures as white and the
+# robot's own links measure as black, so a white part would turn the whole frame into
+# detections. Orange and pink stay out because they were measured as NOT separable at
+# all (a hue gap of 5 from yellow, and of 11 from red).
+AVAILABLE_COLORS = ("red", "green", "blue", "yellow", "purple")
 COLOR_LABELS = {"red": "rojo", "green": "verde", "blue": "azul", "yellow": "amarillo", "purple": "morado"}
 
 
@@ -45,6 +60,63 @@ def simple_config():
     for tray in cfg["containers"]:
         tray["size_mm"][2] = 30
     return cfg
+
+
+def demo_config():
+    """The scene for a live demo: two cubes, two trays, positions that were run.
+
+    Balls were the problem this replaces. Measured over the recorded sessions
+    (``results/demo11_metrics.json``): a command to move a red ball ended FAILED,
+    0/1 verified, in 18.9 s, and the seeds that did finish needed 2 refused grasps
+    each. A ball meets the pads at a point and a cube at a face, and once a part is
+    tipped onto its edge it presents its diagonal - 42 mm to jaws that open 36.2 mm
+    - which no force can hold. The seed that finished 2/2 with **zero** refused
+    grasps was the one with two cubes of the same material and no spread.
+
+    So this preset is that scene, written down: two 30 mm cubes, the two trays of
+    matching colour, and fixed positions chosen inside the measured grasp envelope
+    (``results/grip_and_release.md``: the tool-centre servo holds a part anywhere in
+    the declared working area, and the servo is what makes a wider table usable).
+
+    ``--spread 0`` and the seed in the session settings keep the layout exactly
+    where this put it, because a randomised layout is the one thing a live demo
+    cannot afford to discover on stage.
+    """
+    return {
+        "version": 1,
+        "objects": [
+            # x 0.38 and 0.43: inside 0.27..0.52, and the pair is 50 mm apart so the
+            # segmentation keeps them separate at 640x480 (two reds within 8 mm is
+            # what ``dynamics.randomize`` rejects for exactly this reason).
+            {"id": "cube_red", "kind": "cube", "color": "red", "count": 1,
+             "size_mm": 30, "x": .38, "y": -.435},
+            {"id": "cube_blue", "kind": "cube", "color": "blue", "count": 1,
+             "size_mm": 30, "x": .43, "y": -.435},
+        ],
+        "containers": [
+            # Behind the parts, at y -0.50, so the arm never reaches over a tray to
+            # get to a cube. Same 70 mm outer / 56 mm cavity as the recommended
+            # tray in the setup sheet, which is what gives a 30 mm part its margin.
+            {"id": "tray_blue", "name": "Azul A", "aliases": [], "color": "blue",
+             "size_mm": [70, 70, 30], "cavity_mm": [56, 56], "wall_mm": 7,
+             "floor_mm": 6, "x": .32, "y": -.50},
+            {"id": "box_red", "name": "Roja A", "aliases": [], "color": "red",
+             "size_mm": [70, 70, 30], "cavity_mm": [56, 56], "wall_mm": 7,
+             "floor_mm": 6, "x": .44, "y": -.50},
+        ],
+    }
+
+
+
+# The named scenes the dashboard offers, in the order it should show them. Each
+# entry builds its own identical JSON every time, so a preset can never be half
+# edited by a previous save.
+PRESETS = {
+    "demo": demo_config,
+    "simple": simple_config,
+    "default": default_config,
+}
+PRESET_NAMES = tuple(PRESETS)
 
 
 def number(value, label, low, high):
@@ -175,7 +247,24 @@ def _check_position(item, others):
             raise ValueError(f"{item.prim} está demasiado cerca de {other.prim}.")
 
 
+# Where the dashboard saves a scene, and where a script that was not told anything else
+# looks. Both sides of the demo read the same file, so a scene saved in the panel is the
+# scene a plain ``python 11_real_sorting_with_monitor.py`` runs - which is what a
+# reproducible session needs. ``SAVED_SCENE`` is resolved at import time, not at call
+# time, because the demo's own module lives one directory up.
+SAVED_SCENE = (Path(__file__).resolve().parent / "out11" / "scene_config.json")
+
+
 def load(path=None):
+    """Build the scene to run: ``path`` if given, the saved one if it exists, else default.
+
+    ``path=None`` used to mean ``default_config()``, which meant a script run with no
+    ``--scene-config`` silently ignored the scene the dashboard had saved and put four
+    parts - two of them balls - on the table. For a live demo that is the difference
+    between the scene that was measured and one that was not.
+    """
+    if path is None and SAVED_SCENE.exists():
+        path = SAVED_SCENE
     return build(json.loads(Path(path).read_text(encoding="utf-8")) if path else default_config())
 
 
@@ -184,5 +273,19 @@ def catalog(config, items):
     return [{"id": item.prim, "kind": item.kind, "color": item.color, "container": item.container,
              "name": names.get(item.prim, {}).get("name", item.prim),
              "aliases": names.get(item.prim, {}).get("aliases", []),
-             "size": list(item.size), "inner": list(item.inner), "height": item.height}
+             "size": list(item.size), "inner": list(item.inner), "height": item.height,
+             # Where the builder put it. The dashboard's table map draws from these, so a scene
+             # can be seen instead of read: a part that would not fit is a position, and a
+             # position is the one thing a JSON form does not show.
+             "x": item.x, "y": item.y}
             for item in items]
+
+
+def layout():
+    """The two numbers a table map needs and must not invent: the working area, and where the arm is.
+
+    The dashboard draws the working area as a rectangle and the robot behind it. Hard-coding either
+    in JavaScript would make the map a picture of a table that is not the one on the bench.
+    """
+    return {"work_x": list(scene_spec.WORK_X), "work_y": list(scene_spec.WORK_Y),
+            "robot": list(scene_spec.ROBOT_XY), "reach": scene_spec.MAX_REACH_M}
