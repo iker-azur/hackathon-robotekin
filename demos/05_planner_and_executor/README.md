@@ -331,6 +331,26 @@ verify -> report
 Inputs are three ways at once — the browser's box, the microphone, the terminal — and `q` in the
 browser aborts a run mid-move, the same guarantee the viewer keys give.
 
+#### Presentation mode and speed (P1)
+
+Built on top of the panels above, for showing the demo rather than debugging it. The **Iniciar
+demo** button in the header loads the measured two-cube scene, starts Isaac (with P0's startup
+recovery), waits for *ready* and sends the scripted order on its own — one press, no manual scene
+setup, no duplicate starts, restartable. The main screen is trimmed to what an audience reads: the
+camera (biggest), the **objetivo y tareas** checklist, and a six-stage rail — **VER → ENTENDER →
+PLANIFICAR → ACTUAR → VERIFICAR → RECUPERARSE** — grouped from the same `telemetry.FLOW` stages,
+so it cannot invent a state. The full twelve-node route, the environment editor and the log stay
+behind their buttons. Everything is in Spanish; ids stay declared so the layout is responsive
+(1366×768 → 1920×1080).
+
+The speed half is one measured finding: the motion loop was paying for a `sim.render()` on **every**
+physics step (a step cost ~32 ms against ~4 ms of physics, per `tools/probe_step_cost.py`) — a
+render nobody in the loop reads, since the camera reads its own frame via
+`isaac_io.capture`/`capture_rgb`. `Executor` now raises the render interval while it drives
+(`MOTION_RENDER_INTERVAL`), so the physics is untouched and the grasps are unchanged, while the
+two-object order drops from ~72 s to ~26 s (see `results/demo11_perf.md` and
+`results/demo11_p1_informe.md`).
+
 | flag | default | |
 |---|---|---|
 | `--web` / `--no-web` | on | serve the dashboard on loopback |
