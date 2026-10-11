@@ -1008,13 +1008,13 @@ def test_nothing_can_paint_outside_its_own_box():
     check("clip-1" in block[:block.index("return null")], "the input box's note must be clipped")
     # understand and plan are no longer route boxes: they live on the main screen, where the
     # sentence and the option rows clip on their own elements
-    check('class="said clip-2" id="note-understand"' in page,
-          "the understanding sentence must clip to two lines on the main screen")
+    check('id="note-understand"' not in page,
+          "the understanding box has no sentence line: it shows the classification only")
     check('class="sure clip-1" id="cls-sure"' in page, "the confidence line must clip to one line")
     check("text-overflow: ellipsis" in page,
           "an edge label that cannot ellipsis will run over the box beside it")
-    # the plan's own rows, one per line
-    tasks = re.search(r"#plan-tasks \.what \{(.*?)\}", page, re.S)
+    # the checklist's rows, one per line
+    tasks = re.search(r"#hero-tasks-list \.what \{(.*?)\}", page, re.S)
     check(tasks and "text-overflow: ellipsis" in tasks.group(1),
           "a task label longer than the plan box must ellipsis, not overflow")
 
@@ -1242,13 +1242,13 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
     run = report["run"]
     tasks_html = run["tasks"]
     check(run["taskRows"] == len(TASKS),
-          f"the plan card must list every task, got {run['taskRows']} rows")
+          f"the objective's checklist must list every task, got {run['taskRows']} rows")
     check(tasks_html.count('class="done"') == 1,
           f"the one finished task must be marked done: {tasks_html[:200]}")
     check("1 de 3" in run["tally"],
-          f"the tally, bottom right of the plan, must say how far along it is: {run['tally']!r}")
-    check("tarea 3 de 3" in run["tally"],
-          f"and which task is the one being moved, not just how many are left: {run['tally']!r}")
+          f"the tally under the checklist must say how far along it is: {run['tally']!r}")
+    check('class="doing"' in tasks_html,
+          f"and the task being moved must be marked in the checklist, not just counted")
     check("1 fallida" in run["tally"],
           f"and how many failed: {run['tally']!r}")
     for wanted in ("bola roja", "cesta roja", "cubo azul", "cesta azul"):
@@ -1280,9 +1280,6 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
     # «¿Qué podría haber dicho?» la responde el abanico: todas las opciones de cada campo, porque
     # ver «separar» al lado de «recoger» y de «parar» es lo que hace que la elegida signifique algo.
     # Sin el abanico, la frase se lee como un resultado y no como una decisión.
-    check(run["said"] == "separar las piezas por color",
-          f"the classification box must say what was understood in one sentence, "
-          f"got {run['said']!r}")
     # La fiabilidad sólo aparece cuando es baja, y nombra el campo flojo: un número sin dueño
     # ("74%") no permite arreglar nada, "el color del destino (74%)" sí.
     check(run["clsSure"] == "lo menos claro: el color del destino (74%)",
@@ -1328,11 +1325,11 @@ def test_the_dashboard_repaints_the_whole_route_during_a_run():
     check(run["routeNow"] == "terminado",
           f"a finished run must leave the line at its phase, not claim motion that ended, "
           f"got {run['routeNow']!r}")
-    # Y una orden recién dada, sin ningún paso todavía, se dice como orden: qué tiene el robot
-    # entre manos, que es la misma pregunta.
-    check(report["routeNow"] == "orden: \u00absepara las piezas por colores\u00bb",
-          f"a command with no step yet must show as the command it is, "
-          f"got {report['routeNow']!r}")
+    # Y una orden recién dada, sin ningún paso todavía, dice sólo que el brazo no se ha movido:
+    # la orden ya está en el objetivo.
+    check(report["routeNow"] == "el brazo aún no se ha movido",
+          "a command with no step yet says the arm has not moved; the order itself is in the "
+          f"objective, not repeated here, got {report['routeNow']!r}")
 
     # ---- los pasos: sólo el verbo ---------------------------------------------------------
     # La matriz tiene una columna por tarea y una fila por movimiento. La pose en milímetros y el
@@ -1376,8 +1373,7 @@ def test_the_dout_is_the_plan_s_question_and_the_panel_sees_it():
           f"the robot's question must reach the classification box, got {run['clsWarn']!r}")
     check("dos candidatos" in run["clsWarn"],
           f"and so must what it could not resolve, got {run['clsWarn']!r}")
-    check(run["said"] == "coger una bola roja",
-          f"and the box still says what was understood, got {run['said']!r}")
+    check(run["said"] == "", f"the box does not repeat the command, got {run['said']!r}")
 
 
 def test_the_line_above_the_map_says_what_the_arm_is_doing():
@@ -1499,9 +1495,7 @@ def test_the_option_space_is_there_before_any_command():
         check(row["chosen"] == 0, f"nothing is chosen before a command: {row}")
         check(row["here"] == 0, f"nothing is on the table before the first look: {row}")
     # Before any command the sentence only says that it is waiting; it never states a decision.
-    check(first["said"] in ("", "esperando una orden…"),
-          f"the sentence must not state a decision until something is understood, "
-          f"got {first['said']!r}")
+    check(first["said"] == "", f"the box has no sentence to state a decision in, got {first['said']!r}")
 
     # 2. A command is understood with nothing on the table yet, and then the robot looks.
     bus = telemetry.Bus()
@@ -2440,14 +2434,15 @@ def test_the_camera_leads_the_screen_and_control_sits_with_the_environment():
     camera = row4[row4.index('class="card cam-card"'):row4.index('class="card perc-card"')]
     perc = row4[row4.index('class="card perc-card"'):row4.index('class="card plan-card"')]
     plan = row4[row4.index('class="card plan-card"'):]
-    check('id="note-understand"' in understand and 'id="opt-intent"' in understand,
-          "what the robot understood sits in the wide card of the top row")
+    check('id="opt-intent"' in understand and 'id="note-understand"' not in understand,
+          "what the robot understood sits in the wide card of the top row, as its classification")
     check('id="hero-tasks-list"' in objetivo and 'id="result-command"' in objetivo,
           "the objective and its tasks sit beside it, in the narrow card")
     check('id="frame"' in camera and 'id="cam-empty"' in camera and 'id="route-now"' in camera,
           "the camera, with the line that says what the arm is doing, is in the row")
     check('id="detections"' in perc, "the perception table is the middle card of the row")
-    check('id="plan-tasks"' in plan and 'id="exec-steps"' in plan, "the plan and its steps are the last card")
+    check('id="exec-steps"' in plan and 'id="hero-tasks-list"' not in plan,
+          "the plan is the last card, and it is the movement matrix: the checklist lives in the objective")
     check(row4.index('class="card cam-card"') < row4.index('class="card perc-card"') < row4.index('class="card plan-card"'),
           "the cards of the row read camera, perception, plan, left to right")
     check("cámara aún no conectada" in page, "without a frame the camera says it is not connected")
@@ -2600,15 +2595,16 @@ def test_the_presentation_rail_and_tasks_mirror_real_telemetry():
     check(p.get("stageClasses", [None] * 6)[4] == "stage pending"
           and p.get("stageClasses", [None] * 6)[5] == "stage pending",
           "verify and recover stay pending until they happen")
-    check(p.get("heroObjective", "").startswith("Objetivo: ")
+    check(p.get("heroObjective", "").startswith("Orden: «")
           and "separa las piezas por colores" in p.get("heroObjective", ""),
           f"the objective is the real command: {p.get('heroObjective')}")
     check(p.get("heroTaskRows") == 2, f"both tasks are listed: {p.get('heroTaskRows')}")
     check(p.get("heroStates") == {"doing": 1, "done": 1, "fail": 0, "todo": 0},
           f"the task states mirror the robot, done only after verification: {p.get('heroStates')}")
     check("1 de 2 completadas" in p.get("heroTally", ""), f"the tally counts verified tasks: {p.get('heroTally')}")
-    check(p.get("demoMessage", "").startswith("En curso"),
-          f"the demo line names what is moving now: {p.get('demoMessage')}")
+    check(p.get("demoMessage", "").startswith("Ejecutando la orden")
+          and "cubo" not in p.get("demoMessage", ""),
+          f"the demo line names the phase, and the camera line says what is moving: {p.get('demoMessage')}")
 
 
 def test_the_presentation_reports_success_and_recovery_honestly():
@@ -2706,21 +2702,29 @@ def test_the_motion_loop_does_not_render_every_physics_step():
         check("env.sim.render()" in block, f"{name} still renders explicitly, so the camera is fed")
 
 
-def test_the_plan_box_lists_tasks_and_the_steps_live_in_execution():
-    """Plan says what will be moved; the steps say how, one verb per step.
+def test_each_fact_is_painted_once_the_checklist_in_the_objective_and_the_matrix_in_the_plan():
+    """Each fact has one place on the screen. The objective owns the checklist, the count of finished
+    tasks and the last result; the plan card owns the movements, one row per move and one column per
+    task. The checklist and its count used to be painted in both cards, so the reader had to compare
+    two lists to find what was new.
 
     The poses in millimetres and the blob code are gone on purpose: nobody moves an arm with those
-    numbers. The tasks and the steps share one card, tasks first, and the line "ahora" next to the
-    camera says what is in progress. The detail stays in the session log.
+    numbers. The detail stays in the session log.
     """
     page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
     plan_card = page[page.index('class="card plan-card"'):page.index("</main>")]
-    check('id="plan-tasks"' in plan_card, "the plan card lists its tasks")
-    check('id="exec-steps"' in plan_card and plan_card.index('id="plan-tasks"') < plan_card.index('id="exec-steps"'),
-          "the steps sit under the tasks, in the same card")
+    check('id="exec-steps"' in plan_card, "the plan card holds the movement matrix")
+    check("hero-tasks-list" not in plan_card and "hero-tally" not in plan_card,
+          "the plan card does not repeat the checklist or its count")
+    check(page.count('id="hero-tasks-list"') == 1, "the checklist is declared once, in the objective")
+    check('id="plan-tasks"' not in page and 'id="tally"' not in page,
+          "the old list and its count are gone from the page")
+    check(page.count("completadas") == 1, "the count of finished tasks is written in one place only")
+    check(page.count('id="result-session"') == 1 and 'id="result-session"' in plan_card,
+          "the session line sits at the bottom of the plan card, once")
     check('id="route-now"' in page, "what is in progress is said in one line, next to the camera")
     check("paintSteps(plan)" in page and 'el("exec-steps")' in page,
-          "the steps are painted into the plan card, from the plan")
+          "the matrix is painted from the plan")
     steps = page[page.index("function paintSteps("):]
     steps = steps[:steps.index("\n}\n")]
     code = "\n".join(line for line in steps.splitlines() if not line.strip().startswith("//"))
@@ -3413,6 +3417,37 @@ def main() -> int:
         return 1
     print("RESULT: SUCCESS")
     return 0
+def test_the_current_action_is_said_once_and_the_objective_is_the_typed_order():
+    """What the arm is doing now is said by the camera line, and nowhere else: the status bar says
+    the phase, and the rail's acting stage says the task's position. The objective is the order as
+    it was typed; what the robot made of it is in "lo que entendió el robot", not repeated there.
+    """
+    page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
+
+    def body(name):
+        start = page.index(f"function {name}(")
+        return page[start:page.index("\n}\n", start)]
+
+    demo = body("paintDemo")
+    check("ACTION_ES" not in demo and "Ejecutando la orden" in demo,
+          "the status bar says the phase, not the action the arm is taking")
+    stage = body("stageNote")
+    check("ACTION_ES" not in stage and "tarea ${at + 1} de ${rows.length}" in stage,
+          "the rail's acting stage says which task is in progress, not the action")
+    hero = body("paintHero")
+    check("classification" not in hero, "the objective does not take the robot's sentence")
+    check("Orden: " in hero, "the objective shows the order as it was typed")
+
+
+def test_an_example_fills_the_command_box_and_waits_for_enviar():
+    """Choosing an example puts its command in the box and leaves it there: the robot acts only when
+    the operator presses enviar, so a stray click on an example cannot start a motion."""
+    page = (ROOT / "monitor" / "static" / "index.html").read_text(encoding="utf-8")
+    start = page.index("button.onclick = () => { el(\"cmd\").value = command;")
+    line = page[start:page.index("\n", start)]
+    check('el("cmd").value = command' in line, "an example writes its command into the box")
+    check('el("send")' not in line and ".click()" not in line,
+          "and does not send it: enviar is the only thing that sends")
 
 
 if __name__ == "__main__":

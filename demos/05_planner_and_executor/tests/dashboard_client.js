@@ -277,8 +277,8 @@ const RUN = {
   // chosen one, and how many exist on the table.
   options: optionsReport(),
   routeNow: textOf("route-now"),
-  tasks: htmlOf("plan-tasks"),
-  taskRows: tagCount("plan-tasks", "li"),
+  tasks: htmlOf("hero-tasks-list"),
+  taskRows: tagCount("hero-tasks-list", "li"),
   command: textOf("cmd-text"),
   planHeader: textOf("note-plan"),
   planRows: tagCount("exec-steps", "tr"),
@@ -289,7 +289,7 @@ const RUN = {
     const markup = table ? String(table.innerHTML) : "";
     return (markup.match(/<th>\d+<\/th>/g) || []).length;
   })(),
-  tally: textOf("tally"),
+  tally: textOf("hero-tally"),
   notes: Object.fromEntries(groups().map(g => [g.dataset.id, noteOf(g)])),
   logLines: page.querySelector("#log").children.length,
   phase: textOf("phase"),
@@ -365,9 +365,9 @@ paintError: page.querySelector("#paint-error") ? page.querySelector("#paint-erro
   })(),
   notes: Object.fromEntries(groups().map(g => [g.dataset.id, noteOf(g)])),
   logLines: page.querySelector("#log").children.length,
-  tasks: htmlOf("plan-tasks"),
-  taskRows: tagCount("plan-tasks", "li"),
-  tally: textOf("tally"),
+  tasks: htmlOf("hero-tasks-list"),
+  taskRows: tagCount("hero-tasks-list", "li"),
+  tally: textOf("hero-tally"),
   phase: textOf("phase"),
   verified: textOf("verified"),
   missed: textOf("missed"),

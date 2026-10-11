@@ -189,12 +189,12 @@
   .vrow { display: flex; align-items: center; gap: 9px; min-width: 0; }
   .vlab { flex: 0 0 84px; min-width: 0; font-size: 10px; color: var(--muted);
               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .vopts { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; flex: 1 1 auto; }
+  .vopts { display: flex; flex-wrap: wrap; gap: 2px; min-width: 0; flex: 1 1 auto; }
   /* La pastilla. `line-height` fijo y `padding` sólo a los lados: así todas miden lo mismo,
      elegidas o no, y la fila no se mueve cuando cambia la decisión. El borde va siempre puesto,
      del color del fondo cuando no está marcada, para que aparecer no desplace a las vecinas. */
   .opt { box-sizing: border-box; display: inline-flex; align-items: center; gap: 4px;
-              height: 17px; padding: 0 7px; border: 1px solid transparent; border-radius: 9px;
+              height: 17px; padding: 0 5px; border: 1px solid transparent; border-radius: 9px;
               font-size: 10.5px; line-height: 15px; color: var(--muted); white-space: nowrap; }
   .chip-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
   /* La que existe de verdad en la mesa: un punto verde delante, y el texto entra del todo. */
@@ -219,13 +219,6 @@
   .pasos th { font-size: 10px; color: var(--muted); font-weight: 500; text-align: left;
               padding: 0 4px 2px; }
   #exec-steps { display: block; margin-top: 4px; }
-  /* El plan, en frases. Cada fila es una tarea - "bola roja a cesta roja" - con un icono que dice
-     si la está haciendo, si está hecha o si falló. Las tres señales son distintas de propósito:
-     "hecha" la marca `check` después de medir dónde paró la pieza, y "falló" significa que se
-     comprobó y no estaba dentro, que no es lo mismo que no haber llegado a intentarlo. */
-  #plan-tasks { list-style: none; margin: 0 0 4px; padding: 0; max-height: 96px;
-                overflow-y: auto; overflow-x: hidden; }
-  #plan-tasks:empty { display: none; }
   /* La línea de estado de la cabecera: lo que el robot está haciendo, en una frase. */
   .estado { font-size: 14px; font-weight: 600; margin-left: 6px; color: var(--text); }
   .estado.ok { color: var(--ok); }
@@ -399,23 +392,6 @@
   button.go:hover { background: #4fd791; }
   .guide { font-size: 13px; line-height: 1.5; margin: 0 0 8px; }
   .guide-list { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.6; }
-  #plan-tasks li { display: flex; align-items: baseline; gap: 6px; font-size: 12px;
-                  padding: 2px 0; color: var(--text); min-width: 0; }
-  #plan-tasks .mark { flex: 0 0 14px; text-align: center; font-weight: 700; line-height: 1.2; }
-  #plan-tasks .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #plan-tasks li.doing .mark { color: var(--active); }
-  #plan-tasks li.doing .what { color: var(--text); }
-  #plan-tasks li.done .mark { color: var(--ok); }
-  #plan-tasks li.done .what { color: var(--muted); text-decoration: line-through;
-                             text-decoration-thickness: 1px; }
-  #plan-tasks li.fail .mark { color: var(--fail); }
-  #plan-tasks li.fail .what { color: var(--fail); }
-  /* La caja del plan: la lista de tareas llena el alto, y el recuento va abajo a la derecha. */
-  .fo:has(> .plan-col) { height: 100%; }
-  .plan-col { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-  .plan-col #plan-tasks { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
-  .plan-col .tally { flex: 0 0 auto; text-align: right; color: var(--muted); font-size: 11px;
-                      padding-top: 4px; white-space: nowrap; }
 
   /* ======================= presentación (P1) =======================
      Encima del panel de siempre, sin quitarle nada: la pantalla ahora se
@@ -535,21 +511,22 @@
              grid-template-columns: minmax(0, 7fr) minmax(0, 3fr); gap: 8px; min-height: 0; }
   .top-row > .card { min-height: 0; }
   .understand-card { min-height: 0; }
+  /* Ya sin la frase, el clasificador ocupa todo el ancho: la duda arriba, las opciones debajo. */
   .understand-card > .body { flex: 1 1 0; min-height: 0; overflow-y: auto; display: grid;
-                             grid-template-columns: 190px minmax(0, 1fr); gap: 16px;
+                             grid-template-columns: minmax(0, 1fr); gap: 0;
                              align-content: start; }
-  .said-col { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .said-col { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
   .understand-card .vocab { margin-top: 0; }
 
   /* objetivo y tareas: a todo el ancho, en una franja. El objetivo a la izquierda, las tareas en
      medio, el resultado a la derecha. */
-  #objetivo-card > .body.obj-body { flex: 1 1 0; min-height: 0; overflow-y: auto; display: flex; padding: 8px 12px;
-                                    flex-direction: column; align-items: stretch; gap: 8px; }
+  #objetivo-card > .body.obj-body { flex: 1 1 0; min-height: 0; overflow-y: auto; display: flex; padding: 6px 12px;
+                                    flex-direction: column; align-items: stretch; gap: 5px; }
   #objetivo-card #hero-objective { flex: 0 0 auto; margin: 0; font-size: 14px; min-width: 0; }
   #objetivo-card #hero-tasks-list { flex: 0 0 auto; min-width: 0; display: flex;
                                     flex-direction: column; gap: 4px; overflow: visible; }
   #objetivo-card #hero-tasks-list li { border: 1px solid var(--line); border-radius: 6px;
-                                       padding: 3px 8px; font-size: 12.5px; width: 100%; max-width: 100%; }
+                                       padding: 2px 8px; font-size: 12.5px; width: 100%; max-width: 100%; }
   #objetivo-card #hero-tasks-list li:last-child { border-bottom: 1px solid var(--line); }
   #objetivo-card #hero-tasks-list .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .obj-side { flex: 0 0 auto; min-width: 0; display: flex; flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; font-size: 12px; }
@@ -573,24 +550,36 @@
                  background: rgba(16, 19, 26, .86); border: 1px solid var(--line); border-radius: 6px; }
   .cam-caption .route-now { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .cam-caption .hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #plan-tasks { max-height: none; }
   .plan-body { display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
-  .plan-top { flex: 0 0 auto; max-height: 45%; overflow-y: auto; min-height: 0; }
   .moves { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
   .moves-title { flex: 0 0 auto; font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .moves #exec-steps { flex: 1 1 0; min-height: 0; overflow: auto; display: block; }
-  .matrix { border-collapse: collapse; font-size: 10.5px; }
-  .matrix th, .matrix td { border: 1px solid var(--line); padding: 0 5px; min-width: 22px; line-height: 15px; text-align: center; }
+  /* Medidas a 1,5 veces las de antes: la matriz tenía sitio de sobra en la caja. */
+  .matrix { border-collapse: collapse; font-size: 15.75px; }
+  .matrix th, .matrix td { border: 1px solid var(--line); padding: 0 7.5px; min-width: 33px; line-height: 22.5px; text-align: center; }
   .matrix th { color: var(--muted); font-weight: 500; }
   .matrix th.name { text-align: left; white-space: nowrap; }
   .matrix tr.active-row th.name { color: var(--text); }
-  .matrix td.mv { height: 15px; }
+  .matrix td.mv { height: 22.5px; }
+  .plan-links { flex: 0 0 auto; margin-top: 0; display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  .plan-links #result-session { flex: 1 1 auto; min-width: 0; }
+  /* En pantallas bajas (1366x768) la caja no da para 1,5 veces: la matriz baja un poco, para que
+     las diez filas quepan sin desplazarse. */
+  @media (max-height: 820px) {
+    .matrix { font-size: 14px; }
+    .matrix th, .matrix td { line-height: 20px; padding: 0 6px; min-width: 29px; }
+    .matrix td.mv { height: 20px; }
+    .obj-side { font-size: 11px; gap: 1px 10px; }
+    .opt { font-size: 10px; padding: 0 4px; }
+    .vopts { gap: 1px; }
+    .vlab { flex-basis: 70px; }
+    #objetivo-card #hero-objective { font-size: 13px; }
+  }
   .matrix td.done { background: rgba(67, 192, 127, .22); color: var(--ok); }
   .matrix td.now { background: var(--active); color: #fff; animation: pulse-now 1s ease-in-out infinite; }
   .matrix td.todo { background: #1d222d; }
   .matrix td.absent { color: var(--line); }
   @keyframes pulse-now { 50% { opacity: .55; } }
-  .plan-card .tally { text-align: right; color: var(--muted); font-size: 11px; padding: 0 0 2px; }
   #paint-error { flex: 0 0 auto; }
   #paint-error:empty { display: none; }
 
@@ -898,7 +887,6 @@
     <h2>lo que entendió el robot<span class="help" data-tip="La frase es lo que el robot decidió hacer. A la derecha, el abanico completo de opciones de cada campo: la elegida va en lila con su probabilidad, y el punto verde marca lo que existe de verdad en la mesa.">i</span></h2>
     <div class="body">
       <div class="said-col">
-        <div class="said clip-2" id="note-understand">esperando una orden&hellip;</div>
         <div class="sure clip-1" id="cls-sure"></div>
         <div class="warn clip-2" id="cls-warn"></div>
       </div>
@@ -927,11 +915,6 @@
       <div class="obj-side">
         <div id="hero-tally"></div>
         <div id="result-command" role="status" class="result"></div>
-        <div class="hint" id="result-session"></div>
-        <div class="report-links">
-          <a href="/api/report" download="informe-sesion.json" title="informe de sesión">informe</a>
-          · <a href="/api/runtime-log" download="registro-sesion.log" title="registro técnico">registro</a>
-        </div>
       </div>
     </div>
   </section>
@@ -968,13 +951,14 @@
     <div class="card plan-card">
       <h2>plan y ejecución</h2>
       <div class="body plan-body">
-        <div class="plan-top">
-          <ul id="plan-tasks"></ul>
-          <div class="tally" id="tally"></div>
-        </div>
         <div class="moves">
           <div class="moves-title hint">columnas: tareas · filas: movimientos</div>
           <table class="matrix" id="exec-steps"></table>
+        </div>
+        <div class="report-links plan-links">
+          <span class="hint" id="result-session"></span>
+          <a href="/api/report" download="informe-sesion.json" title="informe de sesión">informe</a>
+          · <a href="/api/runtime-log" download="registro-sesion.log" title="registro técnico">registro</a>
         </div>
       </div>
     </div>
@@ -1490,11 +1474,6 @@ function confidenceNote(picked) {
 function paintClassification(cls) {
   if (!el("cls-warn")) return;
   const picked = cls || {};
-  // La frase, cuando el robot la ha publicado. Va en el mismo elemento que la nota viva de la
-  // etapa (ver `contentMarkup`), así que sólo se escribe cuando hay frase que decir: si no la hay,
-  // lo que se ve es la nota, que es la orden mientras se está interpretando.
-  if (picked.summary) text("note-understand", picked.summary);
-  else if (!el("note-understand").textContent) text("note-understand", "esperando una orden\u2026");
   // La duda vive en el plan, y por eso se lee de `window.state.plan`: `paintPlan` vuelve a llamar
   // aquí justo después de pintar el plan, para que la línea no vaya un fotograma por detrás.
   const plan = (window.state || {}).plan || {};
@@ -1659,10 +1638,10 @@ function paintNow() {
     return;
   }
   if (state.command && !state.progress) {
-    // Hay orden dada y el brazo todavía no se ha movido: lo que el robot tiene entre manos, que es
-    // exactamente lo que se está preguntando. Cuando ya se movió, lo que responde a "¿y ahora qué?"
+    // Hay orden dada y el brazo todavía no se ha movido. La orden ya está en el objetivo, así que
+    // aquí se dice sólo el estado del brazo. Cuando ya se movió, lo que responde a "¿y ahora qué?"
     // es la fase, no la orden de hace un rato.
-    text("route-now", `orden: \u00ab${state.command}\u00bb`);
+    text("route-now", "el brazo aún no se ha movido");
     return;
   }
   text("route-now", PHASE_ES[state.phase] || "esperando una orden");
@@ -1698,49 +1677,10 @@ const TASK_MARKS = {
   todo: { icon: "&#9675;", word: "PENDIENTE" },
 };
 
-function paintTasks(tasks) {
-  // Las filas vienen del estado `tasks` del bus y no de `plan.tasks`, a propósito: un comando de
-  // varios objetos no se ejecuta como un plan sino como uno por objeto (`_one_at_a_time`
-  // replanifica y llama a `check` tras cada uno), así que el plan que se está ejecutando tiene
-  // una sola tarea. El estado es la unión de todas, con lo ya verificado, y sobrevive a los replan.
-  const list = el("plan-tasks");
-  if (!list) return;
-  const rows = tasks || [];
-  const tally = el("tally");
-  if (!rows.length) {
-    list.innerHTML = "";
-    if (tally) tally.textContent = "";
-    return;
-  }
-  const done = rows.filter(t => t.done).length;
-  const failed = rows.filter(t => t.state === "fail").length;
-  // "en curso" lo publica el robot cuando arranca el plan que ejecuta cada tarea (`_mark_doing`),
-  // que es el único que sabe qué pieza está moviendo. Antes se deducía aquí comparando la clave
-  // de la fila con la palabra de acción que iba llegando, y esas dos cosas nunca coinciden.
-  const line = row => {
-    const state = row.state || (row.done ? "done" : "todo");
-    const mark = TASK_MARKS[state] || TASK_MARKS.todo;
-    return `<li class="${state}">` +
-      `<span class="mark" title="${mark.word}">${mark.icon}</span>` +
-      `<span class="what">${esc(row.label || "")}</span></li>`;
-  };
-
-  list.innerHTML = rows.map(line).join("");
-  if (tally) {
-    // Cuántas van, y cuál toca: "1 de 3 completadas · tarea 2 de 3". El recuento solo decía cuánto
-    // faltaba; cuál es la que se está moviendo era un punto negro entre cinco iguales.
-    const at = rows.findIndex(t => t.state === "doing") + 1;
-    tally.textContent = `${done} de ${rows.length} completadas` +
-      `${failed ? `, ${failed} ${failed === 1 ? "fallida" : "fallidas"}` : ""}` +
-      `${at ? ` \u00b7 tarea ${at} de ${rows.length}` : ""}`;
-  }
-}
-
-// PLAN (la caja de la izquierda) y EJECUCIÓN (la de la derecha) son dos cosas distintas, y cada
-// una pinta sólo lo suyo: el plan dice QUÉ se va a mover, con su estado; la ejecución dice CÓMO,
-// paso a paso, y cuál está en marcha.
+// PLAN Y EJECUCIÓN pinta sólo la matriz de movimientos. Las tareas, su estado y su recuento viven
+// en "objetivo y tareas" (`paintHero`): antes estaban aquí también, con la misma lista y el mismo
+// recuento. Aquí queda el CÓMO, paso a paso, y cuál está en marcha.
 function paintPlan(plan) {
-  paintTasks((window.state || {}).tasks);
   paintSteps(plan);
   if (plan) paintClassification(window.state && window.state.classification);
 }
@@ -1812,7 +1752,8 @@ function paintExamples(catalog) {
   for (const [label, command] of commands.slice(0, 12)) {
     const button = document.createElement("button"); button.textContent = label;
     button.dataset.cmd = command; button.title = command;
-    button.onclick = () => { el("cmd").value = command; el("send").click(); }; box.appendChild(button);
+    // Sólo la pone en la caja: se envía cuando el usuario pulsa «enviar», no al elegir el ejemplo.
+    button.onclick = () => { el("cmd").value = command; el("cmd").focus(); }; box.appendChild(button);
   }
 }
 
@@ -2327,11 +2268,10 @@ function stageNote(def) {
       return p ? `${p.n || 0} ${(p.n || 0) === 1 ? "tarea preparada" : "tareas preparadas"}` : pick("plan");
     }
     case "actuar": {
-      const st = state.moving === true;
-      const verb = st ? ACTION_ES[state.progress] : null;
-      const busy = st ? (state.tasks || []).find(r => r.state === "doing") : null;
-      if (busy) return verb ? `${verb} · ${busy.part || busy.label}` : busy.label;
-      if (verb) return verb;
+      // La posición de la tarea en curso, no la acción: la acción está en la línea de la cámara.
+      const rows = state.tasks || [];
+      const at = rows.findIndex(r => r.state === "doing");
+      if (state.moving === true && at >= 0) return `tarea ${at + 1} de ${rows.length}`;
       return pick("execute");
     }
     case "verificar":
@@ -2356,10 +2296,10 @@ function paintHero() {
   const state = window.state || {};
   const obj = el("hero-objective");
   if (obj) {
+    // La orden tal como la escribió quien la dio. Lo que el robot entendió de ella va en "lo que
+    // entendió el robot", y no se repite aquí.
     const command = (state.command || "").trim();
-    const summary = state.classification && state.classification.summary;
-    if (command) { obj.textContent = `Objetivo: ${command}`; obj.classList.remove("idle"); }
-    else if (summary) { obj.textContent = `Objetivo: ${summary}`; obj.classList.remove("idle"); }
+    if (command) { obj.textContent = `Orden: «${command}»`; obj.classList.remove("idle"); }
     else { obj.textContent = "Sin orden todavía. Pulsa «Iniciar demo» para empezar."; obj.classList.add("idle"); }
   }
   const list = el("hero-tasks-list");
@@ -2393,8 +2333,6 @@ function paintDemo() {
   const state = window.state || {};
   const phase = state.phase || "setup";
   const attempt = state.start_attempt;
-  const busyNow = state.moving === true ? (state.tasks || []).find(r => r.state === "doing") : null;
-  const verb = state.moving === true ? ACTION_ES[state.progress] : null;
   let cls = "idle", msg = "Pulsa «Iniciar demo» para empezar la demostración.";
   if (phase === "failed") { cls = "fail"; msg = `No se pudo iniciar: ${state.error || "motivo desconocido"}`; }
   else if (phase === "stopped") { cls = "idle"; msg = "Entorno detenido. Pulsa «Iniciar demo» para volver a empezar."; }
@@ -2403,7 +2341,9 @@ function paintDemo() {
   else if (phase === "loading") { cls = "active"; msg = attempt ? `2/4 · arrancando Isaac Sim (intento ${attempt})…` : "1/4 · cargando la escena medida…"; }
   else if (phase === "scene") { cls = "active"; msg = "4/4 · colocando la escena medida…"; }
   else if (phase === "ready") { cls = (demoCommandPending || demoBusy) ? "active" : "ok"; msg = (demoCommandPending || demoBusy) ? "3/4 · entorno listo · enviando la orden…" : "Entorno listo · esperando una orden"; }
-  else if (phase === "command" || phase === "sorting") { cls = "active"; msg = busyNow ? `En curso · ${verb ? verb + " · " : ""}${busyNow.label}` : (verb || "ejecutando la orden…"); }
+  // Sólo la fase: qué está haciendo el brazo en este instante es la línea de la cámara, y la tarea
+  // en curso es la del objetivo. Repetirlo aquí era decirlo tres veces.
+  else if (phase === "command" || phase === "sorting") { cls = "active"; msg = "Ejecutando la orden…"; }
   else if (phase === "verifying") { cls = "active"; msg = "Verificando las colocaciones…"; }
   else if (phase === "recovering") { cls = "warn"; msg = "Recuperando una pieza que no quedó bien…"; }
   box.className = cls;
