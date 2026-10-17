@@ -565,10 +565,16 @@ class MultiRobotOrchestrator:
         if task.attempts < MAX_ATTEMPTS:
             task.state = QUEUED
             task.assigned_robot = None
-            task.note = (f"attempt {task.attempts} failed: {task.note}")
+            task.note = (f"attempt {task.attempts} of {MAX_ATTEMPTS} failed: "
+                         f"{task.note}")
             robot.state = "idle"
         else:
             task.state = FAILED
+            # Keep the attempt count in the note. Without it the final note reads as a
+            # single failure and the interface cannot distinguish a task that failed once
+            # from one that used the whole retry budget -- which is exactly the distinction
+            # someone looking at a stuck cell needs.
+            task.note = (f"failed after {task.attempts} attempts: {task.note}")
             robot.state = "idle"
 
     # -- roster and faults -----------------------------------------------
