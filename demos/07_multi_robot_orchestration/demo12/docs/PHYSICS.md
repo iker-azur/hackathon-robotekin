@@ -258,13 +258,18 @@ that does not exist.
 
 ---
 
-## 9. Viewport capture: measured, and it does not work on this machine
+## 9. Viewport capture: does not work here. A sensor camera does.
 
-`/api/frame.jpg` returns **503**, with the reason. It does not serve a placeholder, because
-a stub frame would let the interface show a dead render as a live one.
+`/api/frame.jpg` **works**, headless, served live while the orchestration loop is stepping.
+Measured: 10,498 bytes of JPEG over HTTP, from a two-robot cell at 280 control ticks with
+zero errors. `tools/probe_frame.py` writes `out12/observation_camera.jpg`, and both it and the
+live server frame show the tabletop, both SO-101 arms and all four parts.
 
-**This is a measured negative result, not an untested guess.** All four combinations were
-run (`tools/probe_frame.py`):
+It works via an explicit `UsdGeom.Camera` prim read by `isaaclab.sensors.Camera`, **not** via
+a viewport snapshot. Getting there took most of this project's remaining effort and every step
+is recorded below, because each failure mode is silent and the obvious answer is always wrong.
+
+### The viewport route: four configurations, all dead
 
 | Configuration | Result |
 |---|---|
@@ -273,59 +278,32 @@ run (`tools/probe_frame.py`):
 | headless, pumping `Application.next_update` | timeout after 3 s |
 | `--gui`, pumping `Application.next_update` | timeout after 3 s |
 
-The indicator is `SimulationContext.has_primed_camera() == False` in both modes: **the
-viewport has no camera on this machine**, so there is nothing for the capture to read. This
-is not an API problem that more probing would solve — it is the absence of a camera on the
-viewport.
-
-### The four wrong APIs, for whoever tries this next
-
-Getting to a precise 503 took four APIs that no longer exist in Isaac Sim 5.1
-(omni.replicator.core 1.12.27):
+`SimulationContext.has_primed_camera()` is **False** in both modes: the viewport has no camera
+on this machine, so there is nothing to capture. These four APIs also no longer exist in Isaac
+Sim 5.1 / omni.replicator.core 1.12.27:
 
 | Attempt | Result |
 |---|---|
 | `rep.Renderer()` | Does not exist. No `Renderer`, no `render`, no `pyrep`. |
-| `rep.create.render_product(cam, (w, h))` | Returns a `HydraTexture` whose only members are `destroy`, `hydra_texture`, `path` — **no pixel accessor at all**. |
-| `render_product.get_data(["rgb"])` | `AttributeError: 'HydraTexture' object has no attribute 'get_data'` |
-| `np.asarray(hydra_texture)` | Same `AttributeError`, raised while numpy *probes* the object. Not about pixels; it hides the real error. |
-| `rep.orchestrator.step()` | **Hangs**. |
-| `isaaclab.sensors.Camera` | Fails at construction: `'RigidObject' object has no attribute '_external_force_b'` |
-| `omni.kit.app.get_default_app_window` | Does not exist. |
-| `capture_viewport_to_image` | Renamed to **`capture_viewport_to_buffer`**, and is **callback based**. |
+| `rep.create.render_product(cam, (w, h))` | Returns a `HydraTexture` with only `destroy`, `hydra_texture`, `path` — **no pixel accessor at all** |
+| `render_product.get_data(["rgb"])` | `AttributeError: ... has no attribute 'get_data'` |
+| `np.asarray(hydra_texture)` | Same `AttributeError`, raised while numpy *probes* the object — not about pixels, and it hides the real error |
+| `rep.orchestrator.step()` | **Hangs** |
+| `omni.kit.app.get_default_app_window` | Does not exist |
+| `capture_viewport_to_image` | Renamed `capture_viewport_to_buffer`, and **callback based** |
 
-What is left is:
+### The sensor route: what actually had to be true
 
-```python
-viewport = omni.kit.viewport.utility.get_active_viewport()
-omni.kit.viewport.utility.capture_viewport_to_buffer(viewport, on_capture_fn)
-```
+Five things, each of which failed loudly enough to be found but not usefully:
 
-The callback fires on a later Kit app update, so a caller must pump
-`omni.kit.app.get_app().next_update()` while waiting — `asyncio.run` and uvicorn's loop do
-not drive Kit's. The code does this. It still fails here, because there is no camera.
+1. **The sensor initialises from a timeline PLAY event, not from `reset()`.**
+   `sensor_base.py` subscribes to `omni.timeline.TimelineEventType.PLAY` and calls
+   `_initialize_impl()` from there — "PhysX handles are only enabled once the simulator
+   starts playing". A bare `SimulationContext` never fires one. Fixed by calling
+   `camera._initialize_callback(None)` directly, which is exactly what the subscription would
+   have done.
 
-### The `UsdGeom.Camera` sensor route: traced, not working
-
-The promising alternative is an explicit camera prim read by a sensor rather than a viewport
-snapshot. Isaac Lab ships one — `isaaclab.sensors.Camera`. It was pursued and the diagnostic
-chain is recorded here because most of it is invisible without deliberately digging.
-
-Everything in this table was measured, not assumed:
-
-| Step | Result |
-|---|---|
-| `Camera(cfg)` construction | **Works.** No error, no hang. |
-| `/isaaclab/cameras_enabled` carb setting | **True** — the derived kit experience does set it, and `env_loader` passes `enable_cameras: True` |
-| `cam.reset()` | `RuntimeError: Camera could not be initialized` |
-| `cam._is_initialized` right after construction | **False** |
-| `cam._initialize_impl()` directly | Returns **without raising**, and still leaves `_is_initialized` False |
-| `builtins.ISAACLAB_CALLBACK_EXCEPTION` | `None` — so nothing was being swallowed *at that point* |
-| `cam.initialize()` | **No such method** on `SensorBase` in 0.47.2 |
-
-Two mechanisms conspire to make this hard to diagnose, and both are worth knowing:
-
-1. **`SensorBase` swallows the real error.** Around `sensor_base.py:300` the call is
+2. **`SensorBase` swallows the real exception.** Around `sensor_base.py:300`:
 
    ```python
    if not self._is_initialized:
@@ -337,27 +315,41 @@ Two mechanisms conspire to make this hard to diagnose, and both are worth knowin
        self._is_initialized = True
    ```
 
-   so a failure during initialisation is stored in a builtin and the generic
-   "could not be initialized" message is what surfaces. Anything debugging this should read
-   `builtins.ISAACLAB_CALLBACK_EXCEPTION` **first**.
+   so a failure is stashed in a builtin and the surface message is the generic
+   "could not be initialized. Please ensure `--enable_cameras`" — which is already enabled and
+   points nowhere. **Read `builtins.ISAACLAB_CALLBACK_EXCEPTION` first** when a sensor misbehaves.
 
-2. **`_invalidate_initialize_callback` undoes initialisation.** It is registered on stage
-   changes and sets `_is_initialized = False` again. A sensor whose `spawn` creates a prim is
-   exactly the case where a stage change lands *after* initialisation — which matches what
-   was observed, and explains why there is no `initialize()` to call afterwards: the
-   lifecycle appears to expect a running `ManagerBasedEnv` loop to drive re-initialisation,
-   and this demo drives a bare `SimulationContext` with no env loop.
+3. **There is no public `initialize()`.** `SensorBase` in 0.47.2 has no such method, so there
+   is no supported way to re-initialise after construction.
 
-**So the finding is that the sensor route does not work against a bare `SimulationContext`
-on this build, and the reason is the sensor lifecycle rather than the camera.** The obvious
-next thing to try is a `ManagerBasedEnv` (which is what every Isaac Lab camera example uses),
-or spawning the camera prim before `sim.reset()` so the stage change happens in the other
-order. Neither has been attempted.
+4. **The camera must be created while the cell is idle**, not lazily from inside the running
+   loop. Created at startup it primes correctly; created on the first capture mid-loop it did
+   not.
 
-Note also that an earlier attempt at this failed for an unrelated reason and was misread as a
-camera problem: it built a `RigidObject` alongside the camera and hit
-`'RigidObject' object has no attribute '_external_force_b'`. That was about the cube. Worth
-recording because it cost a run.
+5. **`reset()` alone does not fill the render product.** Reading straight after `reset()` fails
+   inside Replicator's annotator:
+
+   ```
+   expand(torch.cuda.ByteTensor{[360, 640, 3]}, size=[0])
+   ```
+
+   i.e. the annotator asked for **zero** frames. It needs real simulation steps first —
+   `sim.render()` by itself is not enough. The cell now runs `CAMERA_PRIME_STEPS = 3` ticks at
+   camera startup, and renders one frame every `CAMERA_RENDER_EVERY_STEPS = 5` ticks while the
+   camera exists, because stepping with `render=False` leaves the product empty again.
+
+Point 5 was the one that looked like something else four separate times: "the camera only works
+before the loop starts", "it must be the `dt`", "it must be the lazy creation". Each of those
+was a real fix that did not fix it. Reading the error rather than the symptoms — *size 0 means
+no frames were produced* — is what found it.
+
+**Cost, honestly:** rendering on some ticks slows the control loop. Measured at 280-334 ticks
+in the ~50 s the server had been up, against ~20 Hz target; the orchestration still completes
+both tasks. Frame rate is roughly 12 fps at `CAMERA_RENDER_EVERY_STEPS = 5`.
+
+Note also that an early attempt at this failed for an unrelated reason and was misread as a
+camera problem: it built a `RigidObject` alongside the camera and hit `'RigidObject' object has
+no attribute '_external_force_b'`. That was about the cube.
 
 ### The threading trap
 
@@ -421,10 +413,10 @@ Disclosed, not hidden.
 - **The ball is modelled as its bounding sphere** with an effective density carrying its
   hollow shell.
 - **`describe_scene` / `catalog()` are unused by the backend** and kept only for the editor.
-- **Viewport capture does not work on this machine.** `/api/frame.jpg` returns 503 with
-  the reason rather than a placeholder. Measured across all four configurations —
-  headless and `--gui`, with and without pumping Kit's update loop. The cause is
-  `has_primed_camera() == False`: the viewport has no camera here. Section 9.
+- **The observation camera renders every `CAMERA_RENDER_EVERY_STEPS` ticks while it exists**,
+  which costs control-loop throughput: with a camera attached the loop does not hit its 20 Hz
+  target (measured ~280-334 ticks in ~50 s). Physics is unaffected — the two-robot mission
+  still completes. Section 9.
 - **`add_robot` / `remove_robot` refuse.** The in-process cell rebuild they need was built
   and **measured to hang** (370 CPU-seconds, no return). Relaunch with a different
   `--robots`; `release_for_relaunch()` requeues the ledger first. See section 9.
