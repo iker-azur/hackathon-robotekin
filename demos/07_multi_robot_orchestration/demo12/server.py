@@ -144,7 +144,8 @@ async def capture_frame(cell, timeout: float = 6.0) -> tuple[bytes | None, str]:
 
 
 def build_app(robot_count: int = 2, headless: bool = True,
-              rate_hz: float = 20.0, frame_every: int = 20):
+              rate_hz: float = 20.0, frame_every: int = 20,
+              ledger_path: Path | None = None):
     """Build the FastAPI app over a real cell. Kit must already be running."""
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
@@ -152,7 +153,8 @@ def build_app(robot_count: int = 2, headless: bool = True,
 
     from .config import default_scene
     from .isaac_env import ARM_BODIES_WITH_COLLISION, IsaacCell
-    from .orchestrator import MultiRobotOrchestrator
+    from .ledger import OrchestratorLedger as Ledger, capture as capture_ledger
+    from .orchestrator import (ACTIVE_STATES, QUEUED, MultiRobotOrchestrator)
 
     scene = default_scene(robot_count)
     cell = IsaacCell(scene, device="cuda:0", headless=headless)
@@ -170,6 +172,43 @@ def build_app(robot_count: int = 2, headless: bool = True,
     cell.camera()
 
     orch = MultiRobotOrchestrator(cell, scene, scene.mission.tasks)
+
+    # Restore a ledger from a previous run, if there is one. This is how the task queue
+    # survives the restart that changing the robot count requires.
+    #
+    # Any task that was verified done is demoted first: the cell has just been respawned, so
+    # the parts are back at their configured positions and the earlier placement is no longer
+    # a fact about the simulation. See demo12.ledger.
+    restored: dict[str, Any] = {"restored": False}
+    if ledger_path is not None and ledger_path.is_file():
+        ledger = Ledger.load(ledger_path)
+        if ledger is None:
+            restored = {"restored": False,
+                        "reason": f"could not read {ledger_path}"}
+        else:
+            demoted = ledger.reset_verified()
+            orch = MultiRobotOrchestrator(cell, scene, ledger.move_tasks())
+            for entry in ledger.entries:
+                task = orch.tasks.get(entry.id)
+                if task is None:
+                    continue
+                task.attempts = entry.attempts
+                task.previous_robots = list(entry.previous_robots)
+                task.note = entry.note
+                # A task that was in progress when the process died cannot still be true.
+                if entry.state in ACTIVE_STATES:
+                    task.state = QUEUED
+                    task.note = (f"requeued after a restart: {entry.note}"
+                                 if entry.note else
+                                 "requeued after a restart: the parts were respawned")
+            restored = {
+                "restored": True,
+                "tasks": len(ledger.entries),
+                "completedBeforeRestart": ledger.completed_before_restart,
+                "partsMovedBeforeRestart": ledger.parts_moved_before_restart,
+                "demotedDoneTasks": demoted,
+            }
+            print(f"[demo12] ledger restored: {restored}", flush=True)
 
     state: dict[str, Any] = {
         "running": True,
@@ -273,6 +312,7 @@ def build_app(robot_count: int = 2, headless: bool = True,
         payload["frameError"] = frame_error
         payload["frameNote"] = frame_note
         payload["frameEvery"] = capture["every"]
+        payload["ledger"] = restored
         return JSONResponse(payload)
 
     @app.get("/api/catalog")
@@ -315,21 +355,50 @@ def build_app(robot_count: int = 2, headless: bool = True,
 
     @app.post("/api/relaunch-plan")
     def relaunch_plan() -> JSONResponse:
-        """Requeue in-flight work and report what a relaunch would need.
+        """Requeue in-flight work, save the ledger, and ask the supervisor to restart.
 
-        Does not restart anything: this process owns a Kit session that cannot be rebuilt in
-        place, and pretending otherwise would be the same lie as a placeholder frame. It
-        hands back the ledger and the command to run instead.
+        This is the supported way to change the robot count, and it is three moves rather
+        than one because the process doing the asking is the process that has to die:
+
+        1. save the ledger, so the task queue and every attempt count survive;
+        2. write the control file the supervisor polls;
+        3. exit, which is where the supervisor notices.
+
+        The parts do not survive, and nothing claims they do: ``demo12.ledger`` re-checks
+        every completed task against the part's actual position before recording it, and
+        demotes the ones that no longer hold.
         """
         result = orch.release_for_relaunch()
+        saved = None
+        if ledger_path is not None:
+            try:
+                entry = capture_ledger(orch)
+                entry.save(ledger_path)
+                saved = str(ledger_path)
+            except Exception as exc:               # noqa: BLE001
+                saved = f"could not save the ledger: {type(exc).__name__}: {exc}"
+
         return JSONResponse({
             **result,
-            "restartCommand": (
-                f"C:\\Users\\Usuario\\miniconda3\\envs\\hackathon-robotekin\\python.exe "
-                f"-m demo12.server --robots {robot_count}"),
-            "note": ("restart the process yourself; nothing here can rebuild the cell "
-                     "in place"),
+            "ledgerSavedTo": saved,
+            "requestedRobotCount": robot_count,
+            "note": ("the supervisor watches out12/control.json; write "
+                     '{"robots": N} to it to change the roster. This process will be '
+                     "restarted by that."),
         })
+
+    @app.get("/api/ledger")
+    def get_ledger() -> JSONResponse:
+        """The ledger as it would be saved right now.
+
+        Read-only, and it re-checks every completed task against the physics rather than
+        trusting the orchestrator's own state.
+        """
+        try:
+            entry = capture_ledger(orch)
+        except Exception as exc:                   # noqa: BLE001
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+        return JSONResponse(entry.to_dict())
 
     @app.post("/api/run")
     def start() -> dict[str, Any]:
@@ -366,6 +435,18 @@ def build_app(robot_count: int = 2, headless: bool = True,
     @app.on_event("shutdown")
     async def _stop() -> None:
         state["running"] = False
+        # Save the ledger on the way out, so an ordinary shutdown (or the supervisor's
+        # restart) does not lose the queue. Best-effort: a failure here must not stop the
+        # server shutting down, and it is reported rather than swallowed.
+        if ledger_path is not None:
+            try:
+                saved = capture_ledger(orch)
+                saved.save(ledger_path)
+                print(f"[demo12] ledger saved to {ledger_path} "
+                      f"({len(saved.entries)} task(s))", flush=True)
+            except Exception as exc:               # noqa: BLE001
+                print(f"[demo12] could not save the ledger: {type(exc).__name__}: {exc}",
+                      flush=True)
 
     app.state.cell = cell
     app.state.orch = orch
@@ -379,13 +460,20 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--gui", dest="headless", action="store_false", default=True,
                         help="show Isaac Sim so the cell can be watched directly")
+    parser.add_argument("--ledger", default=str(_DEMO_ROOT.parent / "out12" / "ledger.json"),
+                        help="where to save/restore the task ledger across restarts")
+    parser.add_argument("--no-ledger", action="store_true",
+                        help="start with an empty task queue, ignoring any saved ledger")
     args = parser.parse_args()
 
     env_loader.prepare_runtime(headless=args.headless)
 
     import uvicorn
 
-    uvicorn.run(build_app(args.robots, headless=args.headless),
+    ledger = Path(args.ledger)
+    if args.no_ledger:
+        ledger = None
+    uvicorn.run(build_app(args.robots, headless=args.headless, ledger_path=ledger),
                 host=args.host, port=args.port, log_level="info")
     os._exit(0)
 

@@ -50,9 +50,21 @@ Con Isaac Sim visible:
 Servidor + interfaz:
 
 ```powershell
-... -m demo12.server --robots 2 --gui      # http://127.0.0.1:8000
-cd demo12\web; npm run dev                 # http://localhost:5173
+... -m demo12.launcher --robots 2 --port 8000    # http://127.0.0.1:8000
+cd demo12\web; npm run dev                      # http://localhost:5173
 ```
+
+Para **cambiar el número de robots en caliente** (lo único que no se puede hacer dentro del
+proceso, porque reconstruir la celda se cuelga — ver `docs/PHYSICS.md` §9):
+
+```powershell
+'{"robots": 3}' | Set-Content demos\07_multi_robot_orchestration\out12\control.json
+```
+
+El supervisor reinicia el proceso y restaura la cola de tareas. Medido de punta a punta:
+2 robots → 3, con `{"restored": true, "tasks": 2}`. Lo que **no** sobrevive es la posición de
+las piezas — se reaparecen en su sitio — así que cualquier tarea marcada como completada se
+vuelve a encolar, con una nota que lo dice.
 
 Sondas de medición (verifican todo lo afirmado en `demo12/docs/PHYSICS.md`):
 
@@ -109,15 +121,15 @@ nada de PhysX, y `config.py` / `materials.py` no importan nada de Isaac.
 
 ---
 
-### Limitación conocida: cambiar el número de robots
+### `add_robot` / `remove_robot` se niegan a propósito
 
-`add_robot` / `remove_robot` **se niegan**, con el motivo. Isaac Lab no permite insertar una
-articulación en una escena viva, así que la única vía sería reconstruir la celda entera; esa
-reconstrucción se implementó y **se midió que se cuelga** (370 segundos de CPU, sin
-retornar nunca — `RemovePrim` + un segundo `sim.reset()` en la misma sesión de Kit).
+Isaac Lab no permite insertar una articulación en una escena viva, y la reconstrucción de la
+celda dentro del proceso se implementó y **se midió que se cuelga** (370 segundos de CPU, sin
+retornar nunca — `RemovePrim` + un segundo `sim.reset()` en la misma sesión de Kit). Así que
+esos dos métodos devuelven `{"ok": false, "reason": ...}` con el motivo, en vez de dar por
+bien añadido un robot que nunca existió.
 
-La vía que sí funciona: reeniciar con `--robots N`. `release_for_relaunch()` devuelve las
-tareas en vuelo a la cola antes de salir. La cola de tareas sobrevive; el estado físico no.
+La vía que sí funciona es el supervisor, descrita más arriba.
 
 ---
 
