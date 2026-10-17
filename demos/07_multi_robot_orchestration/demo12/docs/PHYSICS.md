@@ -305,10 +305,59 @@ The callback fires on a later Kit app update, so a caller must pump
 `omni.kit.app.get_app().next_update()` while waiting — `asyncio.run` and uvicorn's loop do
 not drive Kit's. The code does this. It still fails here, because there is no camera.
 
-**To make this work, something else has to change first:** either the machine needs a
-viewport with a camera, or the cell needs an explicit `UsdGeom.Camera` prim that a sensor
-reads directly, bypassing the viewport entirely. The second is the more promising route and
-is not implemented.
+### The `UsdGeom.Camera` sensor route: traced, not working
+
+The promising alternative is an explicit camera prim read by a sensor rather than a viewport
+snapshot. Isaac Lab ships one — `isaaclab.sensors.Camera`. It was pursued and the diagnostic
+chain is recorded here because most of it is invisible without deliberately digging.
+
+Everything in this table was measured, not assumed:
+
+| Step | Result |
+|---|---|
+| `Camera(cfg)` construction | **Works.** No error, no hang. |
+| `/isaaclab/cameras_enabled` carb setting | **True** — the derived kit experience does set it, and `env_loader` passes `enable_cameras: True` |
+| `cam.reset()` | `RuntimeError: Camera could not be initialized` |
+| `cam._is_initialized` right after construction | **False** |
+| `cam._initialize_impl()` directly | Returns **without raising**, and still leaves `_is_initialized` False |
+| `builtins.ISAACLAB_CALLBACK_EXCEPTION` | `None` — so nothing was being swallowed *at that point* |
+| `cam.initialize()` | **No such method** on `SensorBase` in 0.47.2 |
+
+Two mechanisms conspire to make this hard to diagnose, and both are worth knowing:
+
+1. **`SensorBase` swallows the real error.** Around `sensor_base.py:300` the call is
+
+   ```python
+   if not self._is_initialized:
+       try:
+           self._initialize_impl()
+       except Exception as e:
+           if builtins.ISAACLAB_CALLBACK_EXCEPTION is None:
+               builtins.ISAACLAB_CALLBACK_EXCEPTION = e
+       self._is_initialized = True
+   ```
+
+   so a failure during initialisation is stored in a builtin and the generic
+   "could not be initialized" message is what surfaces. Anything debugging this should read
+   `builtins.ISAACLAB_CALLBACK_EXCEPTION` **first**.
+
+2. **`_invalidate_initialize_callback` undoes initialisation.** It is registered on stage
+   changes and sets `_is_initialized = False` again. A sensor whose `spawn` creates a prim is
+   exactly the case where a stage change lands *after* initialisation — which matches what
+   was observed, and explains why there is no `initialize()` to call afterwards: the
+   lifecycle appears to expect a running `ManagerBasedEnv` loop to drive re-initialisation,
+   and this demo drives a bare `SimulationContext` with no env loop.
+
+**So the finding is that the sensor route does not work against a bare `SimulationContext`
+on this build, and the reason is the sensor lifecycle rather than the camera.** The obvious
+next thing to try is a `ManagerBasedEnv` (which is what every Isaac Lab camera example uses),
+or spawning the camera prim before `sim.reset()` so the stage change happens in the other
+order. Neither has been attempted.
+
+Note also that an earlier attempt at this failed for an unrelated reason and was misread as a
+camera problem: it built a `RigidObject` alongside the camera and hit
+`'RigidObject' object has no attribute '_external_force_b'`. That was about the cube. Worth
+recording because it cost a run.
 
 ### The threading trap
 

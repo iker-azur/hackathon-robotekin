@@ -70,10 +70,13 @@ relleno: un frame falso dejaría la interfaz mostrando un render muerto como si 
 Está **medido, no supuesto**: se probaron las cuatro combinaciones (headless y `--gui`, con y
 sin bombear el bucle de actualización de Kit) y ninguna produce una imagen. La causa es
 `has_primed_camera() == False` — el viewport no tiene cámara en esta máquina, así que no hay
-nada que capturar. No es un problema de API que se resuelva sondeando más.
+nada que capturar.
 
-Para verlo har falta un viewport con cámara, o una prim `UsdGeom.Camera` explícita que un
-sensor lea directamente. El detalle está en `demo12/docs/PHYSICS.md` §9.
+La ruta alternativa —una prim `UsdGeom.Camera` leída por `isaaclab.sensors.Camera`— también
+se investigó. **La cámara se construye bien**, `cameras_enabled` está a `True`, pero
+`reset()` falla con *"Camera could not be initialized"*: el sensor queda sin inicializar
+porque su ciclo de vida espera un `ManagerBasedEnv` y esta demo usa un `SimulationContext`
+suelto. La cadena de diagnóstico completa está en `demo12/docs/PHYSICS.md` §9.
 
 Pruebas:
 
