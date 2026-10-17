@@ -105,32 +105,21 @@ def main() -> int:
         OUT_PATH.write_text(json.dumps(report, indent=2), encoding="utf-8")
         os._exit(0)
 
-    # -- the function the server actually calls ------------------------------
+    # -- the function the cell actually uses ------------------------------
     #
-    # On a real cell, not a stub: there has to be a scene in front of the camera, or a
-    # successful capture proves nothing about whether the picture contains anything.
-    #
-    # Driven through asyncio because ``capture_frame`` is a coroutine -- the viewport
-    # callback fires on a later app update, so testing it any other way would report a
-    # timeout that says nothing about the endpoint.
-    import asyncio
-
+    # Deliberately the cell's own sensor, on the real cell, after settling: that is the
+    # configuration in which it is known to work. The live-streaming case (reading while the
+    # orchestration loop is stepping) is a separate, unresolved question -- see PHYSICS.md
+    # section 9 -- and this probe does not pretend to answer it.
     from demo12.config import default_scene
     from demo12.isaac_env import IsaacCell
-    from demo12.server import capture_frame
 
     scene = default_scene(1)
     real_cell = IsaacCell(scene, device="cuda:0", headless=args.headless)
     real_cell.settle(60)
     report["cell_built"] = True
 
-    async def _capture():
-        return await capture_frame(real_cell)
-
-    try:
-        data, reason = asyncio.run(_capture())
-    except Exception as exc:                       # noqa: BLE001
-        data, reason = None, f"{type(exc).__name__}: {exc}"
+    data, reason = real_cell.render_frame_jpeg()
 
     if data is None:
         report["frame"] = None
@@ -138,7 +127,13 @@ def main() -> int:
         print(f"  NO FRAME: {reason}", flush=True)
     else:
         report["frame"] = {"bytes": len(data), "via": reason}
-        print(f"  pixel accessor: {reason}", flush=True)
+        print(f"  sensor: {reason}", flush=True)
+        # Keep the image. A probe whose output is a boolean has to be believed; one whose
+        # output is a JPEG can be looked at.
+        out_path = OUT_DIR / "observation_camera.jpg"
+        out_path.write_bytes(data)
+        report["frame"]["savedTo"] = str(out_path)
+        print(f"  saved {out_path}", flush=True)
         try:
             report["frame"].update(describe(data))
             print(f"  frame OK: {len(data)} bytes, "

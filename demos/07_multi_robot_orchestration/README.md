@@ -62,21 +62,24 @@ Sondas de medición (verifican todo lo afirmado en `demo12/docs/PHYSICS.md`):
 ... -m demo12.tools.probe_frame        # captura de viewport    -> out12/frame_probe.json
 ```
 
-### Limitación conocida: la imagen
+### La imagen
 
-`/api/frame.jpg` **devuelve 503 en esta máquina**, con el motivo. No sirve una imagen de
-relleno: un frame falso dejaría la interfaz mostrando un render muerto como si fuera real.
+`/api/frame.jpg` **funciona**, en headless, servida en vivo mientras el bucle de orquestación
+avanza. Medido: 10.498 bytes de JPEG por HTTP, con la celda de dos robots a 280 ticks y cero
+errores. Sale de una prim `UsdGeom.Camera` explícita leída por `isaaclab.sensors.Camera`, **no**
+de una captura del viewport: el viewport de esta máquina no tiene cámara
+(`has_primed_camera() == False`), y por eso esa ruta no puede dar imagen en ninguna
+configuración.
 
-Está **medido, no supuesto**: se probaron las cuatro combinaciones (headless y `--gui`, con y
-sin bombear el bucle de actualización de Kit) y ninguna produce una imagen. La causa es
-`has_primed_camera() == False` — el viewport no tiene cámara en esta máquina, así que no hay
-nada que capturar.
+Lo que hizo falta está en `demo12/docs/PHYSICS.md` §9. En corto: el sensor se inicializa con un
+evento **PLAY** del timeline que un `SimulationContext` suelto nunca dispara; `SensorBase` se
+traga la excepción real en `builtins.ISAACLAB_CALLBACK_EXCEPTION`; no hay `initialize()`
+público; y tras `reset()` hay que ejecutar unos cuantos pasos de simulación antes del primer
+`read` — si no, el anotador de Replicator pide cero frames y falla con
+`expand(torch.cuda.ByteTensor{[360, 640, 3]}, size=[0])`.
 
-La ruta alternativa —una prim `UsdGeom.Camera` leída por `isaaclab.sensors.Camera`— también
-se investigó. **La cámara se construye bien**, `cameras_enabled` está a `True`, pero
-`reset()` falla con *"Camera could not be initialized"*: el sensor queda sin inicializar
-porque su ciclo de vida espera un `ManagerBasedEnv` y esta demo usa un `SimulationContext`
-suelto. La cadena de diagnóstico completa está en `demo12/docs/PHYSICS.md` §9.
+Coste: renderizar cada `CAMERA_RENDER_EVERY_STEPS` ticks baja el rendimiento del bucle de
+control. La física no se resiente.
 
 Pruebas:
 

@@ -117,130 +117,30 @@ def rep_annotator_for(sample):
     return getter(path, "rgb") if path else None
 
 
-async def capture_frame(cell, width: int = 640, height: int = 360,
-                        timeout: float = 3.0) -> tuple[bytes | None, str]:
-    """Capture the viewport and JPEG-encode it. Returns ``(data, note_or_reason)``.
+async def capture_frame(cell, timeout: float = 6.0) -> tuple[bytes | None, str]:
+    """A JPEG of the cell, or ``(None, reason)``.
 
-    **Every obvious API for this is wrong on Isaac Sim 5.1.** Measured, not assumed --
-    ``demo12/tools/probe_frame.py`` is the probe that found all of it:
+    Reads the cell's own observation camera (``IsaacCell.camera``), not a viewport
+    snapshot. That matters here: this machine's viewport has no camera
+    (``has_primed_camera() == False``) so a viewport capture can never produce an image,
+    while an explicit ``UsdGeom.Camera`` prim read by a sensor works in headless.
 
-    * ``omni.replicator.core`` has no ``Renderer``, no ``render`` and no ``pyrep``. It
-      exposes ``create.camera``, ``create.render_product`` and ``rep.get``.
-    * ``create.render_product`` returns a ``HydraTexture`` whose only members are
-      ``destroy``, ``hydra_texture`` and ``path`` -- **no pixel accessor whatsoever**, so
-      neither ``.get_data()`` nor ``rep.get`` can read it.
-    * ``numpy.asarray`` on that object raises ``AttributeError: ... has no attribute
-      'get_data'`` while probing it, which is not about pixels and hides the real error.
-    * ``isaaclab.sensors.Camera`` fails at construction on this build
-      (``'RigidObject' object has no attribute '_external_force_b'``).
+    Every obvious alternative was measured and does not work on Isaac Sim 5.1 -- see
+    ``docs/PHYSICS.md`` section 9. In brief: ``rep.Renderer`` does not exist,
+    ``rep.create.render_product`` returns a ``HydraTexture`` with no pixel accessor,
+    ``isaaclab.sensors.Camera`` initialises itself from a **timeline PLAY event** that a
+    bare ``SimulationContext`` never fires, and ``SensorBase`` swallows the real exception
+    into ``builtins.ISAACLAB_CALLBACK_EXCEPTION``. The cell works around the last one by
+    calling the initialisation callback directly.
 
-    What does work is Kit's own viewport utility, renamed:
-
-    * ``omni.kit.viewport.utility.capture_viewport_to_image`` -> ``..._to_buffer``
-    * signature ``(viewport_api, on_capture_fn, is_hdr=False)`` -- **callback based**
-    * ``omni.kit.app.get_default_app_window`` does not exist; use
-      ``omni.kit.viewport.utility.get_active_viewport()``
-
-    The callback is asynchronous: it fires on a later app update, not on return. A probe
-    that captures and immediately exits sees "NO CALLBACK FIRED", which is why this is a
-    coroutine awaiting an event rather than a plain function. Under the server's event loop
-    the loop is live and the callback lands.
+    Synchronous despite being a coroutine, and deliberately **not** in an executor: Kit and
+    CUDA own the main thread, and moving a sensor read to a worker thread deadlocks. The same
+    trap as stepping the simulation off-thread, which cost a day once already.
     """
     try:
-        import numpy as np
-        from omni.kit.viewport.utility import (capture_viewport_to_buffer,
-                                               get_active_viewport)
-        from PIL import Image
-    except ImportError as exc:
-        return None, f"viewport capture unavailable: {exc}"
-
-    # The cell has to actually render. ``IsaacCell.step`` only asks for a render when Kit
-    # has a window, so in headless the viewport would hold a stale or black frame -- a
-    # valid JPEG of nothing, which is worse than an error because the interface would show
-    # it as a live render.
-    request = getattr(cell, "render_once", None)
-    if callable(request):
-        try:
-            request()
-        except Exception as exc:                   # noqa: BLE001
-            return None, f"cell render failed: {exc}"
-
-    try:
-        viewport = get_active_viewport()
+        return cell.render_frame_jpeg()
     except Exception as exc:                       # noqa: BLE001
-        return None, f"no active viewport: {type(exc).__name__}: {exc}"
-    if viewport is None:
-        return None, ("no active viewport. Headless Kit has no viewport to capture; "
-                      "start the server with --gui, or accept that /api/frame.jpg "
-                      "returns 503")
-
-    loop = asyncio.get_running_loop()
-    done = loop.create_future()
-
-    def on_capture(pixels) -> None:
-        if done.done():
-            return
-        try:
-            array = np.asarray(pixels)
-            if array.ndim == 4:
-                array = array[0]
-            if array.ndim == 3 and array.shape[-1] >= 4:
-                array = array[..., :3]
-            if array.dtype != np.uint8:
-                array = np.clip(array, 0, 255).astype(np.uint8)
-            buffer = io.BytesIO()
-            Image.fromarray(array).save(buffer, format="JPEG", quality=82)
-            loop.call_soon_threadsafe(done.set_result, buffer.getvalue())
-        except Exception as exc:                   # noqa: BLE001
-            loop.call_soon_threadsafe(done.set_exception, exc)
-
-    try:
-        capture_viewport_to_buffer(viewport, on_capture)
-    except Exception as exc:                       # noqa: BLE001
-        return None, f"capture request failed: {type(exc).__name__}: {exc}"
-
-    # **The callback fires on a Kit app update, so wait by pumping one.**
-    #
-    # Measured: simply awaiting the future times out in BOTH headless and --gui, because
-    # neither asyncio.run nor uvicorn's event loop drives Kit's own update. The capture is
-    # queued to Kit and nothing ever runs it.
-    #
-    # ``Application.next_update`` is an awaitable that yields to one Kit update, so awaiting
-    # it in a loop is how the caller pumps Kit while waiting for the frame. Without this the
-    # endpoint reports a 3 s timeout and no picture, in every configuration.
-    import time as _time
-
-    app = None
-    try:
-        import omni.kit.app as _kit_app
-
-        app = _kit_app.get_app()
-    except Exception as exc:                       # noqa: BLE001
-        return None, f"no Kit application: {type(exc).__name__}: {exc}"
-
-    deadline = _time.monotonic() + timeout
-    while not done.done() and _time.monotonic() < deadline:
-        try:
-            await app.next_update()
-        except AttributeError:
-            # Older Kit: no awaitable update. Fall back to a plain sleep so the callback can
-            # still land if something else is driving Kit.
-            await asyncio.sleep(0.01)
-        except Exception:                          # noqa: BLE001
-            await asyncio.sleep(0.01)
-
-    if not done.done():
-        return None, (f"viewport capture did not fire within {timeout:.0f} s even with "
-                      f"Kit's update loop pumped. The viewport may not be rendering; "
-                      f"check that the server was started with --gui and that the cell "
-                      f"has a window.")
-
-    try:
-        data = done.result()
-    except Exception as exc:                       # noqa: BLE001
-        return None, f"capture failed: {type(exc).__name__}: {exc}"
-
-    return data, f"viewport {width}x{height}"
+        return None, f"frame capture failed: {type(exc).__name__}: {exc}"
 
 
 def build_app(robot_count: int = 2, headless: bool = True,
@@ -257,6 +157,17 @@ def build_app(robot_count: int = 2, headless: bool = True,
     scene = default_scene(robot_count)
     cell = IsaacCell(scene, device="cuda:0", headless=headless)
     cell.settle(90)
+
+    # Create and prime the observation camera *here*, while the cell is idle, rather than
+    # lazily on the first capture.
+    #
+    # Measured: a camera created while the orchestration loop is running reads back an empty
+    # frame -- Replicator's annotator tries to expand the buffer to size 0 and raises
+    #   expand(torch.cuda.ByteTensor{[360, 640, 3]}, size=[0])
+    # The same camera created against the same cell while nothing is stepping reads
+    # perfectly, with values spanning 28..155. So it is a create-while-running problem, not
+    # a camera problem, and creating it at startup avoids it.
+    cell.camera()
 
     orch = MultiRobotOrchestrator(cell, scene, scene.mission.tasks)
 

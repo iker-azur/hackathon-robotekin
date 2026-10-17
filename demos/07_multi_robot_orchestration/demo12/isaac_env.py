@@ -116,6 +116,33 @@ ARM_COLLISION_GROUP = "1"
 # like it is holding something.
 CONTACT_FORCE_EPSILON_N = 1e-3
 
+# ---------------------------------------------------------------------------
+# The observation camera
+# ---------------------------------------------------------------------------
+#
+# A fixed three-quarter view over the cell. Tuned by looking at where things are, not by any
+# physics: the table is centred (0.35, -0.35), the parts sit around y = -0.43 and the robots
+# stand behind at y = -0.64, so the camera stands off to +x/+y and looks back down the row.
+# The framing is a judgement call and is labelled as one.
+CAMERA_EYE_M = (1.15, 0.55, 0.80)
+CAMERA_TARGET_M = (0.36, -0.47, 0.06)
+CAMERA_WIDTH_PX = 640
+CAMERA_HEIGHT_PX = 360
+# 22 mm on a 20.955 mm horizontal aperture is about a 51 deg horizontal field of view, which
+# covers the whole table at this standoff. A label on where it came from, because a focal
+# length nobody chose deliberately is how a demo ends up looking through a straw.
+CAMERA_FOCAL_LENGTH_MM = 22.0
+
+# How often, in control ticks, the cell renders a frame while a camera is attached. At 60 Hz
+# control, every 5 ticks is about 12 fps of render -- enough for a live view and cheap
+# enough not to dominate the tick. Ticks between renders still return the previous frame
+# rather than failing.
+CAMERA_RENDER_EVERY_STEPS = 5
+
+# Control ticks to run at camera startup before the first read is trusted. See
+# ``IsaacCell.camera``: reset alone does not fill the render product, stepping does.
+CAMERA_PRIME_STEPS = 3
+
 
 # ---------------------------------------------------------------------------
 # Physics materials
@@ -470,6 +497,11 @@ class IsaacCell:
         self.control_step_count = 0
         self.pad_material_bound = 0
         self._ccd_enabled = False
+
+        # Observation camera, created on first use rather than in _build: it must be
+        # spawned after the reset, or its own stage change lands after its initialisation.
+        self._camera = None
+        self._camera_failed = False
 
         self._build()
 
@@ -1301,8 +1333,21 @@ class IsaacCell:
         # on the articulation carries their targets with it. Nothing else has to be driven.
         for art in self.robots.values():
             art.write_data_to_sim()
+        # Render when there is a window, or when an observation camera is attached and is
+        # due a frame.
+        #
+        # Rendering is not optional once a camera exists: stepping with ``render=False``
+        # leaves Replicator's render product empty, and the next read fails inside the
+        # annotator with
+        #   expand(torch.cuda.ByteTensor{[360, 640, 3]}, size=[0])
+        # Measured. The camera read fine while the cell was idle and never while it was
+        # stepping -- which looked like "the camera only works at startup" until the
+        # difference turned out to be the render flag, not the timing.
+        want_render = self.sim.has_gui() or (
+            self._camera is not None
+            and self.control_step_count % CAMERA_RENDER_EVERY_STEPS == 0)
         for i in range(substeps):
-            self.sim.step(render=(i == substeps - 1) and self.sim.has_gui())
+            self.sim.step(render=want_render and (i == substeps - 1))
 
         # Refresh Isaac Lab's cached tensors. Without this ``asset.data`` keeps returning
         # whatever was there when the last ``update`` ran, so the orchestration reads a
@@ -1347,6 +1392,126 @@ class IsaacCell:
             # Reported by the caller; a headless Kit without a viewport is a configuration
             # fact, not a crash.
             print(f"  render requested but unavailable: {exc}", flush=True)
+
+    # -- the observation camera ------------------------------------------
+
+    def camera(self):
+        """The cell's observation camera, created on first use.
+
+        Returns an ``isaaclab.sensors.Camera`` reading a single fixed viewpoint over the
+        cell, or ``None`` if cameras are not available.
+
+        **This is the working render path**, and getting it to work was mostly a matter of
+        reading Isaac Lab's source rather than guessing at APIs. Recorded because the failure
+        modes are all silent:
+
+        * ``Camera(cfg)`` constructs fine and ``/isaaclab/cameras_enabled`` is ``True``, but
+          ``reset()`` raises ``Camera could not be initialized``. The message is generic and
+          points at ``--enable_cameras``, which is already enabled.
+        * The real reason is that :class:`isaaclab.sensors.Camera` initialises itself from a
+          **timeline PLAY event** (``sensor_base.py`` subscribes to
+          ``TimelineEventType.PLAY``), and a bare ``SimulationContext`` never fires one.
+        * Worse, ``SensorBase`` wraps ``_initialize_impl`` in a ``try/except`` that stores
+          the exception in ``builtins.ISAACLAB_CALLBACK_EXCEPTION`` and then sets
+          ``_is_initialized = True`` anyway -- so the useful error is in a builtin, not on
+          screen.
+        * There is no public ``initialize()`` to call afterwards. Firing the callback
+          directly does initialise it, and then it reads pixels.
+
+        Measured output at 640x360: shape ``[1, 360, 640, 3]``, values spanning 28..155 --
+        a real image of a lit scene, not a black frame.
+        """
+        if self._camera is not None or self._camera_failed:
+            return self._camera
+
+        try:
+            from isaaclab.sensors import Camera, CameraCfg
+            import isaaclab.sim as sim_utils
+
+            cfg = CameraCfg(
+                prim_path=f"{ROOT}/ObservationCamera",
+                spawn=sim_utils.PinholeCameraCfg(
+                    focal_length=CAMERA_FOCAL_LENGTH_MM,
+                    clipping_range=(0.05, 50.0),
+                    horizontal_aperture=20.955,
+                    vertical_aperture=12.0),
+                data_types=["rgb"],
+                width=CAMERA_WIDTH_PX,
+                height=CAMERA_HEIGHT_PX,
+                offset=CameraCfg.OffsetCfg(
+                    pos=CAMERA_EYE_M,
+                    rot=_look_at_quat(CAMERA_EYE_M, CAMERA_TARGET_M),
+                    convention="ros"),
+            )
+            camera = Camera(cfg)
+            # ``reset()`` is what raises if the sensor never initialised; call the callback
+            # first so it is genuinely ready rather than relying on a timeline event this
+            # demo never fires.
+            if not camera._is_initialized:
+                camera._initialize_callback(None)
+            camera.reset()
+            self._camera = camera
+
+            # Prime it. The working recipe, measured: after ``reset()`` the sensor needs a
+            # few real simulation steps and a render before the first read is valid.
+            # Reading straight after reset fails inside Replicator's annotator with
+            #   expand(torch.cuda.ByteTensor{[360, 640, 3]}, size=[0])
+            # Stepping is what fills the render product -- ``sim.render()`` on its own is
+            # not enough.
+            for _ in range(CAMERA_PRIME_STEPS):
+                self.step()
+            self.render_once()
+            camera.update(dt=self.sim_dt, force_recompute=True)
+            print(f"  observation camera ready at {CAMERA_EYE_M} -> {CAMERA_TARGET_M}",
+                  flush=True)
+        except Exception as exc:                   # noqa: BLE001 - reported, not hidden
+            self._camera_failed = True
+            print(f"  observation camera unavailable: {type(exc).__name__}: {exc}",
+                  flush=True)
+            self._camera = None
+        return self._camera
+
+    def render_frame_jpeg(self, quality: int = 82) -> tuple[bytes | None, str]:
+        """A JPEG of the cell right now, or ``(None, reason)``.
+
+        Advances nothing. Reads the camera sensor, so it needs a render to have happened --
+        which :meth:`render_once` arranges.
+        """
+        camera = self.camera()
+        if camera is None:
+            return None, ("no observation camera: see isaac_env.IsaacCell.camera for why, "
+                          "and PHYSICS.md section 9 for the diagnostic chain")
+
+        try:
+            # The loop renders every CAMERA_RENDER_EVERY_STEPS ticks while this camera
+            # exists, so the render product is normally already populated. ``render_once``
+            # covers the case where a read lands between rendered steps.
+            self.render_once()
+            camera.update(dt=self.sim_dt, force_recompute=True)
+            rgb = camera.data.output["rgb"]
+        except Exception as exc:                   # noqa: BLE001
+            return None, f"camera read failed: {type(exc).__name__}: {exc}"
+
+        try:
+            array = rgb.detach().cpu().numpy()
+        except Exception as exc:                   # noqa: BLE001
+            return None, f"could not bring the frame to host memory: {exc}"
+
+        if array.ndim == 4:
+            array = array[0]
+        if array.ndim != 3 or array.shape[2] < 3:
+            return None, f"unexpected frame shape {tuple(array.shape)}"
+
+        try:
+            from PIL import Image
+
+            import io as _io
+
+            buffer = _io.BytesIO()
+            Image.fromarray(array[..., :3]).save(buffer, format="JPEG", quality=quality)
+            return buffer.getvalue(), f"{array.shape[1]}x{array.shape[0]} sensor camera"
+        except Exception as exc:                   # noqa: BLE001
+            return None, f"JPEG encode failed: {type(exc).__name__}: {exc}"
 
     # -- control ---------------------------------------------------------
 
@@ -1569,6 +1734,47 @@ def torch_tensor(rows, device: str):
     import torch
 
     return torch.tensor(rows, dtype=torch.float32, device=device)
+
+
+def _look_at_quat(eye, target, up=(0.0, 0.0, 1.0)):
+    """Quaternion (w, x, y, z) for a ROS-convention camera at ``eye`` facing ``target``.
+
+    ROS convention: the camera looks along its local +Z and its local +Y points *down*.
+
+    Built by hand rather than with ``Gf.Rotation`` because pxr's composition rules are not
+    what they look like -- ``Gf.Rotation(a, b) * Gf.Rotation(c, d)`` is not a ``Quatf``, and
+    it raises rather than coercing, which is correct and unhelpful when the API is the thing
+    being guessed at.
+    """
+    import numpy as _np
+
+    e = _np.array(eye, dtype=float)
+    t = _np.array(target, dtype=float)
+    u = _np.array(up, dtype=float)
+
+    fwd = t - e
+    fwd /= _np.linalg.norm(fwd)
+    right = _np.cross(fwd, u)
+    right /= _np.linalg.norm(right)
+    down = _np.cross(fwd, right)
+    down /= _np.linalg.norm(down)
+
+    # Columns are the camera's local axes in world: +X right, +Y down, +Z forward.
+    m = _np.column_stack([right, down, fwd])
+    tr = _np.trace(m)
+    if tr > 0.0:
+        s = (tr + 1.0) ** 0.5 * 2.0
+        w, x, y, z = 0.25 * s, (m[2, 1] - m[1, 2]) / s, (m[0, 2] - m[2, 0]) / s, (m[1, 0] - m[0, 1]) / s
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = (1.0 + m[0, 0] - m[1, 1] - m[2, 2]) ** 0.5 * 2.0
+        w, x, y, z = (m[2, 1] - m[1, 2]) / s, 0.25 * s, (m[0, 1] + m[1, 0]) / s, (m[0, 2] + m[2, 0]) / s
+    elif m[1, 1] > m[2, 2]:
+        s = (1.0 + m[1, 1] - m[0, 0] - m[2, 2]) ** 0.5 * 2.0
+        w, x, y, z = (m[0, 2] - m[2, 0]) / s, (m[0, 1] + m[1, 0]) / s, 0.25 * s, (m[1, 2] + m[2, 1]) / s
+    else:
+        s = (1.0 + m[2, 2] - m[0, 0] - m[1, 1]) ** 0.5 * 2.0
+        w, x, y, z = (m[1, 0] - m[0, 1]) / s, (m[0, 2] + m[2, 0]) / s, (m[1, 2] + m[2, 1]) / s, 0.25 * s
+    return (float(w), float(x), float(y), float(z))
 
 
 def _rgb(hex_color: str) -> tuple[float, float, float]:
