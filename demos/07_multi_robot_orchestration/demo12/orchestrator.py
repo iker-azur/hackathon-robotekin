@@ -422,6 +422,7 @@ class MultiRobotOrchestrator:
         self.control_ticks = 0
         self.failures_injected = 0
         self.reassignments = 0
+        self.roster_changes = 0
 
     # -- queries ---------------------------------------------------------
 
@@ -461,6 +462,7 @@ class MultiRobotOrchestrator:
             "tasksTotal": len(self.tasks),
             "failuresInjected": self.failures_injected,
             "reassignments": self.reassignments,
+            "rosterChanges": self.roster_changes,
             "robots": [r.to_dict() for r in self.robots.values()],
             "tasks": [t.to_dict() for t in self.tasks.values()],
         }
@@ -580,73 +582,67 @@ class MultiRobotOrchestrator:
     # -- roster and faults -----------------------------------------------
 
     def add_robot(self, robot_cfg) -> dict[str, Any]:
-        """Add a robot to the cell, rebuilding it.
+        """Refuse, and say why.
 
-        Isaac Lab cannot add an articulation to a live scene: the asset's PhysX tensor
-        views, its actuator registry and every contact sensor are built at construction and
-        invalidated by a reset. The honest implementation is therefore a rebuild, not an
-        insertion, and the previous roster is returned so a caller can restore it.
+        Isaac Lab cannot insert an articulation into a live scene, so the only route is to
+        rebuild the whole cell. That route was built
+        (:meth:`isaac_env.IsaacCell.rebuild_with_robot`) and **measured to hang**: a clean
+        cell built and moved, then ``RemovePrim`` plus a second ``sim.reset()`` in the same
+        Kit session never returned -- no exception, just the process at 370 CPU-seconds with
+        the last log line still the banner before the call. So it is not wired up.
 
-        ``IsaacCell`` owns the rebuild; see :meth:`isaac_env.IsaacCell.rebuild`. This
-        method exists on the orchestrator so the roster is changeable from the same
-        interface as everything else, and it refuses rather than pretending if the cell
-        cannot rebuild.
+        The honest answer is that the roster is fixed when the cell is built. Returning
+        ``{"ok": false}`` with the reason beats returning ``{"ok": true}`` for a robot that
+        was never spawned, which would put a phantom in the interface.
+
+        To change the robot count, relaunch with a different ``--robots``; the task ledger
+        survives because it lives here and not in the physics.
         """
         if robot_cfg.id in self.robots:
             return {"ok": False, "reason": f"robot {robot_cfg.id!r} already present"}
-
-        rebuild = getattr(self.cell, "rebuild_with_robot", None)
-        if rebuild is None:
-            return {"ok": False,
-                    "reason": "this cell does not support adding a robot at runtime; "
-                              "configure it in the SceneConfig and relaunch"}
-
-        previous = self.scene.robots
-        self.scene.robots = list(previous) + [robot_cfg]
-        try:
-            rebuild()
-        except Exception:
-            self.scene.robots = previous
-            raise
-
-        self.robots[robot_cfg.id] = RobotStatus(id=robot_cfg.id)
-        return {"ok": True, "robotId": robot_cfg.id,
-                "roster": [r.id for r in self.robots.values()]}
+        return {"ok": False,
+                "reason": ("adding a robot at runtime needs an Isaac Lab cell rebuild, and "
+                           "an in-process rebuild hangs on this build (measured: RemovePrim "
+                           "+ sim.reset() in the same Kit session never returns). Relaunch "
+                           "with a different --robots; the task queue survives, the "
+                           "simulation state does not.")}
 
     def remove_robot(self, robot_id: str) -> dict[str, Any]:
-        """Remove a robot, reassigning anything it was holding before it goes."""
+        """Refuse, and say why. See :meth:`add_robot` -- same measured reason."""
         if robot_id not in self.robots:
             return {"ok": False, "reason": f"no robot with id {robot_id!r}"}
         if len(self.robots) <= 1:
             return {"ok": False, "reason": "the last robot cannot be removed"}
+        return {"ok": False,
+                "reason": ("removing a robot at runtime needs an Isaac Lab cell rebuild, "
+                           "and an in-process rebuild hangs on this build (measured). "
+                           "Relaunch with a different --robots.")}
 
-        # Anything this robot was holding goes back on the queue, with it recorded as a
-        # previous owner so the history is not lost.
-        reassigned = []
+    def release_for_relaunch(self) -> dict[str, Any]:
+        """Put every in-flight task back on the queue, in preparation for a relaunch.
+
+        The supported way to change the roster: requeue the ledger, exit, relaunch with a
+        different ``--robots``. The parts do not survive that -- they respawn at their
+        configured positions -- so a task mid-flight is no longer true and must be requeued
+        rather than resumed.
+
+        This is what an in-process rebuild would have needed too, which is why losing the
+        physical state was never the part that made that approach attractive.
+        """
+        released: list[str] = []
         for task in self.tasks.values():
-            if task.assigned_robot != robot_id:
+            if task.state not in ACTIVE_STATES:
                 continue
-            task.previous_robots.append(robot_id)
+            if task.assigned_robot:
+                task.previous_robots.append(task.assigned_robot)
+                self.reassignments += 1
             task.assigned_robot = None
             task.state = QUEUED
             task.runner = None
-            task.note = f"released by removed robot {robot_id}"
-            reassigned.append(task.id)
-            self.reassignments += 1
-
-        rebuild = getattr(self.cell, "rebuild_without_robot", None)
-        if rebuild is not None:
-            previous = list(self.scene.robots)
-            self.scene.robots = [r for r in previous if r.id != robot_id]
-            try:
-                rebuild()
-            except Exception:
-                self.scene.robots = previous
-                raise
-
-        del self.robots[robot_id]
-        return {"ok": True, "removed": robot_id, "reassigned": reassigned,
-                "roster": [r.id for r in self.robots.values()]}
+            task.note = "released for relaunch: the simulation state does not survive"
+            released.append(task.id)
+        return {"ok": True, "released": released,
+                "note": "relaunch with --robots N to change the roster"}
 
     def inject_failure(self, robot_id: str) -> dict[str, Any]:
         """Fault a robot, as a UI button or a test would.

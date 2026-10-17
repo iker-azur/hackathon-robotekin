@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -154,6 +155,13 @@ class FakeCell:
 
     def jaw_pad_span_m(self, robot_id):
         return 0.030
+
+    # -- roster changes -------------------------------------------------
+    #
+    # NOTE: the real cell has ``rebuild_with_robot`` / ``rebuild_without_robot``, but they
+    # are not used -- an in-process rebuild hangs on this build (see PHYSICS.md), so the
+    # orchestrator refuses instead. The fake does not implement them either, and the tests
+    # assert the refusal carries the measured reason and points at relaunching.
 
 
 def _scene_with(robot_count: int, task_part_ids: list[str]) -> SceneConfig:
@@ -374,22 +382,17 @@ def test_faulting_an_unknown_robot_is_reported_not_raised():
 # ---------------------------------------------------------------------------
 
 
-def test_remove_robot_releases_and_refuses_the_last_one():
-    scene = _scene_with(2, ["part_1", "part_2"])
-    cell = FakeCell(scene, {"task_1": True, "task_2": True})
+def test_remove_robot_refuses_the_last_one_first():
+    """The cheap check still applies even though removal itself refuses."""
+    scene = _scene_with(1, ["part_1"])
+    cell = FakeCell(scene, {"task_1": True})
     orch = _make(scene, cell)
 
-    for _ in range(5):
-        orch.step()
-    victim = next(r.id for r in orch.robots.values() if r.task_id is not None)
-    held = next(t.id for t in orch.tasks.values() if t.assigned_robot == victim)
+    result = orch.remove_robot("robot_1")
 
-    result = orch.remove_robot(victim)
-
-    assert result["ok"] is True
-    assert held in result["reassigned"]
-    assert victim not in orch.robots
-    assert orch.tasks[held].state == QUEUED
+    assert result["ok"] is False
+    assert "last robot" in result["reason"]
+    assert "robot_1" in orch.robots
 
 
 def test_cannot_remove_the_last_robot():
@@ -416,10 +419,11 @@ def test_add_robot_refuses_a_duplicate_id():
 
 
 def test_add_robot_refuses_rather_than_faking_it():
-    """Without a cell that can rebuild, adding a robot must fail loudly.
+    """Adding a robot must fail loudly, with the measured reason.
 
-    A method that returns ``{"ok": true}`` without having added anything is worse than one
-    that refuses: the interface would show a robot that does not exist.
+    The in-process rebuild this would need was built and **hangs** on this build, so the
+    orchestrator refuses. A method returning ``{"ok": true}`` for a robot that was never
+    spawned would put a phantom in the interface -- worse than refusing.
     """
     scene = _scene_with(1, ["part_1"])
     cell = FakeCell(scene, {"task_1": True})
@@ -428,7 +432,48 @@ def test_add_robot_refuses_rather_than_faking_it():
     result = orch.add_robot(RobotConfig(id="robot_2"))
 
     assert result["ok"] is False
-    assert "relaunch" in result["reason"]
+    assert "hangs" in result["reason"]
+    assert "--robots" in result["reason"], "must point at the way that does work"
+    assert "robot_2" not in orch.robots
+
+
+def test_remove_robot_refuses_with_the_same_reason():
+    scene = _scene_with(2, ["part_1", "part_2"])
+    cell = FakeCell(scene, {"task_1": True, "task_2": True})
+    orch = _make(scene, cell)
+
+    result = orch.remove_robot("robot_2")
+
+    assert result["ok"] is False
+    assert "hangs" in result["reason"]
+    assert "robot_2" in orch.robots, "the robot must still be there"
+
+
+def test_release_for_relaunch_requeues_in_flight_work():
+    """The supported roster change: requeue, exit, relaunch.
+
+    The parts respawn at their configured positions, so a task mid-flight is no longer true
+    and has to be requeued rather than resumed.
+    """
+    scene = _scene_with(1, ["part_1", "part_2"])
+    cell = FakeCell(scene, {"task_1": True, "task_2": True})
+    orch = _make(scene, cell)
+
+    for _ in range(5):
+        orch.step()
+    in_flight = [t.id for t in orch.tasks.values() if t.state != "done"]
+    assert in_flight, "expected something in flight to test with"
+
+    result = orch.release_for_relaunch()
+
+    assert result["ok"] is True
+    assert set(result["released"]) == set(in_flight)
+    for task_id in in_flight:
+        task = orch.tasks[task_id]
+        assert task.runner is None
+        assert task.assigned_robot is None
+        assert task.state == QUEUED
+        assert "relaunch" in task.note
 
 
 # ---------------------------------------------------------------------------

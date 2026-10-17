@@ -64,12 +64,16 @@ Sondas de medición (verifican todo lo afirmado en `demo12/docs/PHYSICS.md`):
 
 ### Limitación conocida: la imagen
 
-`/api/frame.jpg` **devuelve 503 en headless**, con el motivo. No sirve una imagen de
+`/api/frame.jpg` **devuelve 503 en esta máquina**, con el motivo. No sirve una imagen de
 relleno: un frame falso dejaría la interfaz mostrando un render muerto como si fuera real.
 
-Para ver la celda hay que arrancar el servidor con `--gui`; ese camino **no está verificado**
-(solo se ha ejecutado headless). El detalle de por qué —cuatro APIs distintas que ya no
-existen en Isaac Sim 5.1— está en `demo12/docs/PHYSICS.md` §9.
+Está **medido, no supuesto**: se probaron las cuatro combinaciones (headless y `--gui`, con y
+sin bombear el bucle de actualización de Kit) y ninguna produce una imagen. La causa es
+`has_primed_camera() == False` — el viewport no tiene cámara en esta máquina, así que no hay
+nada que capturar. No es un problema de API que se resuelva sondeando más.
+
+Para verlo har falta un viewport con cámara, o una prim `UsdGeom.Camera` explícita que un
+sensor lea directamente. El detalle está en `demo12/docs/PHYSICS.md` §9.
 
 Pruebas:
 
@@ -96,6 +100,18 @@ nada de PhysX, y `config.py` / `materials.py` no importan nada de Isaac.
 | `server.py` | REST + WebSocket sobre la celda viva. |
 | `web/` | Interfaz Vite + React + TypeScript. |
 | `tools/` | Sondas. Nada de esto es parte de la demo; existen para que `PHYSICS.md` cite mediciones, no afirmaciones. |
+
+---
+
+### Limitación conocida: cambiar el número de robots
+
+`add_robot` / `remove_robot` **se niegan**, con el motivo. Isaac Lab no permite insertar una
+articulación en una escena viva, así que la única vía sería reconstruir la celda entera; esa
+reconstrucción se implementó y **se midió que se cuelga** (370 segundos de CPU, sin
+retornar nunca — `RemovePrim` + un segundo `sim.reset()` en la misma sesión de Kit).
+
+La vía que sí funciona: reeniciar con `--robots N`. `release_for_relaunch()` devuelve las
+tareas en vuelo a la cola antes de salir. La cola de tareas sobrevive; el estado físico no.
 
 ---
 

@@ -258,15 +258,30 @@ that does not exist.
 
 ---
 
-## 9. Viewport capture: measured, and it does not work headless
+## 9. Viewport capture: measured, and it does not work on this machine
 
-`/api/frame.jpg` returns **503 in headless**, with the reason. It does not serve a
-placeholder, because a stub frame would let the interface show a dead render as a live one.
+`/api/frame.jpg` returns **503**, with the reason. It does not serve a placeholder, because
+a stub frame would let the interface show a dead render as a live one.
 
-This section exists because getting to that honest 503 took four wrong APIs, and every one
-of them is a thing someone will otherwise try.
+**This is a measured negative result, not an untested guess.** All four combinations were
+run (`tools/probe_frame.py`):
 
-**Measured on Isaac Sim 5.1 / omni.replicator.core 1.12.27** (`tools/probe_frame.py`):
+| Configuration | Result |
+|---|---|
+| headless, plain `await` on the future | timeout after 3 s |
+| `--gui`, plain `await` on the future | timeout after 3 s |
+| headless, pumping `Application.next_update` | timeout after 3 s |
+| `--gui`, pumping `Application.next_update` | timeout after 3 s |
+
+The indicator is `SimulationContext.has_primed_camera() == False` in both modes: **the
+viewport has no camera on this machine**, so there is nothing for the capture to read. This
+is not an API problem that more probing would solve — it is the absence of a camera on the
+viewport.
+
+### The four wrong APIs, for whoever tries this next
+
+Getting to a precise 503 took four APIs that no longer exist in Isaac Sim 5.1
+(omni.replicator.core 1.12.27):
 
 | Attempt | Result |
 |---|---|
@@ -274,30 +289,26 @@ of them is a thing someone will otherwise try.
 | `rep.create.render_product(cam, (w, h))` | Returns a `HydraTexture` whose only members are `destroy`, `hydra_texture`, `path` — **no pixel accessor at all**. |
 | `render_product.get_data(["rgb"])` | `AttributeError: 'HydraTexture' object has no attribute 'get_data'` |
 | `np.asarray(hydra_texture)` | Same `AttributeError`, raised while numpy *probes* the object. Not about pixels; it hides the real error. |
-| `rep.orchestrator.step()` | **Hangs** headless. |
+| `rep.orchestrator.step()` | **Hangs**. |
 | `isaaclab.sensors.Camera` | Fails at construction: `'RigidObject' object has no attribute '_external_force_b'` |
-| `omni.kit.app.get_default_app_window` | Does not exist in this build. |
-| `omni.kit.viewport.utility.capture_viewport_to_image` | Renamed to **`capture_viewport_to_buffer`**. |
+| `omni.kit.app.get_default_app_window` | Does not exist. |
+| `capture_viewport_to_image` | Renamed to **`capture_viewport_to_buffer`**, and is **callback based**. |
 
-What actually works is the last one, with two differences that matter:
+What is left is:
 
 ```python
 viewport = omni.kit.viewport.utility.get_active_viewport()
 omni.kit.viewport.utility.capture_viewport_to_buffer(viewport, on_capture_fn)
 ```
 
-**The callback is asynchronous.** It fires on a later app update, not on return. A probe
-that captures and immediately exits reports "NO CALLBACK FIRED" — which is why
-`capture_frame` is a coroutine awaiting a future, and why the headless case times out:
+The callback fires on a later Kit app update, so a caller must pump
+`omni.kit.app.get_app().next_update()` while waiting — `asyncio.run` and uvicorn's loop do
+not drive Kit's. The code does this. It still fails here, because there is no camera.
 
-```
-viewport capture did not fire within 3 s. The callback needs Kit's event loop; in
-headless it may never run. Start the server with --gui.
-```
-
-**Unverified:** the `--gui` path has not been exercised end to end. Only headless has been
-run. Treat GUI capture as likely to work (the API is right and the event loop is live there)
-but not as measured.
+**To make this work, something else has to change first:** either the machine needs a
+viewport with a camera, or the cell needs an explicit `UsdGeom.Camera` prim that a sensor
+reads directly, bypassing the viewport entirely. The second is the more promising route and
+is not implemented.
 
 ### The threading trap
 
@@ -310,6 +321,35 @@ Measured: the server came up healthy (`ok: true`, `errorCount: 0`) and then simp
 after one step, with no exception anywhere — the hardest kind of failure to notice. Fixed by
 stepping on the main thread and letting the event loop block. After the fix: **619 ticks in
 45 s**, zero errors, tasks advancing.
+
+### In-process cell rebuild: measured, and it hangs
+
+`IsaacLab` cannot insert an articulation into a live scene. An `Articulation` captures its
+PhysX tensor views at construction and `sim.reset()` invalidates them, so the only route to
+changing the robot roster is to rebuild the whole cell: remove the `ROOT` prim subtree, drop
+every cached handle, and run `_build()` again.
+
+**That was built (`IsaacCell.rebuild`) and it does not work.** Measured: a clean one-robot
+cell built, moved its arm, printed the banner before the call, and then never returned — no
+exception, no log line, the process sitting at **370 CPU-seconds**. `RemovePrim` plus a
+second `sim.reset()` in the same Kit session does not complete. This is the "Failed to get
+root link transforms from backend" family of problems, arriving as a deadlock rather than an
+error, which is considerably harder to diagnose.
+
+So `add_robot` / `remove_robot` **refuse**, and say so:
+
+> adding a robot at runtime needs an Isaac Lab cell rebuild, and an in-process rebuild hangs
+> on this build (measured: RemovePrim + sim.reset() in the same Kit session never returns).
+> Relaunch with a different `--robots`; the task queue survives, the simulation state does not.
+
+`release_for_relaunch()` is the supported path: requeue every in-flight task, exit, relaunch
+with a different `--robots`. Worth noting that losing the physical state is *also* what an
+in-process rebuild would have cost — it re-spawns the parts — so that was never the part
+that made the in-process approach attractive.
+
+`IsaacCell.rebuild` is kept with a loud warning rather than deleted: the sequence in
+`_build` is correct and someone with a cleaner path through PhysX's lifecycle may get it
+working. It is wired to nothing.
 
 ---
 
@@ -332,12 +372,13 @@ Disclosed, not hidden.
 - **The ball is modelled as its bounding sphere** with an effective density carrying its
   hollow shell.
 - **`describe_scene` / `catalog()` are unused by the backend** and kept only for the editor.
-- **Viewport capture does not work headless.** `/api/frame.jpg` returns 503 with the
-  reason rather than a placeholder. `--gui` is required for a picture, and that path is
-  **unverified** — only headless has been run. Section 9.
-- **`add_robot` / `remove_robot` refuse.** Isaac Lab cannot insert an articulation into a
-  live scene, and the rebuild path was never built, so they return `{"ok": false, ...}`
-  rather than reporting a robot that does not exist.
+- **Viewport capture does not work on this machine.** `/api/frame.jpg` returns 503 with
+  the reason rather than a placeholder. Measured across all four configurations —
+  headless and `--gui`, with and without pumping Kit's update loop. The cause is
+  `has_primed_camera() == False`: the viewport has no camera here. Section 9.
+- **`add_robot` / `remove_robot` refuse.** The in-process cell rebuild they need was built
+  and **measured to hang** (370 CPU-seconds, no return). Relaunch with a different
+  `--robots`; `release_for_relaunch()` requeues the ledger first. See section 9.
 
 ---
 

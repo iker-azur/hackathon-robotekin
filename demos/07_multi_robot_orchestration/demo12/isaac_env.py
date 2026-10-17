@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from . import materials as M
@@ -1486,6 +1486,78 @@ class IsaacCell:
             self.sim.stop()
         except Exception:
             pass
+
+    def rebuild(self, scene: "SceneConfig | None" = None, settle_steps: int = 90) -> None:
+        """**KNOWN TO HANG ON THIS BUILD. Not used. Do not call.**
+
+        Tear the cell down and build it again in the same process.
+
+        Isaac Lab cannot add or remove an articulation from a live scene: an ``Articulation``
+        captures its PhysX tensor views at construction and ``sim.reset()`` invalidates them,
+        so inserting a robot would leave the existing assets pointing at dead views. Rebuilding
+        the whole cell is the only correct way to change the roster, and this is that attempt.
+
+        **Measured, and it does not work.** A clean one-robot cell built, moved its arm, then
+        called this with a second robot added and never returned: no exception, no log line,
+        just the process sitting at 370 CPU-seconds with the last printed line still the
+        banner before the call. ``RemovePrim`` plus a second ``sim.reset()`` in the same Kit
+        session does not complete -- which is the "Failed to get root link transforms from
+        backend" family of problems, arriving as a deadlock rather than an error.
+
+        It is kept because the sequence in ``_build`` is the right one and someone with a
+        cleaner path through PhysX's lifecycle may get it working. It is **not** wired to
+        anything: :meth:`MultiRobotOrchestrator.add_robot` refuses and says why.
+
+        The working alternative is a fresh process: serialise the task ledger, exit, and
+        rebuild on relaunch with a different robot count. That costs the in-flight physical
+        state, which is exactly what an in-process rebuild would have cost too.
+        """
+        if scene is not None:
+            self.scene = scene
+
+        try:
+            self.sim.stop()
+        except Exception:
+            pass
+
+        stage = self.sim.stage
+        if stage.GetPrimAtPath(ROOT).IsValid():
+            stage.RemovePrim(ROOT)
+
+        self.robots.clear()
+        self.parts.clear()
+        self.bins.clear()
+        self.robot_cfgs.clear()
+        self.part_cfgs.clear()
+        for mapping in (self._grip_body, self._jaw_body, self._articulation_cfgs,
+                        self._pad_joint_ids, self._pad_body_ids, self._arm_joint_ids,
+                        self._grip_joint_id, self._root_quat_inv, self._root_pos,
+                        self._home_joints):
+            mapping.clear()
+        self.contact_sensors = {}
+        self.pad_sensors = {}
+        self.arms = {}
+        self.sim_time_s = 0.0
+        self.step_count = 0
+        self.control_step_count = 0
+
+        self._build()
+        self.settle(settle_steps)
+        return self
+
+    def rebuild_with_robot(self, robot_cfg: "RobotConfig") -> None:
+        """Rebuild the cell with one more robot in the scene."""
+        if any(r.id == robot_cfg.id for r in self.scene.robots):
+            raise ValueError(f"robot {robot_cfg.id!r} is already in the scene")
+        rebuilt = replace(self.scene, robots=list(self.scene.robots) + [robot_cfg])
+        self.rebuild(scene=rebuilt)
+
+    def rebuild_without_robot(self, robot_id: str) -> None:
+        """Rebuild the cell with one robot removed."""
+        if not any(r.id == robot_id for r in self.scene.robots):
+            raise ValueError(f"no robot with id {robot_id!r} in the scene")
+        remaining = [r for r in self.scene.robots if r.id != robot_id]
+        self.rebuild(scene=replace(self.scene, robots=remaining))
 
 
 # ---------------------------------------------------------------------------
