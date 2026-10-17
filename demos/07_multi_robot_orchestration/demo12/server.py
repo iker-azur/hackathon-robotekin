@@ -1,20 +1,41 @@
 """Demo 12 -- FastAPI over a live Isaac Lab cell.
 
-REST plus WebSocket, over a simulation that is really running. The cell is built once at
-startup and stepped by a background task; the interface only ever reads it.
+**Why this file runs the HTTP server on its own thread.** Kit installs and pumps its own
+asyncio event loop (``omni.kit.async_engine`` calls ``loop.run_once()`` from Kit's update
+events). ``uvicorn.run()`` then tries to run a *second* loop on the same thread and the process
+dies with::
 
-Two things this server will not do, because either would make the demo lie:
+    RuntimeError: Cannot run the event loop while another loop is running
 
-- **It will not catch and swallow orchestration errors.** An earlier version wrapped the
-  step in a bare ``except Exception: pass``, which means a cell that has been broken for an
-  hour still serves cheerful "everything is fine" state. The loop records the failure and
-  the interface shows it.
+That failure is quiet and misleading. Plain REST requests keep working -- Kit's pump happens to
+service them -- so ``/api/health`` answers 200 and ``/api/frame.jpg`` serves a JPEG, while
+every WebSocket upgrade is rejected with ``403 Forbidden`` and the interface sits there saying
+"sin conexión" forever. Measured, and it cost a while to find because everything *except* the
+thing that was broken looked fine.
+
+So the two halves are split by thread, and neither touches the other's world:
+
+* **Main thread**: Kit, PhysX, the camera, the orchestration. A plain synchronous loop -- no
+  asyncio at all, which is what the probes do and what demonstrably renders.
+* **HTTP thread**: uvicorn on its own event loop. It never imports or calls anything in
+  Isaac. It reads a snapshot the main thread published and posts commands back.
+
+The only thing crossing between them is a snapshot dict and a command queue, both
+thread-safe. A command posted by the UI is *queued* and applied by the main loop, so no HTTP
+handler ever mutates the simulation from the wrong thread -- which is the same main-thread rule
+that governs rendering, arrived at from the other direction.
+
+What this server will not do, because either would make the demo lie:
+
+- **It will not catch and swallow orchestration errors.** An earlier version wrapped the step
+  in a bare ``except Exception: pass``, so a cell broken for an hour still served cheerful
+  "everything is fine" state.
 - **It will not serve a placeholder frame.** ``/api/frame.jpg`` returns a real render or a
-  503 that says why, never a stub image.
+  503 that says why.
 
 Run::
 
-    C:\\Users\\Usuario\\miniconda3\\envs\\hackathon-robotekin\\python.exe -m demo12.server --robots 2
+    python -u -m demo12.server --robots 2
 
 Then open the Vite dev server (see ``web/``).
 """
@@ -23,15 +44,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import io
 import json
 import os
+import queue
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
-
-import numpy as np
 
 _HERE = Path(__file__).resolve()
 # parents[0] = demo12, [1] = 07_multi_robot_orchestration, [2] = demos
@@ -45,184 +65,77 @@ for _p in (str(_HERE.parents[1]), str(_DEMOS_ROOT / "01_simulation_basics")):
 import env_loader  # noqa: E402
 
 
-def _to_rgb_array(sample) -> tuple[Any, str]:
-    """Turn whatever Replicator handed back into an HxWx3 uint8 array.
+class Hub:
+    """The only thing shared between the simulation thread and the HTTP thread.
 
-    Replicator's return type has changed more than once, and guessing wrong produces an
-    endpoint that imports cleanly and fails on first call. Measured on Isaac Sim 5.1 /
-    omni.replicator.core 1.12.27: ``rep.get(render_product, "rgb")`` returns a
-    ``HydraTexture``, which has **no** ``get_data`` method.
-
-    So each known shape is tried in turn and the one that worked is named, which means the
-    next API change reports itself instead of hiding.
+    A plain dict behind a lock, and a queue. Not a framework and not a message bus -- the
+    simulation is the authority, the HTTP thread is a reader with a way to ask for things, and
+    anything more elaborate would make it look like the two halves share state they do not.
     """
-    attempts: list[str] = []
 
-    def as_array(value):
-        """``np.asarray`` that never raises.
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._state: dict[str, Any] = {
+            "simTimeS": 0.0,
+            "controlTicks": 0,
+            "steps": 0,
+            "running": True,
+            "startedAt": time.time(),
+            "lastError": None,
+            "errorCount": 0,
+            "frameError": "no frame captured yet",
+            "frameNote": "",
+            "frameEvery": 20,
+            "roster": [],
+            "tasks": [],
+            "robots": [],
+            "tasksCompleted": 0,
+            "tasksTotal": 0,
+            "allTasksCompleted": False,
+            "failuresInjected": 0,
+            "reassignments": 0,
+            "rosterChanges": 0,
+            "parts": [],
+            "bins": [],
+            "tableTopZ": 0.0,
+            "ledger": {"restored": False},
+        }
+        self._frame: bytes | None = None
+        self.commands: "queue.Queue[tuple[str, Any]]" = queue.Queue()
 
-        numpy probes an unknown object for array-like attributes before giving up, so on a
-        ``HydraTexture`` it raises ``AttributeError: 'HydraTexture' object has no attribute
-        'get_data'`` -- which is not about pixels at all, and swallowed the real error the
-        first time this was written.
-        """
-        try:
-            return np.asarray(value)
-        except Exception as exc:                   # noqa: BLE001
-            attempts.append(f"asarray({type(value).__name__}): {type(exc).__name__}")
-            return None
+    def publish(self, **fields: Any) -> None:
+        with self._lock:
+            self._state.update(fields)
 
-    array = as_array(sample)
-    if array is not None and array.ndim >= 3:
-        return array, "asarray"
+    def state(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._state)
 
-    for attr in ("image", "data", "buffer", "np_array"):
-        if not hasattr(sample, attr):
-            attempts.append(f"no.{attr}")
-            continue
-        try:
-            value = getattr(sample, attr)
-            value = value() if callable(value) else value
-            array = as_array(value)
-            if array is not None and array.ndim >= 3:
-                return array, f".{attr}"
-            if array is not None:
-                attempts.append(f".{attr}->ndim{array.ndim}")
-        except Exception as exc:                   # noqa: BLE001
-            attempts.append(f".{attr}: {type(exc).__name__}")
+    def set_frame(self, data: bytes | None, note: str, error: str = "") -> None:
+        with self._lock:
+            if data:
+                self._frame = data
+            self._state["frameNote"] = note
+            self._state["frameError"] = error
 
-    # Last resort: ask Replicator's own annotator rather than the texture object.
-    try:
-        annotator = rep_annotator_for(sample)
-        if annotator is not None:
-            array = as_array(annotator)
-            if array is not None and array.ndim >= 3:
-                return array, "annotator"
-    except Exception as exc:                       # noqa: BLE001
-        attempts.append(f"annotator: {type(exc).__name__}")
-
-    return None, (f"could not read pixels from {type(sample).__name__}; tried "
-                  + ", ".join(attempts))
-
-
-def rep_annotator_for(sample):
-    """``rep.get.`` style accessor as a free function, if this build exposes one."""
-    import omni.replicator.core as rep
-
-    getter = getattr(rep, "get", None)
-    if getter is None:
-        return None
-    # HydraTexture carries the render product path; if it does not, nothing to try.
-    path = getattr(sample, "path", None)
-    return getter(path, "rgb") if path else None
+    def frame(self) -> bytes | None:
+        with self._lock:
+            return self._frame
 
 
-async def capture_frame(cell, timeout: float = 6.0) -> tuple[bytes | None, str]:
-    """A JPEG of the cell, or ``(None, reason)``.
+def build_app(cell, orch, hub: Hub, robot_count: int, headless: bool,
+              frame_every: int):
+    """Build the FastAPI app. Every endpoint reads the hub or queues a command.
 
-    Reads the cell's own observation camera (``IsaacCell.camera``), not a viewport
-    snapshot. That matters here: this machine's viewport has no camera
-    (``has_primed_camera() == False``) so a viewport capture can never produce an image,
-    while an explicit ``UsdGeom.Camera`` prim read by a sensor works in headless.
-
-    Every obvious alternative was measured and does not work on Isaac Sim 5.1 -- see
-    ``docs/PHYSICS.md`` section 9. In brief: ``rep.Renderer`` does not exist,
-    ``rep.create.render_product`` returns a ``HydraTexture`` with no pixel accessor,
-    ``isaaclab.sensors.Camera`` initialises itself from a **timeline PLAY event** that a
-    bare ``SimulationContext`` never fires, and ``SensorBase`` swallows the real exception
-    into ``builtins.ISAACLAB_CALLBACK_EXCEPTION``. The cell works around the last one by
-    calling the initialisation callback directly.
-
-    Synchronous despite being a coroutine, and deliberately **not** in an executor: Kit and
-    CUDA own the main thread, and moving a sensor read to a worker thread deadlocks. The same
-    trap as stepping the simulation off-thread, which cost a day once already.
+    Nothing here touches the simulation. ``cell`` is accepted only so the frame endpoint can
+    report why it is unavailable; the bytes come from the hub, written by the main thread.
     """
-    try:
-        return cell.render_frame_jpeg()
-    except Exception as exc:                       # noqa: BLE001
-        return None, f"frame capture failed: {type(exc).__name__}: {exc}"
-
-
-def build_app(robot_count: int = 2, headless: bool = True,
-              rate_hz: float = 20.0, frame_every: int = 20,
-              ledger_path: Path | None = None):
-    """Build the FastAPI app over a real cell. Kit must already be running."""
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse, Response
+    from starlette.routing import WebSocketRoute
 
-    from .config import default_scene
-    from .isaac_env import ARM_BODIES_WITH_COLLISION, IsaacCell
-    from .ledger import OrchestratorLedger as Ledger, capture as capture_ledger
-    from .orchestrator import (ACTIVE_STATES, QUEUED, MultiRobotOrchestrator)
-
-    scene = default_scene(robot_count)
-    cell = IsaacCell(scene, device="cuda:0", headless=headless)
-    cell.settle(90)
-
-    # Create and prime the observation camera *here*, while the cell is idle, rather than
-    # lazily on the first capture.
-    #
-    # Measured: a camera created while the orchestration loop is running reads back an empty
-    # frame -- Replicator's annotator tries to expand the buffer to size 0 and raises
-    #   expand(torch.cuda.ByteTensor{[360, 640, 3]}, size=[0])
-    # The same camera created against the same cell while nothing is stepping reads
-    # perfectly, with values spanning 28..155. So it is a create-while-running problem, not
-    # a camera problem, and creating it at startup avoids it.
-    cell.camera()
-
-    orch = MultiRobotOrchestrator(cell, scene, scene.mission.tasks)
-
-    # Restore a ledger from a previous run, if there is one. This is how the task queue
-    # survives the restart that changing the robot count requires.
-    #
-    # Any task that was verified done is demoted first: the cell has just been respawned, so
-    # the parts are back at their configured positions and the earlier placement is no longer
-    # a fact about the simulation. See demo12.ledger.
-    restored: dict[str, Any] = {"restored": False}
-    if ledger_path is not None and ledger_path.is_file():
-        ledger = Ledger.load(ledger_path)
-        if ledger is None:
-            restored = {"restored": False,
-                        "reason": f"could not read {ledger_path}"}
-        else:
-            demoted = ledger.reset_verified()
-            orch = MultiRobotOrchestrator(cell, scene, ledger.move_tasks())
-            for entry in ledger.entries:
-                task = orch.tasks.get(entry.id)
-                if task is None:
-                    continue
-                task.attempts = entry.attempts
-                task.previous_robots = list(entry.previous_robots)
-                task.note = entry.note
-                # A task that was in progress when the process died cannot still be true.
-                if entry.state in ACTIVE_STATES:
-                    task.state = QUEUED
-                    task.note = (f"requeued after a restart: {entry.note}"
-                                 if entry.note else
-                                 "requeued after a restart: the parts were respawned")
-            restored = {
-                "restored": True,
-                "tasks": len(ledger.entries),
-                "completedBeforeRestart": ledger.completed_before_restart,
-                "partsMovedBeforeRestart": ledger.parts_moved_before_restart,
-                "demotedDoneTasks": demoted,
-            }
-            print(f"[demo12] ledger restored: {restored}", flush=True)
-
-    state: dict[str, Any] = {
-        "running": True,
-        "started_at": time.time(),
-        "steps": 0,
-        "last_error": None,
-        "error_count": 0,
-    }
-    latest_frame: bytes | None = None
-    frame_error = "no frame captured yet"
-    frame_note = ""
-    # Mutable so the loop can back off without ``nonlocal`` gymnastics -- and so the current
-    # cadence is visible in /api/state rather than hidden in a closure.
-    capture: dict[str, int] = {"every": max(1, frame_every)}
+    from .isaac_env import ARM_BODIES_WITH_COLLISION
 
     app = FastAPI(title="Demo 12 -- multi-robot orchestration")
     app.add_middleware(
@@ -233,87 +146,132 @@ def build_app(robot_count: int = 2, headless: bool = True,
         allow_headers=["*"],
     )
 
+    def _command(name: str, payload: Any = None) -> dict[str, Any]:
+        """Queue a command for the simulation thread.
+
+        Queued rather than executed, because the simulation object belongs to the thread that
+        owns Kit. Executing it here would be the wrong-thread bug this whole arrangement
+        exists to avoid.
+        """
+        hub.commands.put((name, payload))
+        return {"ok": True, "queued": name}
+
     # ---------------------------------------------------------------- the loop
 
-    async def run_loop() -> None:
-        nonlocal latest_frame, frame_error, frame_note
-        interval = 1.0 / rate_hz
-        while state["running"]:
-            loop = asyncio.get_running_loop()
-            started = loop.time()
+    def publish_snapshot() -> None:
+        """Copy the simulation's state into the hub. Main thread only."""
+        snap = orch.snapshot()
+        snap["cell"] = cell.snapshot()
+        hub.publish(
+            simTimeS=snap["simTimeS"],
+            controlTicks=snap["controlTicks"],
+            tasks=snap["tasks"],
+            robots=snap["robots"],
+            tasksCompleted=snap["tasksCompleted"],
+            tasksTotal=snap["tasksTotal"],
+            allTasksCompleted=snap["allTasksCompleted"],
+            failuresInjected=snap["failuresInjected"],
+            reassignments=snap["reassignments"],
+            rosterChanges=snap["rosterChanges"],
+            parts=snap["cell"].get("parts", []),
+            bins=snap["cell"].get("bins", []),
+            tableTopZ=snap["cell"].get("tableTopZ"),
+            steps=hub.state()["steps"],
+        )
+
+    def drain_commands() -> None:
+        """Apply everything the interface asked for. Main thread only."""
+        while True:
             try:
-                # **On this thread, deliberately.** The first version ran this in a
-                # ThreadPoolExecutor via ``run_in_executor`` so the event loop would not
-                # block. It deadlocks: Kit and PhysX own the main thread, and stepping the
-                # simulation off it wedges the whole process. Measured -- the server came up
-                # healthy and then simply stopped after one step, with no error anywhere,
-                # which is the hardest kind of failure to notice.
-                #
-                # So the loop blocks instead. The WebSocket goes quiet while a tick runs,
-                # which at ~10-20 Hz of real simulation is well under a second -- and honest,
-                # unlike a deadlock.
-                _advance()
-                state["steps"] += 1
-                if state["steps"] % capture["every"] == 0:
-                    data, note = await capture_frame(cell)
-                    if data:
-                        latest_frame = data
-                        frame_error = ""
-                        frame_note = note
-                    else:
-                        frame_error = note
-                        # Back off if the viewport is simply not there. Spamming a 3 s
-                        # capture timeout would stall the orchestration loop, which is a worse
-                        # failure than a missing picture.
-                        capture["every"] = (max(capture["every"], 200)
-                                            if "viewport" in note.lower()
-                                            else capture["every"])
+                name, payload = hub.commands.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                if name == "fault":
+                    result = orch.inject_failure(payload)
+                elif name == "repair":
+                    result = orch.repair_robot(payload)
+                elif name == "run":
+                    result = {"ok": True, "running": True}
+                    hub.publish(running=True)
+                elif name == "stop":
+                    result = {"ok": True, "running": False}
+                    hub.publish(running=False)
+                elif name == "relaunch_plan":
+                    result = orch.release_for_relaunch()
+                else:
+                    result = {"ok": False, "reason": f"unknown command {name!r}"}
+                hub.publish(lastResult=result)
             except Exception as exc:               # noqa: BLE001
-                # Recorded and surfaced, never swallowed. An earlier version passed here
-                # and reported success forever.
-                state["last_error"] = f"{type(exc).__name__}: {exc}"
-                state["error_count"] += 1
-                print(f"[demo12] orchestrator error: {state['last_error']}", flush=True)
+                hub.publish(lastError=f"{type(exc).__name__}: {exc}")
 
-            elapsed = loop.time() - started
-            await asyncio.sleep(max(0.0, interval - elapsed))
+    def run_loop() -> None:
+        """The whole simulation. Synchronous, on the thread that owns Kit.
 
-    def _advance() -> None:
-        """One orchestration tick. Completion stops the loop, not a timeout."""
-        if orch.work_outstanding():
-            orch.step()
+        No asyncio here, deliberately: Kit pumps its own loop, and adding a second one is what
+        broke the WebSocket. The camera renders through ``cell.step``, which drives rendering
+        itself, so nothing is lost by not having an event loop here.
+        """
+        interval = 1.0 / 20.0
+        frame_countdown = frame_every
+        started = time.time()
+        hub.publish(startedAt=started, running=True)
+
+        while True:
+            tick_started = time.time()
+            drain_commands()
+            state = hub.state()
+
+            try:
+                if state["running"] and orch.work_outstanding():
+                    orch.step()
+                hub.publish(
+                    simTimeS=orch.sim_time_s,
+                    controlTicks=orch.control_ticks,
+                    steps=state["steps"] + 1,
+                    lastError=None,
+                )
+            except Exception as exc:               # noqa: BLE001
+                # Recorded and surfaced. The previous version passed here and reported success
+                # forever.
+                hub.publish(lastError=f"{type(exc).__name__}: {exc}",
+                            errorCount=state["errorCount"] + 1)
+                print(f"[demo12] orchestration error: {exc}", flush=True)
+
+            publish_snapshot()
+
+            frame_countdown -= 1
+            if frame_countdown <= 0:
+                frame_countdown = frame_every
+                # Encoding a JPEG is milliseconds, but it has to happen here regardless: the
+                # camera is a CUDA resource owned by this thread.
+                data, note = cell.render_frame_jpeg()
+                hub.set_frame(data, note if data else "", "" if data else note)
+
+            elapsed = time.time() - tick_started
+            if elapsed < interval:
+                time.sleep(interval - elapsed)
 
     # ------------------------------------------------------------- endpoints
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
+        state = hub.state()
         return {
-            "ok": state["last_error"] is None,
+            "ok": state["lastError"] is None,
             "running": state["running"],
             "steps": state["steps"],
-            "uptimeS": round(time.time() - state["started_at"], 1),
-            "errorCount": state["error_count"],
-            "lastError": state["last_error"],
-            "robots": len(orch.robots),
+            "uptimeS": round(time.time() - state["startedAt"], 1),
+            "errorCount": state["errorCount"],
+            "lastError": state["lastError"],
+            "robots": len(state["robots"]),
             "armCollision": list(ARM_BODIES_WITH_COLLISION),
             "headless": headless,
         }
 
     @app.get("/api/state")
     def get_state() -> JSONResponse:
-        payload = orch.snapshot()
-        payload["health"] = {
-            "running": state["running"],
-            "steps": state["steps"],
-            "lastError": state["last_error"],
-            "errorCount": state["error_count"],
-        }
-        payload["cell"] = cell.snapshot()
-        payload["frameError"] = frame_error
-        payload["frameNote"] = frame_note
-        payload["frameEvery"] = capture["every"]
-        payload["ledger"] = restored
-        return JSONResponse(payload)
+        return JSONResponse(hub.state())
 
     @app.get("/api/catalog")
     def get_catalog() -> JSONResponse:
@@ -323,134 +281,93 @@ def build_app(robot_count: int = 2, headless: bool = True,
 
     @app.get("/api/frame.jpg")
     def get_frame() -> Response:
-        if latest_frame is None:
+        data = hub.frame()
+        if data is None:
             # 503 with the reason, not a placeholder image. A stub frame would let the
             # interface look healthy while nothing is being rendered.
-            return JSONResponse({"error": frame_error}, status_code=503)
-        return Response(content=latest_frame, media_type="image/jpeg",
+            return JSONResponse({"error": hub.state()["frameError"]}, status_code=503)
+        return Response(content=data, media_type="image/jpeg",
                         headers={"Cache-Control": "no-store"})
 
     @app.post("/api/fault/{robot_id}")
-    def fault(robot_id: str) -> JSONResponse:
-        return JSONResponse(orch.inject_failure(robot_id))
+    def fault(robot_id: str) -> dict[str, Any]:
+        return _command("fault", robot_id)
 
     @app.post("/api/repair/{robot_id}")
-    def repair(robot_id: str) -> JSONResponse:
-        return JSONResponse(orch.repair_robot(robot_id))
+    def repair(robot_id: str) -> dict[str, Any]:
+        return _command("repair", robot_id)
 
     @app.get("/api/roster")
     def roster() -> dict[str, Any]:
-        """What it would take to change the robot count, and why it cannot be done here."""
         return {
-            "current": [r.id for r in orch.robots.values()],
+            "current": [r["id"] for r in hub.state()["robots"]],
             "inProcessRebuild": False,
             "reason": ("Isaac Lab cannot insert an articulation into a live scene, and the "
-                       "in-process cell rebuild hangs on this build (measured: RemovePrim "
-                       "+ sim.reset() in one Kit session never returns)."),
-            "supportedRoute": ("restart the process with a different --robots. "
-                               "release_for_relaunch() requeues every in-flight task first, "
-                               "because the parts respawn at their configured positions "
-                               "and no in-flight task is still true."),
+                       "in-process cell rebuild hangs on this build. Use the launcher: write "
+                       "{'robots': N} to out12/control.json."),
+            "supportedRoute": "demo12.launcher restarts the process with a new --robots",
         }
-
-    @app.post("/api/relaunch-plan")
-    def relaunch_plan() -> JSONResponse:
-        """Requeue in-flight work, save the ledger, and ask the supervisor to restart.
-
-        This is the supported way to change the robot count, and it is three moves rather
-        than one because the process doing the asking is the process that has to die:
-
-        1. save the ledger, so the task queue and every attempt count survive;
-        2. write the control file the supervisor polls;
-        3. exit, which is where the supervisor notices.
-
-        The parts do not survive, and nothing claims they do: ``demo12.ledger`` re-checks
-        every completed task against the part's actual position before recording it, and
-        demotes the ones that no longer hold.
-        """
-        result = orch.release_for_relaunch()
-        saved = None
-        if ledger_path is not None:
-            try:
-                entry = capture_ledger(orch)
-                entry.save(ledger_path)
-                saved = str(ledger_path)
-            except Exception as exc:               # noqa: BLE001
-                saved = f"could not save the ledger: {type(exc).__name__}: {exc}"
-
-        return JSONResponse({
-            **result,
-            "ledgerSavedTo": saved,
-            "requestedRobotCount": robot_count,
-            "note": ("the supervisor watches out12/control.json; write "
-                     '{"robots": N} to it to change the roster. This process will be '
-                     "restarted by that."),
-        })
-
-    @app.get("/api/ledger")
-    def get_ledger() -> JSONResponse:
-        """The ledger as it would be saved right now.
-
-        Read-only, and it re-checks every completed task against the physics rather than
-        trusting the orchestrator's own state.
-        """
-        try:
-            entry = capture_ledger(orch)
-        except Exception as exc:                   # noqa: BLE001
-            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
-        return JSONResponse(entry.to_dict())
 
     @app.post("/api/run")
     def start() -> dict[str, Any]:
-        state["running"] = True
-        return {"ok": True, "running": True}
+        return _command("run")
 
     @app.post("/api/stop")
     def stop() -> dict[str, Any]:
-        state["running"] = False
-        return {"ok": True, "running": False}
+        return _command("stop")
 
-    @app.websocket("/ws")
+    @app.post("/api/relaunch-plan")
+    def relaunch_plan() -> dict[str, Any]:
+        return _command("relaunch_plan")
+
+    # Deliberately a Starlette ``WebSocketRoute``, not FastAPI's ``@app.websocket``.
+    #
+    # In an Isaac-booted process FastAPI's ``APIWebSocketRoute`` matches the request and then
+    # answers ``websocket.close`` without ever calling the handler, which uvicorn turns into a
+    # bare ``403 Forbidden``. Measured on the same process, the same app, the same endpoint
+    # signature: a raw ASGI handler and a Starlette ``WebSocketRoute`` both connect and stream,
+    # and only FastAPI's route fails. Importing the web stack before Kit boots -- so that
+    # site-packages wins over Isaac's bundled copy in ``omni.kit.pip_archive/*/pip_prebundle``
+    # -- does not fix it, so it is not a version-skew problem. See
+    # ``demo12/tools/probe_ws_isaac.py``, which reproduces the whole comparison without a cell.
+    #
+    # The visible symptom was the interface stuck on "sin conexion" while REST and the camera
+    # image both looked perfectly healthy, because a failed upgrade and a healthy server look
+    # exactly the same from outside.
     async def ws(websocket: WebSocket) -> None:
         await websocket.accept()
         try:
             while True:
-                payload = orch.snapshot()
-                payload["health"] = {
-                    "running": state["running"],
-                    "steps": state["steps"],
-                    "lastError": state["last_error"],
-                    "errorCount": state["error_count"],
-                }
-                payload["cell"] = cell.snapshot()
-                await websocket.send_text(json.dumps(payload, default=str))
+                await websocket.send_text(json.dumps(hub.state(), default=str))
                 await asyncio.sleep(0.5)
         except WebSocketDisconnect:
             return
 
-    @app.on_event("startup")
-    async def _start() -> None:
-        asyncio.create_task(run_loop())
+    app.router.routes.append(WebSocketRoute("/ws", ws))
 
-    @app.on_event("shutdown")
-    async def _stop() -> None:
-        state["running"] = False
-        # Save the ledger on the way out, so an ordinary shutdown (or the supervisor's
-        # restart) does not lose the queue. Best-effort: a failure here must not stop the
-        # server shutting down, and it is reported rather than swallowed.
-        if ledger_path is not None:
-            try:
-                saved = capture_ledger(orch)
-                saved.save(ledger_path)
-                print(f"[demo12] ledger saved to {ledger_path} "
-                      f"({len(saved.entries)} task(s))", flush=True)
-            except Exception as exc:               # noqa: BLE001
-                print(f"[demo12] could not save the ledger: {type(exc).__name__}: {exc}",
-                      flush=True)
-
+    app.state.hub = hub
     app.state.cell = cell
     app.state.orch = orch
+    # The caller runs this on the thread that owns Kit. It never returns under normal
+    # operation; Ctrl-C is the exit.
+    app.state.sim_loop = run_loop
     return app
+
+
+def serve_in_thread(app, host: str, port: int) -> threading.Thread:
+    """Run uvicorn on its own event loop, in its own thread.
+
+    This is the whole point of the arrangement. Kit owns the main thread's event loop; uvicorn
+    gets a different one on a different thread, and the two never meet. The HTTP thread does
+    no physics, so nothing it does can deadlock Kit.
+    """
+    import uvicorn
+
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, name="demo12-http", daemon=True)
+    thread.start()
+    return thread
 
 
 def main() -> int:
@@ -458,23 +375,94 @@ def main() -> int:
     parser.add_argument("--robots", type=int, default=2)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--gui", dest="headless", action="store_false", default=True,
-                        help="show Isaac Sim so the cell can be watched directly")
+    parser.add_argument("--frame-every", type=int, default=20,
+                        help="capture a frame every N control ticks")
     parser.add_argument("--ledger", default=str(_DEMO_ROOT.parent / "out12" / "ledger.json"),
                         help="where to save/restore the task ledger across restarts")
     parser.add_argument("--no-ledger", action="store_true",
                         help="start with an empty task queue, ignoring any saved ledger")
+    parser.add_argument("--gui", dest="headless", action="store_false", default=True,
+                        help="show Isaac Sim so the cell can be watched directly")
     args = parser.parse_args()
 
     env_loader.prepare_runtime(headless=args.headless)
 
-    import uvicorn
+    from .config import default_scene
+    from .isaac_env import IsaacCell
+    from .ledger import OrchestratorLedger as Ledger, capture as capture_ledger
+    from .orchestrator import MultiRobotOrchestrator
 
-    ledger = Path(args.ledger)
-    if args.no_ledger:
-        ledger = None
-    uvicorn.run(build_app(args.robots, headless=args.headless, ledger_path=ledger),
-                host=args.host, port=args.port, log_level="info")
+    scene = default_scene(args.robots)
+    cell = IsaacCell(scene, device="cuda:0", headless=args.headless)
+    cell.settle(90)
+
+    # Create and prime the observation camera while the cell is idle. Creating it lazily from
+    # inside the running loop does not work: Replicator's annotator asks for zero frames.
+    cell.camera()
+
+    orch = MultiRobotOrchestrator(cell, scene, scene.mission.tasks)
+
+    ledger_path = None if args.no_ledger else Path(args.ledger)
+    restored: dict[str, Any] = {"restored": False}
+    if ledger_path is not None and ledger_path.is_file():
+        ledger = Ledger.load(ledger_path)
+        if ledger is not None:
+            from .orchestrator import ACTIVE_STATES, QUEUED
+
+            demoted = ledger.reset_verified()
+            orch = MultiRobotOrchestrator(cell, scene, ledger.move_tasks())
+            for entry in ledger.entries:
+                task = orch.tasks.get(entry.id)
+                if task is None:
+                    continue
+                task.attempts = entry.attempts
+                task.previous_robots = list(entry.previous_robots)
+                task.note = entry.note
+                if entry.state in ACTIVE_STATES:
+                    task.state = QUEUED
+                    task.note = (f"requeued after a restart: {entry.note}" if entry.note
+                                 else "requeued after a restart: the parts were respawned")
+            restored = {
+                "restored": True,
+                "tasks": len(ledger.entries),
+                "completedBeforeRestart": ledger.completed_before_restart,
+                "partsMovedBeforeRestart": ledger.parts_moved_before_restart,
+                "demotedDoneTasks": demoted,
+            }
+            print(f"[demo12] ledger restored: {restored}", flush=True)
+
+    hub = Hub()
+    app = build_app(cell, orch, hub, args.robots, args.headless, args.frame_every)
+
+    # Log what actually got registered. A websocket route that fails to register looks
+    # exactly like a websocket the server refuses, because Starlette answers an unmatched
+    # websocket scope with ``websocket.close`` and uvicorn turns that into a bare 403 with
+    # an empty body -- indistinguishable, from the outside, from a crash.
+    print(f"[demo12] {len(app.routes)} routes:", flush=True)
+    for route in app.routes:
+        print(f"[demo12]   {type(route).__name__:<18} {getattr(route, 'path', '?')}",
+              flush=True)
+
+    # HTTP first, so the interface has something to talk to while the cell settles.
+    serve_in_thread(app, args.host, args.port)
+    print(f"[demo12] API on http://{args.host}:{args.port}  "
+          f"({args.robots} robot(s), headless={args.headless})", flush=True)
+
+    # Then the simulation, forever, on this thread. ``run_loop`` deliberately never returns:
+    # Ctrl-C is the exit, and ``demo12.launcher`` stops the process the other way -- by asking
+    # over HTTP first, because terminate() runs no shutdown hooks on Windows.
+    try:
+        app.state.sim_loop()
+    except KeyboardInterrupt:
+        print("[demo12] stopping", flush=True)
+
+    if ledger_path is not None:
+        try:
+            capture_ledger(orch).save(ledger_path)
+            print(f"[demo12] ledger saved to {ledger_path}", flush=True)
+        except Exception as exc:                   # noqa: BLE001
+            print(f"[demo12] could not save the ledger: {exc}", flush=True)
+
     os._exit(0)
 
 
