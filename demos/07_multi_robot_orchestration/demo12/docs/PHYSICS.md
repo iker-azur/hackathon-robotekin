@@ -1,14 +1,328 @@
 # Demo 12 — Physics
 
-## Constants provenance
-- Masses: exact asset masses from SO-101 USD (base 0.147, shoulder 0.100, ...).
-- Gravity: 9.81 m/s^2 (measured SI value).
-- Friction: material-specific, bound via UsdPhysics.MaterialAPI.
-- Gripper linkage travel: 12.5 mm per pad (tuning, not measurement).
-- Arm actuator stiffness 900 N.m/rad (tuning).
+Every number in the demo that is not read out of the SO-101 USD or published in a
+handbook is either **measured here** or **labelled as tuning**. Nothing is presented as
+measured that was not measured, and nothing measured is left out because it was
+inconvenient.
 
-## Approximations
-- ARM_BODIES_WITH_COLLISION = () (arm self-collision off).
-- Pads axis-aligned with jaw local Y, not world.
-- wrist_roll held at zero.
-- Linkage actuator gains are tuning.
+Numbers marked **[M]** were produced by this project's own probes. They are reproducible:
+
+```
+set PYTHONPATH=demos\07_multi_robot_orchestration
+C:\Users\Usuario\miniconda3\envs\hackathon-robotekin\python.exe -m demo12.tools.probe_grasp_pose
+C:\Users\Usuario\miniconda3\envs\hackathon-robotekin\python.exe -m demo12.tools.probe_grasp
+```
+
+---
+
+## 1. Provenance labels
+
+Every constant in `materials.py` carries one:
+
+| Label | Meaning |
+|---|---|
+| **S1** | Read directly out of `so101_follower.usd` with `UsdPhysics`. Not estimates — these are the joint limits and body masses the simulator actually loads. |
+| **S2** | Measured by this project. The probe is named and its command is given. |
+| **S3** | Published engineering value (CRC Handbook; Ashby & Jones). Used for materials this project never bench-tested. |
+| **T** | **Tuning.** Chosen, not derived. Stated as such wherever it appears. |
+
+### S1 — from the USD
+
+| Constant | Value | Note |
+|---|---|---|
+| `JOINT_LIMIT_DEG` | pan ±110, lift ±100, elbow −100/+90, wrist_flex ±95, wrist_roll ±160, gripper −10/+100 | Limit cones authored in degrees |
+| `BODY_MASS_KG` | base 0.147, shoulder 0.100, upper_arm 0.103, lower_arm 0.104, wrist 0.079, gripper 0.087, jaw 0.012 | Sums to **0.632 kg**, matching the published SO-101 follower weight |
+| `FINGER_PAD_MASS_KG` | 0.012 | The jaw body's own mass, per pad |
+
+### S3 — published
+
+`GRAVITY_M_S2 = 9.80665` (exact SI). `PHYSICS_DT_S = 1/240` — chosen for contact
+stability, and labelled T below. Material densities for pine and aluminium.
+
+### S2 — measured by this project
+
+| Constant | Value | How |
+|---|---|---|
+| `TABLE_TOP_Z_M` | 0.0409 | Scene USD from Demo 11 |
+| `MIN_REACH_M` / `MAX_REACH_M` | 0.125 / 0.335 | Reach sweep with the real DLS solver |
+| Table friction | 0.45 static / 0.35 dynamic | 30 mm ABS cube slid and timed |
+| ABS friction / density | 0.38 / 0.30, 1040 kg/m³ | Sliding test; 30 mm cube = 28 g |
+| PET ball | 0.30 / 0.22, 10 g | Hollow shell weighed; **it is a shell, not solid** |
+| Rubber pad | 0.90 / 0.75 | Spring scale and slip test |
+| `JAW_PAD_AXIS` | `"Z"` | **[M]** 28-pose probe, §2 |
+| `JAW_PAD_TRAVEL_M` | 0.018 | **[M]** derived from the part diagonal, §4 |
+
+### T — tuning, stated as tuning
+
+| Constant | Value | Why it is not a measurement |
+|---|---|---|
+| `JAW_PAD_ACTUATOR_STIFFNESS` / `DAMPING` | 4000 / 80 | The asset models no finger actuator at all. There is nothing to derive these from. |
+| `ARM_ACTUATOR_STIFFNESS` / `DAMPING` | 900 / 45 | LeIsaac ships 17.8; raised to bring steady-state droop under 1° |
+| `IK_DAMPING` | 0.015 | λ trades tracking against reach-boundary stability |
+| `JAW_PAD_EFFORT_LIMIT_N` | 60 | Effort ceiling on the prismatic drive |
+| `DESCENT/LIFT/TRANSFER_MAX_STEP_RAD` | 0.012 | Rate limits, §6 |
+| `PRE_GRASP_SETTLE_TICKS` | 40 | Long enough for the joints to reach their command |
+| `LIFT_HEIGHT_M`, `RETREAT_HEIGHT_M` | 0.100, 0.080 | Clears a 45 mm tray rim, stays inside reach |
+| `ROLL_ALIGN_TOLERANCE_RAD` | 0.01 | 0.6°, which puts skew across a 30 mm part under 0.3 mm |
+
+---
+
+## 2. The bug this demo was rebuilt around
+
+**The pads were on the wrong jaw axis, and it cost the entire grasp.**
+
+`DEMO12_HANDOFF.md` stated that at the grasp pose "local Y is world −Y (horizontal)" and
+"local X is world +Z (up)". The pads were authored prismatic along local **Y** on the
+strength of that sentence. It was false, and false in a way that read as plausible.
+
+`demo12/tools/probe_grasp_pose.py` sweeps 28 poses across the reachable envelope and writes
+`out12/pose_probe.json`. Measured world directions of the jaw's local axes at a grasp pose:
+
+| Jaw local axis | Handoff claimed | **[M]** measured |
+|---|---|---|
+| X | world +Z (up) | `( 0.571,  0.821, -0.032)` — horizontal |
+| Y | world −Y (horizontal) | `( 0.018,  0.027, +0.9995)` — **world up** |
+| Z | world +X | `( 0.821, -0.571, -0.000005)` — horizontal |
+
+The two were swapped. The jaw frame is essentially world-aligned with **local Y pointing
+up**, which is what you would expect: the wrist's roll axis is vertical, so the jaw
+inherits it. With the pads on local Y they closed **straight up and down**, pressed on the
+top of the part, and produced zero grip — because the normal force went into the bench
+rather than into the part, leaving no friction cone to work with.
+
+Worse, the failure was *invisible*: the jaws visibly closed, the linkage read as healthy,
+and nothing reported an error. Every downstream measurement — span, tracking, approach
+geometry — was valid and all of it was measuring the wrong thing.
+
+The fix is one string. `JAW_PAD_AXIS = "Z"` gives a separation axis with a world-Z
+component of −5e−06 at every pose in the sweep. No arm kinematics change, no world tuning,
+no loss of tracking.
+
+The rebuild brief had this part right. It attributed it to a kinematic limitation and
+offered three remedies — relocate the parts, or use standalone pads, or zero the pad
+offset. None of them addressed *which way* the pads closed.
+
+---
+
+## 3. The IK froze the arm
+
+`solve_ik` added a repulsion term pushing joints away from their limits, and clamped the
+position step to the servo's real top speed. With the damped Jacobian producing steps of
+−0.41, +0.32 and −1.22 rad on three joints, the clamped step became ±0.078 rad — the *same
+magnitude* as the repulsion. Near a stop, the two cancelled exactly and the solve became a
+fixed point: it commanded the arm the pose it was already in, forever.
+
+**[M]** Before the fix the arm froze on tick ~100 and held `shoulder_lift` 0.073 rad off
+its lower limit and `elbow_flex` 0.071 rad off its upper limit for the remaining 400 ticks,
+with 136 mm of position error unchanged to the micrometre.
+
+Limits are now a **projection** — a step that would cross a limit is truncated there, and
+every other joint still moves. A projection cannot fight the step because it is not a
+force. After: 136 mm → 0.53 mm.
+
+---
+
+## 4. The pads could not straddle a square part
+
+Even on the correct axis, a square part is not presented to the gripper by its width.
+
+The arm arrives wherever its IK solution puts it, and nothing squared it up with the object.
+**[M]** The pad axis met the world axes at 34.8°, so a 30 mm cube presented
+
+```
+30 mm × (|cos 34.8°| + |sin 34.8°|) = 41.8 mm
+```
+
+across the pads — its half-diagonal, 21.2 mm from centre to each corner. The mechanism
+opened to 37 mm: **4.8 mm narrower than what it had to straddle**.
+
+Two consequences, both measured:
+
+1. **Travel.** `JAW_PAD_TRAVEL_M` 0.0125 → 0.018, opening to 48 mm and clearing the
+   diagonal by 3.1 mm a side.
+2. **Alignment.** The two faces were *unequally* far away along that chord (18.3 mm one
+   side, 26.3 mm the other), so the pads met one corner long before the other face and
+   **punted** the part rather than gripping it: span stalled at 40.6 mm, the part was shoved
+   36 mm along the axis, and the grip sensor cheerfully reported **103 N** of contact.
+
+   `ArmController.align_pad_axis` rolls the wrist to bring the pad axis onto a world axis
+   before closing — which is what a real cell does, and what `wrist_roll` is for. The sign
+   convention is a property of the USD's joint frame rather than of this arm, so it is
+   **measured** on the live articulation by `ArmController._calibrate_roll`: **[M]** sign
+   +1.0, gain 0.9811 against a predicted 1.0.
+
+   With the pads squared up the span settles at **29.40 mm on a 30 mm cube** — the part's
+   own width, which is the grip working.
+
+> A gripper that reports a large grip force while holding nothing is the failure this
+> criterion exists to catch. It is why criterion 4 checks the part's *height* and not just
+> the force during the lift.
+
+### A criterion that had to be corrected
+
+"Span shut < 18 mm" tests the mechanism's **free** closed travel, which cannot be measured
+while a 30 mm part is between the pads — they correctly stall at 29.40 mm. Judging the
+linkage against that number would score a working grip as a broken mechanism. Criterion 2
+is therefore split: free span (48.0 open / 12.0 shut) for the mechanism, and on-part span
+against the part's width for the grasp.
+
+---
+
+## 5. Grasp height came from three disagreeing constants
+
+The tool height for a grasp was computed from a single number, and three modules each
+carried a different one:
+
+| Constant | Value | Frame |
+|---|---|---|
+| `JAW_PAD_LOCAL_X_M` | −0.026 | jaw local X |
+| `FINGER_PAD_CENTRE_BELOW_JAW_M` | 0.023 | world Z |
+| `FINGER_TIP_BELOW_TOOL_M` ("25 mm") | 0.025 | world Z |
+
+They disagreed, and when the pads were re-hung from a different axis **all three became
+wrong at once**. The offset is a property of the built geometry, not a number anyone can
+pick.
+
+`ArmController.tool_z_for_part_centre` now measures where the pads actually are and solves
+for the tool height. **[M]** 23.0 mm measured against `JAW_PAD_DROP_M` = −0.023.
+
+The measurement is only meaningful once the tool is pointing down, so the descent is
+staged: go to a staging point above the part, measure there, then descend. **[M]** Asking
+while the arm was still folded at home returned a 0.12 m offset and commanded a descent
+120 mm below the tabletop — 147.8 mm of tracking error and a part that never moved.
+
+---
+
+## 6. A grasped part is a friction budget, and speed spends it
+
+Descent, lift and transfer are all rate-limited to 0.012 rad/tick (≈0.72 rad/s, about a
+sixth of the servo's real 4.7 rad/s).
+
+This is not polish. **[M]** With the transfer at full servo speed, the lift carried the
+part to z = 0.1548 with **60.8 N still on the pads** — and by the release the part was back
+on the table at z = 0.0559, **26.5 mm from where it started**. Nothing had failed. The grip
+was fine; the part had been accelerated out of it.
+
+The earlier descent failure is the same shape: at full speed the tool wandered 6.4 mm in x
+and 9.0 mm in y on the way down, the left pad landed on the part's **top face** and stalled
+at 60.3 N (exactly `JAW_PAD_EFFORT_LIMIT_N`) while the right pad read 0.0 N, and that
+one-sided jam twisted `wrist_roll` to 0.089 rad.
+
+---
+
+## 7. Arm collision is on
+
+`ARM_BODIES_WITH_COLLISION` was `()`, with the justification "the pads are kinematic and
+teleported into the wrist every step". **That stopped being true** when the pads became
+bodies on the arm's own articulation driven by prismatic joints: there is no teleport and
+no kinematic-versus-dynamic resolution to go wrong.
+
+**[M]** The grasp probe passes identically either way — tracking 0.53 mm, 60.9 N, 98.9 mm
+rise, in bin and at rest — because a pick-and-place never touches the bench with the arm
+links. Verified from the stage rather than inferred: **5** arm colliders enabled with it
+on, **0** with it off. The wrist housing and jaw stay disabled; their collision is
+replaced by the authored pads.
+
+> **A discarded experiment, recorded because it nearly went in.** The first check drove the
+> tool 30 mm below the tabletop and reported "collision live: true" in *both*
+> configurations. It was a false positive: the tool halted at 0.1136 m, 73 mm above the
+> surface, because that point is outside the arm's reachable set for a tool-down pose. The
+> test measured the IK, not collision. Replaced with a stage-level check.
+
+Reproduce with `DEMO12_ARM_COLLISION=` (empty).
+
+---
+
+## 8. The four failed gripper designs
+
+Kept because they rule out approaches someone will otherwise try.
+
+| Design | Why it fails |
+|---|---|
+| **Pads rigidly parented to the jaw** | Impossible by proof. A revolute preserves every point's distance from its axis, so the distance between two points on one rigid body is invariant. **[M]** 42.74 mm at every angle from 0.2 to 1.4 rad. (An earlier derivation claiming `2R·cos θ` described the pads' *direction*, not their separation, and was wrong.) |
+| **Standalone kinematic bodies** | Infinite mass, so no normal force: nothing to squeeze with. **[M]** Closing across a 30 mm part means 6 mm of interference and PhysX fires the part out at 0.62 m/s. |
+| **Standalone dynamic, velocity servo** | **[M]** Tracks to 0.5 mm, but a velocity command every tick drives the pads *through* the contact they are gripping. Contact never develops; the sensor reads **0.00 N**. |
+| **Standalone dynamic, force servo** | **[M]** Tracks to 1.70 mm, then **stops being simulated**. Not the force term, not a pose write, and not `sleepThreshold` (swept −1 → 1000, changed the frozen state by exactly zero). Only a velocity write revives a pad — and that is the thing that breaks contact. |
+
+The shipped USD models the gripper's collision as **one solid 22.3 × 48 mm slab**
+(`/colliders/jaw/moving_jaw_so101_v1/mesh`, 84,810 points, local x −12.30…+10.00 mm, 14,886
+of them within 4 mm of x = 0 spanning the full z range). A slab cannot straddle anything;
+it presses down on top. The 14 `so101_follower_demo11_pads_*` variants change only visual
+meshes. That is the root of the original impossibility, and it is geometry, not tuning.
+
+~250 lines of this are **deleted** rather than kept: `_build_finger_pads` and
+`_place_finger_pads_legacy` were never called, and their docstrings described the
+velocity-servo design rather than the linkage that is actually built. The six servo
+constants went with them. Had they stayed, this document would have described a gripper
+that does not exist.
+
+---
+
+## 9. Remaining approximations
+
+Disclosed, not hidden.
+
+- **`wrist_roll` is now commanded, not solved.** It is zero until `align_pad_axis` sets it,
+  and then it holds a measured heading. The IK does not optimise it.
+- **Pad axis alignment snaps to a world axis.** The parts are laid out axis-aligned, so
+  presenting on world X or Y both put a flat pad face on a flat part face. A part at an
+  arbitrary yaw would not be aligned to.
+- **The pad offset below the tool is solved from a pose, not a model.** Accurate to the
+  5.8° of measured jaw tilt at `part_3`; a different wrist pose would change it.
+- **`ARM_BODIES_WITH_COLLISION` keeps link collision but not collision-group filtering.**
+  The pads cannot be excluded from the arm group, because `physxScene:collisionGroups` is a
+  token-array *relationship* and `pxr.Usd.Relationship` only accepts path targets.
+- **Joint friction, armature and rotor inertia are not authored.** The USD ships zero
+  `PhysicsDrive` prims and the actuators are Isaac Lab implicit actuators.
+- **The ball is modelled as its bounding sphere** with an effective density carrying its
+  hollow shell.
+- **`describe_scene` / `catalog()` are unused by the backend** and kept only for the editor.
+
+---
+
+## 10. Measured results
+
+`demo12.tools.probe_grasp`, `out12/grasp_probe.json`:
+
+| Part | Mass | Tracking | Grip | Rise | Outcome |
+|---|---|---|---|---|---|
+| `part_1` 30 mm ABS cube | 28.1 g | **0.53 mm** | **60.9 N** | **98.9 mm** | in bin, resting |
+| `part_4` 20 mm PET ball | 2.9 g | **0.73 mm** | **24.4 N** | **98.7 mm** | in bin, resting |
+
+Free span 48.00 mm open / 12.00 mm shut. On-part span 29.40 mm on the 30 mm cube, 19.16 mm
+on the 20 mm ball. Drift on close 0.65 mm and 0.48 mm. Required normal force for a 2×
+friction margin: 0.31 N and 0.03 N — so both grips are far inside what is needed, which is
+the point: a gripper that could barely hold something would not be a measurement.
+
+Two robots, two tasks, headless:
+
+```
+OK: 2 task(s) completed in 46.4 s simulated, 2796 control ticks
+```
+
+Verified from the parts' own state: `part_1` rests at **z = 0.0619**, which is bin_1's
+floor at 0.0469 plus a 15 mm half-cube — on the tray floor, not merely inside the
+footprint.
+
+## 11. Why 240 Hz
+
+`PHYSICS_DT_S = 1/240`. A 30 mm cube held between two pads is a small-lever-arm two-point
+contact. At 60 Hz the part creeps while being carried; at 240 Hz it does not. Sub-stepping
+is the documented remedy for exactly this class of contact instability, and it is cheaper
+than raising solver iterations.
+
+## 12. Build-order rules (load-bearing, not style)
+
+- Tune `/physicsScene` → spawn → bind materials → contact sensors → `sim.reset()` →
+  `sim.forward()` → **re-apply actuator gains** → capture frames → build arms.
+- Joint drive gains are written by `_process_actuators_cfg` *before* `sim.reset()` and are
+  **discarded** by it. Without re-applying, every target is ignored and the arm holds its
+  spawn pose forever — which looks exactly like a robot refusing to move.
+- Each control tick needs `write_data_to_sim()` → step → `forward()` → `update(dt)`, or
+  every cached read is stale and the orchestration reads a world that has not moved.
+- Isaac Lab disables contact processing during `SimulationContext` setup.
+- At zero joint angles the arm points −Y, so robots need `base_yaw_deg = 180`.
+- `demos/01_simulation_basics/env_loader.py` is the only working Kit bootstrap on this
+  machine; it must exclude the sensor extensions whose native DLLs will not resolve.
+- Isaac must run under `miniconda3\envs\hackathon-robotekin\python.exe` (3.11.16). The
+  PATH `python` is 3.12 and has no `isaaclab`.
