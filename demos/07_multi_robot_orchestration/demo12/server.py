@@ -387,6 +387,39 @@ def build_app(robot_count: int = 2, headless: bool = True,
     def repair(robot_id: str) -> JSONResponse:
         return JSONResponse(orch.repair_robot(robot_id))
 
+    @app.get("/api/roster")
+    def roster() -> dict[str, Any]:
+        """What it would take to change the robot count, and why it cannot be done here."""
+        return {
+            "current": [r.id for r in orch.robots.values()],
+            "inProcessRebuild": False,
+            "reason": ("Isaac Lab cannot insert an articulation into a live scene, and the "
+                       "in-process cell rebuild hangs on this build (measured: RemovePrim "
+                       "+ sim.reset() in one Kit session never returns)."),
+            "supportedRoute": ("restart the process with a different --robots. "
+                               "release_for_relaunch() requeues every in-flight task first, "
+                               "because the parts respawn at their configured positions "
+                               "and no in-flight task is still true."),
+        }
+
+    @app.post("/api/relaunch-plan")
+    def relaunch_plan() -> JSONResponse:
+        """Requeue in-flight work and report what a relaunch would need.
+
+        Does not restart anything: this process owns a Kit session that cannot be rebuilt in
+        place, and pretending otherwise would be the same lie as a placeholder frame. It
+        hands back the ledger and the command to run instead.
+        """
+        result = orch.release_for_relaunch()
+        return JSONResponse({
+            **result,
+            "restartCommand": (
+                f"C:\\Users\\Usuario\\miniconda3\\envs\\hackathon-robotekin\\python.exe "
+                f"-m demo12.server --robots {robot_count}"),
+            "note": ("restart the process yourself; nothing here can rebuild the cell "
+                     "in place"),
+        })
+
     @app.post("/api/run")
     def start() -> dict[str, Any]:
         state["running"] = True
