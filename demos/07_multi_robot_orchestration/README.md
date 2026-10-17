@@ -59,7 +59,17 @@ Sondas de medición (verifican todo lo afirmado en `demo12/docs/PHYSICS.md`):
 ```powershell
 ... -m demo12.tools.probe_grasp_pose   # orientación de la mandíbula -> out12/pose_probe.json
 ... -m demo12.tools.probe_grasp        # los cuatro criterios  -> out12/grasp_probe.json
+... -m demo12.tools.probe_frame        # captura de viewport    -> out12/frame_probe.json
 ```
+
+### Limitación conocida: la imagen
+
+`/api/frame.jpg` **devuelve 503 en headless**, con el motivo. No sirve una imagen de
+relleno: un frame falso dejaría la interfaz mostrando un render muerto como si fuera real.
+
+Para ver la celda hay que arrancar el servidor con `--gui`; ese camino **no está verificado**
+(solo se ha ejecutado headless). El detalle de por qué —cuatro APIs distintas que ya no
+existen en Isaac Sim 5.1— está en `demo12/docs/PHYSICS.md` §9.
 
 Pruebas:
 

@@ -258,7 +258,62 @@ that does not exist.
 
 ---
 
-## 9. Remaining approximations
+## 9. Viewport capture: measured, and it does not work headless
+
+`/api/frame.jpg` returns **503 in headless**, with the reason. It does not serve a
+placeholder, because a stub frame would let the interface show a dead render as a live one.
+
+This section exists because getting to that honest 503 took four wrong APIs, and every one
+of them is a thing someone will otherwise try.
+
+**Measured on Isaac Sim 5.1 / omni.replicator.core 1.12.27** (`tools/probe_frame.py`):
+
+| Attempt | Result |
+|---|---|
+| `rep.Renderer()` | Does not exist. No `Renderer`, no `render`, no `pyrep`. |
+| `rep.create.render_product(cam, (w, h))` | Returns a `HydraTexture` whose only members are `destroy`, `hydra_texture`, `path` — **no pixel accessor at all**. |
+| `render_product.get_data(["rgb"])` | `AttributeError: 'HydraTexture' object has no attribute 'get_data'` |
+| `np.asarray(hydra_texture)` | Same `AttributeError`, raised while numpy *probes* the object. Not about pixels; it hides the real error. |
+| `rep.orchestrator.step()` | **Hangs** headless. |
+| `isaaclab.sensors.Camera` | Fails at construction: `'RigidObject' object has no attribute '_external_force_b'` |
+| `omni.kit.app.get_default_app_window` | Does not exist in this build. |
+| `omni.kit.viewport.utility.capture_viewport_to_image` | Renamed to **`capture_viewport_to_buffer`**. |
+
+What actually works is the last one, with two differences that matter:
+
+```python
+viewport = omni.kit.viewport.utility.get_active_viewport()
+omni.kit.viewport.utility.capture_viewport_to_buffer(viewport, on_capture_fn)
+```
+
+**The callback is asynchronous.** It fires on a later app update, not on return. A probe
+that captures and immediately exits reports "NO CALLBACK FIRED" — which is why
+`capture_frame` is a coroutine awaiting a future, and why the headless case times out:
+
+```
+viewport capture did not fire within 3 s. The callback needs Kit's event loop; in
+headless it may never run. Start the server with --gui.
+```
+
+**Unverified:** the `--gui` path has not been exercised end to end. Only headless has been
+run. Treat GUI capture as likely to work (the API is right and the event loop is live there)
+but not as measured.
+
+### The threading trap
+
+Separately and more seriously: the server's first version ran the simulation step in a
+`ThreadPoolExecutor` via `asyncio.run_in_executor`, so the event loop would not block. **It
+deadlocks.** Kit and PhysX own the main thread; stepping the simulation off it wedges the
+process.
+
+Measured: the server came up healthy (`ok: true`, `errorCount: 0`) and then simply stopped
+after one step, with no exception anywhere — the hardest kind of failure to notice. Fixed by
+stepping on the main thread and letting the event loop block. After the fix: **619 ticks in
+45 s**, zero errors, tasks advancing.
+
+---
+
+## 10. Remaining approximations
 
 Disclosed, not hidden.
 
@@ -277,10 +332,16 @@ Disclosed, not hidden.
 - **The ball is modelled as its bounding sphere** with an effective density carrying its
   hollow shell.
 - **`describe_scene` / `catalog()` are unused by the backend** and kept only for the editor.
+- **Viewport capture does not work headless.** `/api/frame.jpg` returns 503 with the
+  reason rather than a placeholder. `--gui` is required for a picture, and that path is
+  **unverified** — only headless has been run. Section 9.
+- **`add_robot` / `remove_robot` refuse.** Isaac Lab cannot insert an articulation into a
+  live scene, and the rebuild path was never built, so they return `{"ok": false, ...}`
+  rather than reporting a robot that does not exist.
 
 ---
 
-## 10. Measured results
+## 11. Measured results
 
 `demo12.tools.probe_grasp`, `out12/grasp_probe.json`:
 
@@ -304,14 +365,14 @@ Verified from the parts' own state: `part_1` rests at **z = 0.0619**, which is b
 floor at 0.0469 plus a 15 mm half-cube — on the tray floor, not merely inside the
 footprint.
 
-## 11. Why 240 Hz
+## 12. Why 240 Hz
 
 `PHYSICS_DT_S = 1/240`. A 30 mm cube held between two pads is a small-lever-arm two-point
 contact. At 60 Hz the part creeps while being carried; at 240 Hz it does not. Sub-stepping
 is the documented remedy for exactly this class of contact instability, and it is cheaper
 than raising solver iterations.
 
-## 12. Build-order rules (load-bearing, not style)
+## 13. Build-order rules (load-bearing, not style)
 
 - Tune `/physicsScene` → spawn → bind materials → contact sensors → `sim.reset()` →
   `sim.forward()` → **re-apply actuator gains** → capture frames → build arms.

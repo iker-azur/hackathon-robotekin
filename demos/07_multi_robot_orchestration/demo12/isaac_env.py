@@ -1326,6 +1326,28 @@ class IsaacCell:
         """Refresh the cached tensor views without advancing time."""
         self.sim.forward()
 
+    def render_once(self) -> None:
+        """Ask PhysX to render the scene once, even without a window.
+
+        ``step`` only renders when Kit has a GUI::
+
+            self.sim.step(render=(i == substeps - 1) and self.sim.has_gui())
+
+        which is right for simulation and wrong for the server's frame endpoint: in
+        headless there is no window, so the render never happens and a camera pointed at
+        the cell returns a perfectly valid JPEG of a black rectangle. That is the worst
+        failure mode available, because the interface shows it as a live render.
+
+        This does not advance time. It only makes the next ``sim.step`` -- or the camera's
+        own update -- produce pixels.
+        """
+        try:
+            self.sim.render()
+        except Exception as exc:                   # noqa: BLE001
+            # Reported by the caller; a headless Kit without a viewport is a configuration
+            # fact, not a crash.
+            print(f"  render requested but unavailable: {exc}", flush=True)
+
     # -- control ---------------------------------------------------------
 
     def home(self, robot_id: str) -> None:
