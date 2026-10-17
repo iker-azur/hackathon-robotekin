@@ -35,3 +35,12 @@ demos/04_perception/out/
 .DS_Store
 Thumbs.db
 demos/05_planner_and_executor/out11/
+
+# Demo 12 measurement artifacts and the Vite install. The measurements are *regenerated* by
+# demos/07_multi_robot_orchestration/demo12/tools/ (probe_grasp_pose.py, probe_grasp.py),
+# which is why they are ignored rather than committed: a JSON in the tree is a claim, and a
+# probe you can re-run is evidence. Their measured conclusions are written up by hand in
+# demos/07_multi_robot_orchestration/demo12/docs/PHYSICS.md, which *is* committed.
+demos/07_multi_robot_orchestration/out12/
+demos/07_multi_robot_orchestration/demo12/web/node_modules/
+demos/07_multi_robot_orchestration/demo12/web/dist/
