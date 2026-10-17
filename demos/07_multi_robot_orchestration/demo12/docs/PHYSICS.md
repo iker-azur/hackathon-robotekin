@@ -525,3 +525,65 @@ than raising solver iterations.
   machine; it must exclude the sensor extensions whose native DLLs will not resolve.
 - Isaac must run under `miniconda3\envs\hackathon-robotekin\python.exe` (3.11.16). The
   PATH `python` is 3.12 and has no `isaaclab`.
+
+## 14. The WebSocket that was always going to fail
+
+Not a physics section, but it is the longest single debugging thread in this rebuild and it is
+recorded here because the rule it produced is load-bearing.
+
+**Symptom.** The interface sat on *sin conexión* with every value showing `—`. Meanwhile
+`GET /api/health` returned `200` and `GET /api/frame.jpg` served a real render. A failed
+WebSocket upgrade and a healthy server look identical from outside.
+
+**What it was not.** Each of these was believed, checked, and ruled out by measurement:
+
+| Hypothesis | How it was killed |
+|---|---|
+| `websockets` not installed | 12.0 is installed and imports |
+| uvicorn too old for `websockets` 12 | uvicorn's `websockets_impl` imports fine |
+| CORS middleware rejecting the upgrade | a minimal app **with** the same CORS connects |
+| a busy main thread starving the HTTP thread | a replica with a busy main thread connects |
+| `server.py` forgot to register the route | 15 routes registered, `APIWebSocketRoute /ws` present |
+| the handler raised before accepting | the handler is never entered; the trace file is empty |
+
+**What it actually was, in two parts.**
+
+First, `uvicorn.run()` on the thread that owns Kit is wrong outright. Kit pumps its own loop
+(`omni.kit.async_engine` calls `loop.run_once()` from Kit's update events) and uvicorn then
+tries to run a second one on the same thread. `server.py` now runs the HTTP server on its own
+thread with its own loop and shares nothing with Kit but a locked dict and a command queue.
+Physics stays on the main thread, which is the same main-thread rule that governs rendering,
+arrived at from the other direction.
+
+Second, and surviving that fix: **FastAPI's `APIWebSocketRoute` matches the request and then
+answers `websocket.close` without ever calling the handler**, which uvicorn turns into a bare
+`403 Forbidden` with an empty body. `demo12/tools/probe_ws_isaac.py` reproduces the whole
+comparison with Kit booted and no cell at all — same process, same app, three handlers:
+
+| Handler | Result **[M]** |
+|---|---|
+| raw ASGI, no framework | connects, streams |
+| Starlette `WebSocketRoute` | connects, streams |
+| FastAPI `@app.websocket` | **403, handler never entered** |
+
+Isaac bundles its own FastAPI and Starlette in
+`omni.kit.pip_archive-*/pip_prebundle` and puts that directory on `sys.path`. It is tempting
+to call this version skew, and that was the hypothesis before measuring: importing the web
+stack *before* `prepare_runtime()` so site-packages wins (`starlette 0.45.3`,
+`fastapi 0.115.7`, both from site-packages) **does not fix it**. So it is not a version-skew
+problem, and the deeper cause inside FastAPI's websocket dispatch was not isolated. What is
+established is the workaround and that it holds: `server.py` registers `/ws` as a Starlette
+`WebSocketRoute` on the FastAPI app.
+
+**Verified after the fix [M]** — three successive frames off the live socket:
+
+```
+msg 0: ticks=1278 robots=2 tasks=2 done=0 parts=4 simT=21.300
+msg 1: ticks=1286 robots=2 tasks=2 done=0 parts=4 simT=21.433
+msg 2: ticks=1296 robots=2 tasks=2 done=0 parts=4 simT=21.600
+```
+
+The generalisable lesson is the boring one. Every signal that *should* have said "the socket is
+dead" said "the server is fine", because health and frame traffic use a different connection
+type than the failing one. The only thing that found it was refusing to accept "REST works, so
+the server works" and reproducing the failing thing on its own in a stripped-down process.
