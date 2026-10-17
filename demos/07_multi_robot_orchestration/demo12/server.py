@@ -199,12 +199,44 @@ async def capture_frame(cell, width: int = 640, height: int = 360,
     except Exception as exc:                       # noqa: BLE001
         return None, f"capture request failed: {type(exc).__name__}: {exc}"
 
+    # **The callback fires on a Kit app update, so wait by pumping one.**
+    #
+    # Measured: simply awaiting the future times out in BOTH headless and --gui, because
+    # neither asyncio.run nor uvicorn's event loop drives Kit's own update. The capture is
+    # queued to Kit and nothing ever runs it.
+    #
+    # ``Application.next_update`` is an awaitable that yields to one Kit update, so awaiting
+    # it in a loop is how the caller pumps Kit while waiting for the frame. Without this the
+    # endpoint reports a 3 s timeout and no picture, in every configuration.
+    import time as _time
+
+    app = None
     try:
-        data = await asyncio.wait_for(done, timeout=timeout)
-    except asyncio.TimeoutError:
-        return None, (f"viewport capture did not fire within {timeout:.0f} s. The "
-                      f"callback needs Kit's event loop; in headless it may never run. "
-                      f"Start the server with --gui.")
+        import omni.kit.app as _kit_app
+
+        app = _kit_app.get_app()
+    except Exception as exc:                       # noqa: BLE001
+        return None, f"no Kit application: {type(exc).__name__}: {exc}"
+
+    deadline = _time.monotonic() + timeout
+    while not done.done() and _time.monotonic() < deadline:
+        try:
+            await app.next_update()
+        except AttributeError:
+            # Older Kit: no awaitable update. Fall back to a plain sleep so the callback can
+            # still land if something else is driving Kit.
+            await asyncio.sleep(0.01)
+        except Exception:                          # noqa: BLE001
+            await asyncio.sleep(0.01)
+
+    if not done.done():
+        return None, (f"viewport capture did not fire within {timeout:.0f} s even with "
+                      f"Kit's update loop pumped. The viewport may not be rendering; "
+                      f"check that the server was started with --gui and that the cell "
+                      f"has a window.")
+
+    try:
+        data = done.result()
     except Exception as exc:                       # noqa: BLE001
         return None, f"capture failed: {type(exc).__name__}: {exc}"
 

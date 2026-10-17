@@ -107,19 +107,30 @@ def main() -> int:
 
     # -- the function the server actually calls ------------------------------
     #
-    # On a real cell, not a stub: ``_frame_bytes`` calls ``cell.render_once``, and more to
-    # the point there has to be a scene in front of the camera. A stub would prove the
-    # Replicator calls work and nothing about whether they produce an image of anything.
+    # On a real cell, not a stub: there has to be a scene in front of the camera, or a
+    # successful capture proves nothing about whether the picture contains anything.
+    #
+    # Driven through asyncio because ``capture_frame`` is a coroutine -- the viewport
+    # callback fires on a later app update, so testing it any other way would report a
+    # timeout that says nothing about the endpoint.
+    import asyncio
+
     from demo12.config import default_scene
     from demo12.isaac_env import IsaacCell
-    from demo12.server import _frame_bytes
+    from demo12.server import capture_frame
 
     scene = default_scene(1)
     real_cell = IsaacCell(scene, device="cuda:0", headless=args.headless)
     real_cell.settle(60)
     report["cell_built"] = True
 
-    data, reason = _frame_bytes(real_cell)
+    async def _capture():
+        return await capture_frame(real_cell)
+
+    try:
+        data, reason = asyncio.run(_capture())
+    except Exception as exc:                       # noqa: BLE001
+        data, reason = None, f"{type(exc).__name__}: {exc}"
 
     if data is None:
         report["frame"] = None
