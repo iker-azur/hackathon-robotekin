@@ -392,6 +392,64 @@ that made the in-process approach attractive.
 `_build` is correct and someone with a cleaner path through PhysX's lifecycle may get it
 working. It is wired to nothing.
 
+### The roster now changes, by restarting the process
+
+Since the cell cannot be rebuilt in place, the roster changes the way everything else in a
+process-bound system changes: by starting a different process. `demo12/launcher.py` supervises
+a child `demo12.server` and restarts it with a new `--robots` on request.
+
+Measured end to end: 2 robots → request 3 → supervisor stops the child, restarts it, and
+`/api/health` reports **3 robots** with `{"restored": true, "tasks": 2}`. The task queue, the
+attempt counts and the previous-owner history all came back, and both tasks were requeued and
+running again on the three-robot cell.
+
+**Control is a file, not an HTTP call**, and that is not a stylistic choice: the thing being
+asked to do the work is the process that has to die. `out12/control.json` is polled by the
+supervisor, so anything can request a change without holding a socket open to the process it
+wants to replace.
+
+```powershell
+... -m demo12.launcher --robots 2 --port 8000
+# from anywhere, including a UI button:
+'{"robots": 3}' | Set-Content demos\07_multi_robot_orchestration\out12\control.json
+```
+
+### Three Windows-specific traps, all of which cost a run
+
+1. **`Popen.terminate()` runs no shutdown hooks.** On Windows it sends `TerminateProcess`,
+   which kills the process outright — so uvicorn's `on_event("shutdown")` never fires and the
+   ledger is never written. The first roster change went 2 → 3 perfectly and came back with
+   `{"restored": false}`, the queue silently reverted to the default scene, and the only
+   symptom was that the work had vanished. The supervisor now POSTs `/api/relaunch-plan`
+   **before** stopping the child, so the state is saved by a process that is still alive.
+
+2. **`Set-Content -Encoding UTF8` writes a BOM**, and `json.loads` rejects it. A control
+   request written from the obvious PowerShell one-liner was silently ignored while the
+   supervisor sat there looking healthy. Both `launcher.read_control` and `Ledger.load` read
+   with `utf-8-sig`. The ledger's own BOM handling was found by a test rather than in the
+   field, which is the better place for it.
+
+3. **A supervisor with no backoff is a hang.** A child that dies immediately was respawned as
+   fast as the poll loop could turn, burying one clear error under hundreds of identical stack
+   traces. There is now a 3 s escalating backoff and a give-up after four consecutive crashes.
+
+### What the ledger carries, and what it does not
+
+The parts do not survive a restart — they respawn at their configured positions — so
+`demo12.ledger` exists to be precise about what does.
+
+**Carries:** the task queue, each task's state, attempt counts, previous-owner history, and
+the notes that record *why* something failed.
+
+**Does not carry:** any part's position. And therefore **a task marked `done` is demoted to
+`queued` on load**, with a note saying the earlier placement is no longer a fact about the
+simulation. Carrying "done" across a restart would be the single claim in this demo that
+physics does not support, and it is the exact failure the whole rebuild exists to prevent.
+
+Whether a task counts as verified is asked of the *physics* at capture time — the part has to
+be inside its bin and at rest — not remembered from the orchestrator's own state. So a task
+that says `done` while its part is still on the bench is recorded as unverified, and demoted.
+
 ---
 
 ## 10. Remaining approximations
@@ -417,9 +475,7 @@ Disclosed, not hidden.
   which costs control-loop throughput: with a camera attached the loop does not hit its 20 Hz
   target (measured ~280-334 ticks in ~50 s). Physics is unaffected — the two-robot mission
   still completes. Section 9.
-- **`add_robot` / `remove_robot` refuse.** The in-process cell rebuild they need was built
-  and **measured to hang** (370 CPU-seconds, no return). Relaunch with a different
-  `--robots`; `release_for_relaunch()` requeues the ledger first. See section 9.
+- **`add_robot` / `remove_robot` refuse; use the launcher.** The in-process cell rebuild they need was built and **measured to hang** (370 CPU-seconds, no return). `demo12/launcher.py` restarts the process with a new `--robots` and restores the task ledger, measured end to end at 2 -> 3 robots. Section 9.
 
 ---
 
