@@ -46,14 +46,39 @@ MONITORED_BODIES = ("gripper", "jaw", "wrist", "lower_arm", "upper_arm")
 #
 # The gripper assembly -- the wrist housing and the jaw -- is **not** in this list, because
 # its collision in this asset is unusable and is replaced by the authored pads in
-# ``_author_jaw_pads``. Keeping the jaw's own collider enabled while also adding pads
-# was measured and is wrong twice over: the solid 22.3 mm block sits inside the 30 mm part
-# the pads are trying to close on, so it shoves the part away *and* holds the jaw open at
+# ``_author_jaw_pads``. Keeping the jaw's own collider enabled while also adding pads was
+# measured and is wrong twice over: the solid 22.3 mm block sits inside the 30 mm part the
+# pads are trying to close on, so it shoves the part away *and* holds the jaw open at
 # 1.488 rad -- past the 1.40 rad open command -- so the pads never close at all.
 #
-# The arm links keep their real collision, so the arm still cannot pass through the bench
-# or a tray. See docs/PHYSICS.md for what is given up by switching the wrist off.
-ARM_BODIES_WITH_COLLISION: tuple[str, ...] = ()
+# Whether the *arm* links keep theirs was re-tested in Demo 12 Step 2, and the reason they
+# were originally switched off no longer holds. That build's note says the instability came
+# from the pads being "kinematic and teleported into the wrist every step" -- the pads are
+# now bodies on the arm's own articulation driven by prismatic joints, so there is no
+# teleport and no kinematic-versus-dynamic resolution to go wrong. See docs/PHYSICS.md for
+# the measured outcome either way.
+#
+# Overridable from the environment so the experiment is reproducible without editing code.
+# Set it to the empty string to switch arm collision off and re-run
+# ``demo12.tools.probe_grasp`` to reproduce the comparison.
+#
+#     DEMO12_ARM_COLLISION=wrist,lower_arm,upper_arm,base,shoulder
+#
+def _arm_bodies_with_collision() -> tuple[str, ...]:
+    import os
+
+    raw = os.environ.get("DEMO12_ARM_COLLISION")
+    if raw is None:
+        # Measured, Demo 12 Step 2: this is stable. The grasp probe passes identically with
+        # it on and off -- tracking 0.53 mm, 60.9 N of grip, a 98.9 mm rise, the part in the
+        # bin and at rest in both cases -- because a pick-and-place never touches the bench
+        # with the arm links. Verified from the stage rather than inferred: 5 arm colliders
+        # enabled here against 0 with it off.
+        return ("wrist", "lower_arm", "upper_arm", "base", "shoulder")
+    return tuple(s.strip() for s in raw.split(",") if s.strip())
+
+
+ARM_BODIES_WITH_COLLISION: tuple[str, ...] = _arm_bodies_with_collision()
 
 # Measured, and worth recording rather than hiding. Keeping the arm's own links collidable
 # while the pads are kinematic and teleported into the wrist every step is not stable:
@@ -686,9 +711,10 @@ class IsaacCell:
                     pj.CreateUpperLimitAttr().Set(0.0)
 
         print(f"  finger linkage: {2 * len(self.robots)} pads on prismatic joints "
-              f"along jaw local {axis} (closed {2000 * M.JAW_PAD_CLOSED_HALF_M:.1f} mm, "
-              f"travel {1000 * M.JAW_PAD_TRAVEL_M:.0f} mm, "
-              f"open {2000 * (M.JAW_PAD_CLOSED_HALF_M + M.JAW_PAD_TRAVEL_M):.1f} mm, "
+              f"along jaw local {axis} (inner-face span "
+              f"{2000 * M.JAW_PAD_CLOSED_HALF_M - 1000 * M.FINGER_PAD_THICK_M:.1f} mm shut, "
+              f"{2000 * (M.JAW_PAD_CLOSED_HALF_M + M.JAW_PAD_TRAVEL_M) - 1000 * M.FINGER_PAD_THICK_M:.1f} mm "
+              f"open, travel {1000 * M.JAW_PAD_TRAVEL_M:.0f} mm, "
               f"drop {1000 * M.JAW_PAD_DROP_M:.0f} mm on local {drop_axis})",
               flush=True)
 

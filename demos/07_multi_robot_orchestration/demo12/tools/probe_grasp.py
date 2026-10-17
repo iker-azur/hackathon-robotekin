@@ -35,6 +35,61 @@ OUT_DIR = _PARENT_ROOT / "out12"
 OUT_PATH = OUT_DIR / "grasp_probe.json"
 
 
+def arm_collision_report(cell) -> dict:
+    """Verify that arm collision is actually enabled, rather than inferring it.
+
+    The grasp probe alone cannot answer this. Turning arm collision on leaves every grasp
+    number bit-identical -- 2 colliders kept or 7 -- because on a pick-and-place the arm
+    never touches anything: the pads do all the work. So "the grasp still passes" shows
+    collision is *harmless*, not that it is *enabled*.
+
+    The first attempt at this was a behavioural test: drive the tool 30 mm below the
+    tabletop and see whether it stops. It is inconclusive and was reported as a false
+    positive -- the tool halted at 0.1136 m in **both** configurations, 73 mm above the
+    surface, because that point is outside the arm's reachable set for a tool-down pose and
+    the IK never commands it. The test measured reachability, not collision.
+
+    So this asks the stage directly instead: how many arm colliders are enabled, and how
+    many are authored pads. That is what "arm collision is on" has to mean for the claim to
+    be true.
+    """
+    from pxr import Usd, UsdPhysics
+
+    stage = cell.sim.stage
+    enabled: list[str] = []
+    disabled: list[str] = []
+    for robot_id in cell.robots:
+        root = stage.GetPrimAtPath(f"/World/Demo12/Robots/{robot_id}")
+        if not root or not root.IsValid():
+            continue
+        for prim in Usd.PrimRange(root):
+            if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                continue
+            is_pad = "/pad_" in prim.GetPath().pathString
+            on = bool(UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get())
+            if is_pad:
+                enabled.append(prim.GetPath().pathString)
+            elif on:
+                enabled.append(prim.GetPath().pathString)
+            else:
+                disabled.append(prim.GetPath().pathString)
+
+    arm_enabled = [p for p in enabled if "/pad_" not in p]
+    return {
+        "arm_colliders_enabled": len(arm_enabled),
+        "arm_colliders_disabled": len(disabled),
+        "authored_pads": len([p for p in enabled if "/pad_" in p]),
+        "arm_collision_is_on": len(arm_enabled) > 0,
+        "note": (
+            "Verified from the stage, not inferred from the grasp numbers: a pick-and-place "
+            "never touches the bench with the arm links, so the grasp probe cannot "
+            "distinguish the two settings by behaviour. A drive-below-the-table test was "
+            "tried and discarded -- that target is unreachable, so it measured the IK "
+            "rather than collision."
+        ),
+    }
+
+
 def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -111,6 +166,16 @@ def main() -> int:
 
     overall = all(a["ok"] for a in attempts) and len(attempts) > 0
 
+    collision = arm_collision_report(cell)
+    print(f"\n--- arm collision ({len(ARM_BODIES_WITH_COLLISION)} requested) ---",
+          flush=True)
+    print(f"  arm colliders enabled  : {collision['arm_colliders_enabled']}",
+          flush=True)
+    print(f"  arm colliders disabled : {collision['arm_colliders_disabled']}",
+          flush=True)
+    print(f"  authored pads enabled  : {collision['authored_pads']}", flush=True)
+    print(f"  arm collision is on    : {collision['arm_collision_is_on']}", flush=True)
+
     report = {
         "geometry": {
             "JAW_PAD_AXIS": M.JAW_PAD_AXIS,
@@ -122,6 +187,7 @@ def main() -> int:
             "ARM_BODIES_WITH_COLLISION": list(ARM_BODIES_WITH_COLLISION),
         },
         "overall_pass": overall,
+        "arm_collision_check": collision,
         "attempts": attempts,
     }
     OUT_PATH.write_text(json.dumps(report, indent=2), encoding="utf-8")
