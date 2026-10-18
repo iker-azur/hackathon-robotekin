@@ -46,6 +46,25 @@ DEFAULT_BATCH = 8
 DEFAULT_CHUNK = 20
 DEFAULT_ACTION_STEPS = 20
 
+# How many past observations ACT is shown.
+#
+# Kept at 1, and that is a limitation of LeRobot 0.4.4 rather than a choice:
+# ``ACTConfig.__post_init__`` raises ``ValueError("Multiple observation steps not
+# handled yet")`` for any ``n_obs_steps > 1`` (configuration_act.py:149).
+#
+# It matters, because the task as recorded is not a function of a single
+# observation. The arm revisits the *same* configuration in different phases:
+# frames 299 and 300 match to 8e-6 degrees while the plan switches from ``lift``
+# to ``carry``, and frames 391 and 420 match to 0 degrees while it switches from
+# ``carry`` to ``put down``. Counting every pair of frames in an episode sharing
+# a pose within 1 degree but demanding targets up to 22 mm apart gives **449
+# ambiguous pairs per episode**. Given six joint angles and asked for a target,
+# the best any single-observation policy can do on those pairs is their average -
+# a target that goes nowhere. That is the remaining known blocker, and the fix
+# is either a stack that does accept a history, or removing the revisits from the
+# expert's plan. See ``results/diagnosis.md``.
+DEFAULT_OBS_STEPS = 1
+
 # With a 480x640 camera and a 16 GB card shared with the simulator, batch 8 is
 # the largest that holds comfortably. LeRobot's own SO-101 tutorial uses 8 too.
 BATCH_WARNING_THRESHOLD = 8
@@ -96,6 +115,13 @@ def main() -> int:
     parser.add_argument("--batch", type=int, default=DEFAULT_BATCH)
     parser.add_argument("--chunk", type=int, default=DEFAULT_CHUNK)
     parser.add_argument("--action-steps", type=int, default=DEFAULT_ACTION_STEPS)
+    parser.add_argument(
+        "--obs-steps", type=int, default=DEFAULT_OBS_STEPS,
+        help="how many past observations the policy is shown. Only 1 is "
+             "supported: LeRobot 0.4.4's ACTConfig raises for any larger value. "
+             "Left here because the recorded task needs a history to be "
+             "well-posed - see the comment on DEFAULT_OBS_STEPS.",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--job-name", default="act_so101_lift_cube")
     parser.add_argument("--output", default="15_act", help="checkpoint directory under outputs/")
@@ -144,6 +170,7 @@ def main() -> int:
         device=args.device,
         chunk_size=args.chunk,
         n_action_steps=args.action_steps,
+        n_obs_steps=args.obs_steps,
         use_vae=not args.no_vae,
         # Dropout is what acts as regularisation on a dataset this small; 0.1 is
         # ACT's default and is left alone.
@@ -165,7 +192,8 @@ def main() -> int:
     )
 
     print("dataset:", root)
-    print(f"policy:  ACT, chunk {args.chunk}, {args.action_steps} actions per step, batch {args.batch}")
+    print(f"policy:  ACT, chunk {args.chunk}, {args.action_steps} actions per step, "
+          f"{args.obs_steps} observation(s), batch {args.batch}")
     print(f"device:  {args.device}")
     print(f"steps:   {args.steps}")
     print("")

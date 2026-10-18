@@ -64,6 +64,29 @@ PLACEMENT_TOLERANCE_M = 0.03
 DEFAULT_STEPS = 800
 
 
+def phase_bounds() -> list[tuple[int, int, str]]:
+    """The teacher's phase schedule as ``(first_step, last_step, name)`` rows.
+
+    A reference for reading a trace, not a rule: the policy is under no obligation
+    to be in the phase the demonstrations were in at the same step. It answers
+    "the arm stopped making progress during *carry*" rather than "step 312".
+    """
+    import expert as expert_module
+
+    rows, start = [], 0
+    for phase in expert_module.PLAN:
+        rows.append((start, start + phase.steps, phase.name))
+        start += phase.steps
+    return rows
+
+
+def phase_at(bounds, frame: int) -> str:
+    for first, last, name in bounds:
+        if first <= frame < last:
+            return name
+    return "past plan"
+
+
 def load_act_policy(path: Path, device: str, action_steps: int | None = None):
     """Load a LeRobot checkpoint with its pre- and post-processors.
 
@@ -140,20 +163,33 @@ def load_bc_policy(path: Path, device: str):
     return policy, normalisation["action_mean"].to(device), normalisation["action_std"].to(device)
 
 
-def place_cube(env, spot) -> None:
+def place_cube(env, spot, yaw: float = 0.0) -> None:
     """Put the cube on its spot and let it settle before the episode starts.
 
     The demonstrations' ``Expert.bind`` does exactly this and then goes on to
     plan; the evaluation calls it directly because it has no plan to run.
+
+    ``yaw`` matters and used to be missing. Demo 13 sweeps the cube's turn over
+    +-30 degrees because it is the only source of variety in an otherwise static
+    image; this function always wrote the upright quaternion, so every evaluated
+    episode started with the cube axis-aligned - the middle of the training sweep
+    and its easiest case. Pass ``il_env.sample_cube_yaw`` to test the same
+    distribution the policy was trained on.
     """
     import torch
 
     import il_env
 
+    from isaaclab.utils.math import quat_from_euler_xyz
+
     cube = env.scene["cube"]
-    upright = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=env.device)
+    resting = quat_from_euler_xyz(
+        torch.zeros(1, device=env.device),
+        torch.zeros(1, device=env.device),
+        torch.tensor([yaw], device=env.device),
+    )
     pose = torch.tensor([[spot[0], spot[1], il_env.CUBE_REST_Z]], device=env.device)
-    cube.write_root_pose_to_sim(torch.cat([pose, upright], dim=-1))
+    cube.write_root_pose_to_sim(torch.cat([pose, resting], dim=-1))
     cube.write_root_velocity_to_sim(torch.zeros(1, 6, device=env.device))
     for _ in range(20):
         env.sim.step(render=False)
@@ -213,6 +249,12 @@ def main() -> int:
     parser.add_argument("--action-steps", type=int, default=None,
                         help="override how many of the predicted chunk to run before "
                              "asking the policy again (default: the checkpoint's own value)")
+    parser.add_argument("--trace", action="store_true",
+                        help="print the full command the network produces every "
+                             "--trace-every steps, all 8 dimensions, so a value "
+                             "running away can be seen rather than inferred")
+    parser.add_argument("--trace-every", type=int, default=20,
+                        help="steps between --trace lines (default 20)")
     args = parser.parse_args()
 
     import numpy as np
@@ -276,6 +318,22 @@ def main() -> int:
         else:
             print("running at full speed; use --speed 0.5 to watch it")
 
+    # The one setting worth warning about. ACT runs ``n_action_steps`` of the
+    # ``chunk_size`` actions it predicts before it looks at the camera again. When
+    # the two are equal nothing is ever re-observed: a 640-step episode becomes 32
+    # consecutive open-loop commitments, and one bad chunk cannot be recovered
+    # from. The checkpoint trained by demo 15 ships with both at 20.
+    if args.type == "act":
+        n_steps = args.action_steps if args.action_steps is not None else policy.config.n_action_steps
+        n_chunk = policy.config.chunk_size
+        if n_steps >= n_chunk:
+            print(
+                f"WARNING: running open-loop - the policy executes {n_steps} of the "
+                f"{n_chunk} actions it predicts before observing again, so an episode "
+                f"is {args.steps // max(1, n_steps)} chained open-loop chunks with no "
+                f"chance to correct. Pass --action-steps 4 to close the loop."
+            )
+
     # The demonstration's pick-and-put criterion, and the drop offset its plan used.
     tolerance = expert_module.PLACEMENT_TOLERANCE_M or PLACEMENT_TOLERANCE_M
     drop_x, drop_y = expert_module.DROP_OFFSET_XY
@@ -294,13 +352,16 @@ def main() -> int:
         )
 
     results: list[dict] = []
+    bounds = phase_bounds()
     started = time.time()
 
     try:
         for episode in range(args.episodes):
             env.reset()
+            il_env.reset_arm(env)
             spot = il_env.sample_cube_spot(episode, args.episodes)
-            place_cube(env, spot)
+            yaw = il_env.sample_cube_yaw(episode, args.episodes)
+            place_cube(env, spot, yaw)
             target = (spot[0] + drop_x, spot[1] + drop_y)
 
             episode_start = time.time()
@@ -353,6 +414,24 @@ def main() -> int:
 
                     cube = env.scene["cube"].data.root_pos_w[0]
                     max_height = max(max_height, float(cube[2]))
+
+                    if args.trace and steps_taken % args.trace_every == 0:
+                        # Printed before clipping, so a dimension that the clip is
+                        # quietly saving is still visible. Four of the eight are
+                        # constant in the dataset (the orientation quaternion and
+                        # a second gripper channel), which means their unnormaliser
+                        # divides by ~0 and multiplies any stray output by 1e8.
+                        raw = np.asarray(command).reshape(-1)
+                        print(
+                            f"    step {steps_taken:4d} "
+                            f"[{phase_at(bounds, steps_taken - 1)}] "
+                            f"xyz=({raw[0]:+.3f},{raw[1]:+.3f},{raw[2]:+.3f}) "
+                            f"quat=({raw[3]:+.2e},{raw[4]:+.2e},{raw[5]:+.2e}) "
+                            f"g6={raw[6]:+.3f} g7={raw[7]:+.2f} "
+                            f"cube=({float(cube[0]):.3f},{float(cube[1]):.3f},"
+                            f"{float(cube[2]):.3f})",
+                            flush=True,
+                        )
 
                     if pace_seconds:
                         # Hold the episode to the requested speed. Sleeping the
