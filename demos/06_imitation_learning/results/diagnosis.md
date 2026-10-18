@@ -180,9 +180,78 @@ default 1, para que quede claro que es una limitación de la pila y no un descui
 
 El bloqueo restante **no es de datos ni de entrenamiento**: es que el plan del
 profesor, tal y como está, no es una función de una observación. La vía dentro de
-LeRobot es `PI0Config(n_obs_steps=2)`. La otra vía es alimentar a la política con
-la posición del cubo que da `cube_detect.py` — que además es la que convierte el
-problema en uno fácil.
+LeRobot sería `PI0Config(n_obs_steps=2)`.
+
+## 9. pi0 se probó y no se puede usar en esta máquina
+
+La opción natural era pi0, que sí acepta historial. Se intentó y falla por el
+entorno, no por la idea.
+
+### Lo que funciona
+
+`PI0Config(n_obs_steps=2, chunk_size=20, n_action_steps=4)` se construye sin
+problemas. Ojo con un detalle: `n_action_steps` vale 50 por defecto, y con
+`chunk_size=20` pi0 lo rechaza (`configuration_pi0.py:104`), así que hay que
+pasarlo siempre.
+
+### El bloqueo
+
+`PI0Pytorch.__init__` (`modeling_pi0.py:579-587`) exige que exista
+`transformers.models.siglip.check`:
+
+```python
+try:
+    from transformers.models.siglip import check
+    if not check.check_whether_transformers_replace_is_installed_correctly():
+        raise ValueError(msg)
+except ImportError:
+    raise ValueError(msg) from None
+```
+
+En esta máquina:
+
+| | |
+|---|---|
+| `transformers` instalado | 4.57.6 (stock, de PyPI) |
+| `transformers.models.siglip.check` | **no existe** |
+| resultado | `ValueError: An incorrect transformer version is used` |
+
+Ese `check` sólo viene en el **fork oficial de siglip**, que se instala desde un
+repositorio git y **no está en PyPI**. No es un problema de versión: no hay forma
+de obtenerlo con `pip install transformers==<algo>`.
+
+### Por qué no se ha instalado el fork
+
+- `transformers` es una dependencia central del stack que ya funciona: Isaac Sim,
+  Isaac Lab, LeRobot, LeIsaac y los demos 01-05. Sustituirlo por un fork, en la
+  semana del hackathon, arriesga romper todo lo demás para arreglar un demo.
+- El fork se comprobó y **no es alcanzable** desde esta máquina (la URL del
+  repositorio devuelve 404), así que ni siquiera es una instalación de un clic.
+- El `requirements.txt` de este repo fija `transformers` con el extra
+  `transformers-dep` (`>=4.57.1,<5.0.0`), que es la ruta sin fork.
+
+### Qué queda
+
+| política | ¿acepta historial? | ¿arranca aquí? |
+|---|---|---|
+| ACT | **no** (`configuration_act.py:149`) | sí |
+| pi0 | sí | **no** — falta el fork de siglip |
+| pi0fast, wallx, diffusion | — | no instalados |
+| smolvla, groot | no tienen `n_obs_steps` | — |
+
+Ninguna política instalada combina las dos cosas. Así que la vía dentro de
+LeRobot está cerrada **en esta máquina y en esta versión**.
+
+### La salida que queda dentro de LeRobot
+
+Dar a la política un estado que **sí** distinga las fases. `cube_detect.py` ya
+encuentra el cubo con ~10 mm de error, y la posición del cubo es precisamente lo
+que separa a `lift` de `carry` (uno va al cubo, el otro se aleja). Es la misma
+lógica que un historial, pero comprimida a dos números.
+
+Eso **no** es un parche: es un `observation` más, y LeRobot lo soporta sin tocar
+nada. Y como el detector es analítico y exacto, la política deja de tener que
+extraer de 921 600 píxeles una cantidad que ya se sabe.
 
 ## 5. Causa raíz provisional (ronda anterior)
 
