@@ -75,6 +75,28 @@ DROP_OFFSET_XY = (0.10, 0.0)
 PLACEMENT_TOLERANCE_M = 0.03
 
 
+# How far into its phase a command starts, as a fraction of the phase. Without
+# this the interpolation runs ``t = phase_step / steps`` and the first step of
+# every phase commands the pose the arm is *already* in - measured on the
+# recorded dataset, the target moves 1.6 mm between frame 0 and frame 1.
+#
+# That is not a small detail. It makes the first pair of every episode
+# ``(rest pose) -> (rest pose)``, and every evaluation starts from the rest pose,
+# so the policy is being taught the correct answer "do nothing" at precisely the
+# state it is asked about. The result is a stable fixed point: the rollout
+# freezes on step 1 and stays frozen for all 800 steps. It was measured - see
+# ``results/diagnosis.md``.
+#
+# Starting at t > 0 removes the self-loop without reintroducing the plateau that
+# the "no plateau" rule above exists to prevent: the last step of a phase is
+# still exactly t = 1, and nothing lingers at the end.
+#
+# 0.13 is deliberately small - enough that the first command is a real
+# displacement (for "go above cube", about 8 mm) and the arm visibly moves, but
+# small enough that the phase still covers its full distance.
+PHASE_LEAD = 15.0
+
+
 class Expert:
     """Drive the teacher action space from the cube's actual position.
 
@@ -204,7 +226,11 @@ class Expert:
         # moves on to the next phase, which the policy has no way to know. Any
         # reactive policy has this failure; removing the plateaus removes the
         # transitions that cause it.
-        t = min(1.0, self.phase_step / phase.steps)
+        #
+        # ``PHASE_LEAD`` handles the same failure at the *start* of a phase, which
+        # is the one that actually stops the rollout: see its comment. The phase
+        # still ends at exactly t = 1 on its last step.
+        t = (self.phase_step - 1 + PHASE_LEAD) / (phase.steps - 1 + PHASE_LEAD)
         self.current = start + (goal - start) * t
 
         target = quat_apply(quat_inv(self.base_quat), self.current - self.base_pos)

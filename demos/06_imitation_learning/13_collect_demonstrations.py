@@ -87,6 +87,10 @@ def main() -> int:
         for episode in range(args.episodes):
             expert = expert_module.Expert(env)
             env.reset()
+            # Back to the canonical rest pose. Without this the arm carries the
+            # previous episode's end pose into the next one and the dataset's
+            # starting states drift with the episode index.
+            il_env.reset_arm(env)
             spot = il_env.sample_cube_spot(episode, args.episodes)
             yaw = il_env.sample_cube_yaw(episode, args.episodes)
             cube_start = expert.bind(spot, yaw)

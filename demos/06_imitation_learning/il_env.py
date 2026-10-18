@@ -69,11 +69,16 @@ HOLD = (0.007, 0.0, -0.092)
 ABOVE = 0.06
 
 # Where the cube may be placed, in metres. Chosen from the arm's reach: the robot
-# base sits at (0.35, -0.64) and demo 04 measured ``MAX_REACH_M = 0.33``, so the
-# worst corner here is 0.27 m away, which leaves room for the 6 cm the plan needs
-# to lift the cube clear. Everything in this box is comfortably graspable.
-CUBE_BOX_X = (0.30, 0.37)
-CUBE_BOX_Y = (-0.44, -0.38)
+# base sits at (0.35, -0.64) and demo 04 measured ``MAX_REACH_M = 0.33``, and the
+# drop spot is another ``DROP_OFFSET_XY[0]`` further along x. The worst corner is
+# (0.38, -0.365) dropping at (0.48, -0.365), which is 0.304 m from the base - an
+# 8 % margin on the measured reach.
+#
+# This box was 7 x 6 cm and only ever sampled at two y values, which made the 25
+# "varied" demonstrations 25 points on a line rather than a region. It is wider
+# now so the demonstrations actually cover a surface; see ``sample_cube_spot``.
+CUBE_BOX_X = (0.29, 0.38)
+CUBE_BOX_Y = (-0.455, -0.365)
 
 # How far the cube may be turned about its own axis, in radians. +-30 degrees is
 # the same span that does not fail on this hardware: at +-40 to +-50 degrees the
@@ -94,74 +99,49 @@ CUBE_REST_Z = 0.056
 # still vary.
 
 
-def set_cube_randomization(cfg, cube_pose_range: dict | None = None) -> None:
-    """Freeze the task's domain-randomisation events.
-
-    LeIsaac adds its randomisation as dynamically named attributes
-    (``domain_randomize_0``, ``domain_randomize_1``, ...) on the event manager
-    config. They are edited where they sit, rather than removed and re-added:
-    ``EventTermCfg`` objects are mutable and the manager builds from them when it
-    is constructed, so a range written here is the range that is used.
-
-    The term that carries the cube is told by its own parameters - a ``yaw`` key -
-    so the loop does not depend on which index LeIsaac happened to assign.
-    """
-    import dataclasses
-
-    frozen = {
-        "x": (0.0, 0.0),
-        "y": (0.0, 0.0),
-        "z": (0.0, 0.0),
-        "yaw": (0.0, 0.0),
-    }
-
-    for field in dataclasses.fields(cfg.events):
-        if not field.name.startswith("domain_randomize_"):
-            continue
-        pose_range = getattr(cfg.events, field.name).params.get("pose_range")
-        if pose_range is None:
-            continue
-
-        if "yaw" in pose_range:
-            pose_range.update(cube_pose_range if cube_pose_range is not None else frozen)
-        else:
-            # The camera. Frozen as well: it changes the image the policy must
-            # read, not the physics of the pick.
-            for axis in pose_range:
-                pose_range[axis] = (0.0, 0.0)
+def _halton(index: int, base: int) -> float:
+    """The ``index``-th point of the Halton sequence in ``base``, in [0, 1)."""
+    result, fraction = 0.0, 1.0
+    while index > 0:
+        fraction /= base
+        result += fraction * (index % base)
+        index //= base
+    return result
 
 
 def sample_cube_spot(episode: int, total: int) -> tuple[float, float]:
     """Where to put the cube for demonstration ``episode`` out of ``total``.
 
-    Deterministic on purpose: the same dataset name and episode count always
+    A Halton low-discrepancy sweep, so consecutive demonstrations are far apart
+    and the whole set covers a *surface* rather than a line. That is the fix for
+    the workspace this used to sample: x swept linearly from one end to the other
+    and y alternated between exactly two values, so 25 episodes gave 25 points on
+    a one-dimensional line with the episode index, x and the cube's yaw all
+    correlated 1:1. A plane-to-image fit could not even be solved on it.
+
+    Still deterministic on purpose: the same dataset name and episode count always
     produce the same cube positions, so a re-run reproduces the earlier one and a
     colleague can check a claim about a specific episode.
     """
-    if total <= 1:
-        fraction = 0.5
-    else:
-        fraction = episode / (total - 1)
-    x = CUBE_BOX_X[0] + fraction * (CUBE_BOX_X[1] - CUBE_BOX_X[0])
-    # Alternating between the two limits keeps the spread while leaving the two
-    # halves of the sweep paired, so the "y" direction is covered even with few
-    # episodes.
-    y = CUBE_BOX_Y[1] if episode % 2 == 0 else CUBE_BOX_Y[0]
+    del total  # the sequence is driven by the index alone
+    x = CUBE_BOX_X[0] + _halton(episode + 1, 2) * (CUBE_BOX_X[1] - CUBE_BOX_X[0])
+    y = CUBE_BOX_Y[0] + _halton(episode + 1, 3) * (CUBE_BOX_Y[1] - CUBE_BOX_Y[0])
     return x, y
 
 
 def sample_cube_yaw(episode: int, total: int) -> float:
-    """Yaw for demonstration ``episode``, in radians, over +-60 degrees.
+    """Yaw for demonstration ``episode``, in radians, over +-30 degrees.
 
     The cube is the only thing in the scene that moves between episodes, so it is
     the only source of visual variety. Without a turn the front camera sees
     nearly the same frame every time, which leaves the policy nothing in the image
     that tells it where the cube is.
+
+    A third Halton dimension, so the turn is not tied to the position sweep the
+    way it was when both were linear in the episode index.
     """
-    if total <= 1:
-        return 0.0
-    fraction = episode / (total - 1)
-    return -CUBE_MAX_YAW + 2.0 * fraction * CUBE_MAX_YAW
+    del total
+    return -CUBE_MAX_YAW + 2.0 * _halton(episode + 1, 5) * CUBE_MAX_YAW
 
 ACTION_DIM = 8
 STATE_DIM = 6
@@ -184,6 +164,76 @@ JOINT_LOWER_LIMITS = tuple(
 JOINT_UPPER_LIMITS = tuple(
     radians(limit) for limit in (110.0, 100.0, 90.0, 95.0, 160.0, 100.0)
 )
+
+# Pose every episode starts from, in the dataset's own unit (motor degrees).
+#
+# Why this is needed: ``env.reset()`` does not restore the robot's joints. Left
+# alone, episode N therefore begins exactly where episode N-1 finished - measured
+# on the 25-episode dataset, the elbow drifts monotonically from -39.4 to -64.5
+# motor degrees across the run. That made the dataset's starting-state
+# distribution drift with the episode index, and it made a re-run of demo 13
+# produce a different dataset from the same seed.
+#
+# Zeros for the arm and fully open for the jaw: this is the pose the very first
+# episode of the original dataset started from (measured ``[0, 0, 5.3, 0, 0,
+# 9.1]`` - the arm at rest, the jaw not yet commanded), and that episode
+# succeeded, so it is known to be a pose the plan can be executed from.
+REST_MOTOR_DEG = (0.0, 0.0, 0.0, 0.0, 0.0, 61.0)
+
+
+def reset_arm(env, settle_steps: int = 20) -> None:
+    """Put the arm back on :data:`REST_MOTOR_DEG` and let it settle.
+
+    Written as a joint state rather than as an action, because the action space
+    is inverse kinematics in both environments: there is no joint-space command to
+    send home with. Gravity is off on the arm, so once the positions are written
+    it stays where it is put.
+
+    Only the six SO-101 joints named in :data:`JOINT_NAMES` are touched. The USD
+    carries extra joints for the gripper's fingers, and overwriting them with
+    zeros would fold the jaw shut; they are left at whatever the simulation has.
+
+    Call this right after ``env.reset()`` and before anything reads the arm's
+    pose, or the plan is computed from wherever the previous episode stopped.
+    """
+    import torch
+
+    from il_dataset import convert_to_sim_radians
+
+    robot = env.scene["robot"]
+    ids, _ = robot.find_joints(JOINT_NAMES)
+
+    rest_motor = torch.tensor(REST_MOTOR_DEG, dtype=torch.float32, device=env.device)
+    # ``convert_to_sim_radians`` hands back NumPy, so it goes through
+    # ``as_tensor`` rather than straight into the joint write.
+    rest_sim = torch.as_tensor(
+        convert_to_sim_radians(rest_motor), dtype=torch.float32, device=env.device
+    )
+
+    joint_pos = robot.data.joint_pos.clone()
+    joint_pos[:, ids] = rest_sim.unsqueeze(0)
+    robot.write_joint_state_to_sim(joint_pos, torch.zeros_like(robot.data.joint_vel))
+
+    # PhysX goes on driving towards whatever joint targets the last ``env.step``
+    # left behind, so writing the position is not enough on its own - during the
+    # settling steps below the arm walks straight back to the previous episode's
+    # pose. That was measured: after a first attempt at this function, episode 0
+    # started at the rest pose and episodes 1-39 still started all over the
+    # workspace, with the wrist spread 100 motor degrees. Commanding the same
+    # pose fixes it, and costs one line.
+    robot.set_joint_position_target(rest_sim.unsqueeze(0), joint_ids=ids)
+    # ``set_joint_position_target`` only fills an internal buffer. PhysX does not
+    # see it until something flushes that buffer, and the usual flusher is
+    # ``env.step()`` - which the settling loop below deliberately does not call.
+    # Without this line the command never reaches the solver and the arm walks
+    # back to the previous episode's pose; measured, see ``results/diagnosis.md``.
+    robot.write_data_to_sim()
+
+    # Settle with the action manager out of the way, so nothing recomputes the
+    # targets from an inverse-kinematics command while the arm finds its pose.
+    for _ in range(settle_steps):
+        env.sim.step(render=False)
+    env.scene.update(dt=env.physics_dt)
 
 
 
