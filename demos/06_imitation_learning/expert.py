@@ -53,6 +53,49 @@ class Phase:
 #   put down        descend at the drop spot
 #   open            release
 #   retract         rise clear of the cube
+#
+# Why the plan is shaped this way, including two attempts that made it worse
+# -----------------------------------------------------------------------
+#
+# A reactive policy is shown one observation and asked for one action, so the
+# expert's action has to be a *function* of what the policy can see. This plan
+# was measured not to be, and the measurement is what this comment is for: the arm
+# passes through the same configuration in different phases - frames 299 and 300
+# matched to 8e-6 degrees while the plan switched from ``lift`` to ``carry``, and
+# frames 391 and 420 matched to 0 degrees while it switched from ``carry`` to
+# ``put down``. Counting every pair of frames sharing a pose within 1 degree but
+# demanding targets more than 1 cm apart gives **153 ambiguous pairs per episode**
+# (``tools/18_measure_ambiguity.py``). The best any single-observation policy can
+# do on those is average the two options, which is a target that goes nowhere -
+# and that is what the rollout did.
+#
+# **Two attempts to remove them geometrically both failed, and are recorded here
+# so they are not tried a third time.** Both were measured on 10 recorded
+# episodes:
+#
+# 1. *Give every phase its own altitude* - 283 ambiguous pairs per episode, worse
+#    than the 153 it started from. It left ``lift`` and ``carry`` sharing both a
+#    height and a direction.
+# 2. *Offset the carry sideways in y so the vertical segments stop overlapping* -
+#    214 per episode, also worse. It made ``carry`` and ``put down`` traverse the
+#    same diagonal line together, taking that pair from 37 to 113 per episode.
+#
+# The reason both fail is visible in the attribution: every surviving collision
+# is between two phases that share the **same jaw state**, so the jaw cannot
+# separate them either -
+#
+#   carry vs put down   37   jaw shut / shut
+#   close vs lift       51   jaw shut / shut
+#   lift vs carry       44   jaw shut / shut
+#
+# Separating those would mean the arm never passes through the same pose twice,
+# which for a plan that has to approach, grasp, carry and release means giving up
+# on the natural shape of the task. The information that actually distinguishes
+# them is **which way the arm is moving**, and that is not in a single
+# observation - it is in the difference between this frame and the last one. So
+# the fix is a policy that sees a history, which LeRobot's ACT refuses
+# (``configuration_act.py:149``) and PI0Config accepts. This plan is left as the
+# simplest one that works, and the ambiguity is documented rather than hidden.
 PLAN = [
     Phase("go above cube", 0.0, 0.0, env_cfg.ABOVE, env_cfg.OPEN, 100),
     Phase("go down", 0.0, 0.0, 0.0, env_cfg.OPEN, 100),

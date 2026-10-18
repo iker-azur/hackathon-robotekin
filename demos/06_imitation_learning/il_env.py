@@ -77,6 +77,10 @@ ABOVE = 0.06
 # This box was 7 x 6 cm and only ever sampled at two y values, which made the 25
 # "varied" demonstrations 25 points on a line rather than a region. It is wider
 # now so the demonstrations actually cover a surface; see ``sample_cube_spot``.
+#
+# It is sized against the drop position, not the pick: the worst corner is the one
+# furthest along x, because the plan carries the cube 10 cm further still. Checked
+# numerically - the worst drop is 0.289 m against a measured reach of 0.330 m.
 CUBE_BOX_X = (0.29, 0.38)
 CUBE_BOX_Y = (-0.455, -0.365)
 

@@ -138,12 +138,51 @@ default 1, para que quede claro que es una limitación de la pila y no un descui
 
 ### Las dos formas de arreglarlo
 
-1. **Que el plan no repita poses** — que `carry` termine más allá de donde
-   empezó `lift`, o que el portillo del cubo cambie de sitio entre fases. Es un
-   cambio en `expert.py` y no obliga a reentrenar nada más.
-2. **Usar una pila que acepte historial** — `diffusion` o `pi0` de LeRobot sí
-   manejan varias observaciones. Habría que comprobarlo contra la versión
-   instalada antes de prometerlo.
+1. **Que el plan no repita poses** — se probó y **no funciona**. Dos intentos,
+   ambos medidos sobre 10 episodios grabados con `tools/18_measure_ambiguity.py`:
+
+   | intento | pares ambiguos/episodio | resultado |
+   |---|---|---|
+   | plan original | **153** | referencia |
+   | altura propia para cada fase | 283 | peor |
+   | desviar el `carry` en y | 214 | peor |
+
+   Los dos empeoran el resultado, y por razones concretas:
+
+   - *alturas distintas*: dejó a `lift` y `carry` compartiendo **altura y
+     dirección**, así que coincidían más.
+   - *desvío en y*: hizo que `carry` y `put down` recorrieran la **misma
+     diagonal**; ese par pasó de 37 a 113 por episodio.
+
+   La atribución muestra por qué ninguna de las dos puede funcionar: **todos** los
+   pares que quedan son entre fases que comparten el **mismo estado de mordaza**,
+   así que la mordaza tampoco los separa.
+
+   | fases | pares/ep | mordaza |
+   |---|---|---|
+   | `carry` vs `put down` | 37 | shut / shut |
+   | `close` vs `lift` | 51 | shut / shut |
+   | `lift` vs `carry` | 44 | shut / shut |
+
+   Separarlos exigiría que el brazo no pase nunca dos veces por la misma pose,
+   lo que para un plan que tiene que acercarse, agarrar, transporting y soltar
+   significa renunciar a la forma natural de la tarea.
+
+2. **Usar una pila que acepte historial** — verificado en la versión instalada:
+   `PI0Config`, `PI05Config`, `PI0FastConfig`, `GrootConfig`, `WallXConfig` y
+   `XVLAConfig` **aceptan `n_obs_steps=2`**. ACT no.
+
+2 bis. **La información que sí los distingue** es hacia dónde se mueve el brazo,
+   y eso no está en una observación sino en la diferencia entre este fotograma y
+   el anterior. Es exactamente lo que aporta un historial.
+
+### Conclusión
+
+El bloqueo restante **no es de datos ni de entrenamiento**: es que el plan del
+profesor, tal y como está, no es una función de una observación. La vía dentro de
+LeRobot es `PI0Config(n_obs_steps=2)`. La otra vía es alimentar a la política con
+la posición del cubo que da `cube_detect.py` — que además es la que convierte el
+problema en uno fácil.
 
 ## 5. Causa raíz provisional (ronda anterior)
 
