@@ -123,6 +123,211 @@ class GraspResult:
         }
 
 
+@dataclass
+class GraspEvidence:
+    """Everything one pick had to show, and whether it actually showed it.
+
+    **This is the single definition of "the grasp was real".** Both :class:`GraspProbe` and
+    the live ``demo12.orchestrator.TaskRunner`` build one of these and obey it, which is the
+    only reason a task the demo reports as done and a grasp the test suite certifies are the
+    same claim.
+
+    They used not to be, and the gap was the demo's largest hole. ``GraspProbe.run`` judged a
+    grasp on eight criteria. The live runner judged the same grasp on two -- ``grip_n > 0.0``
+    and "in the bin and at rest" -- and never checked the other six. Concretely, the two
+    documented ways this demo used to cheat a success both passed the live runner:
+
+    * **The punt** (``docs/PHYSICS.md`` section 4). Pads landing on a corner instead of two
+      faces stalled the span at 40.6 mm, shoved the part 36 mm along the axis, and reported
+      **103 N** of contact. 103 > 0, so the runner accepted it. ``pads_on_faces`` is the
+      criterion that rejects it and the runner never evaluated it.
+    * **A part that never left the table.** The runner judged only where the part ended up.
+      Anything that ended inside the tray and at rest counted, including a part another
+      robot had knocked in, or one a fast close had punted across the table. ``part_rose``
+      and ``carried`` are the criteria that require *this robot* to have done the carrying.
+
+    Every field here is a reading. None of them is a command, and nothing in this module can
+    make a grasp succeed that the physics did not produce.
+    """
+
+    part_id: str = ""
+    bin_id: str = ""
+    robot_id: str = ""
+
+    # -- what the arm did ---------------------------------------------------
+    tool_error_m: float = 0.0
+    span_on_part_m: float = 0.0
+    grip_force_n: float = 0.0
+    grip_force_during_lift_n: float = 0.0
+    part_drift_on_close_m: float = 0.0
+
+    # -- what the part did --------------------------------------------------
+    part_width_m: float = 0.0
+    part_rise_m: float = 0.0
+    part_carried_to_bin: bool = False
+    part_inside_bin: bool = False
+    part_resting: bool = False
+
+    # -- the verdict --------------------------------------------------------
+    criteria: dict[str, bool] = field(default_factory=dict)
+    failures: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.criteria) and all(self.criteria.values())
+
+    @property
+    def grip_required_n(self) -> float:
+        """Normal force the friction cone needs for this part.
+
+        ``2 * mu * N >= m * g`` with a 2x safety factor, which is what
+        :func:`required_grip_n` computes. Compared against the *sum* of both pads' contact
+        forces, which is what ``IsaacCell.grip_force_n`` reports, so the two are the same
+        physical quantity and not off by a factor of two.
+        """
+        return getattr(self, "_grip_required_n", 0.0)
+
+    @property
+    def grip_margin(self) -> float:
+        """Measured grip as a multiple of the friction cone's requirement.
+
+        Reported next to every grasp so a pass can be judged as comfortable or marginal
+        rather than merely true or false. The demo's own two reference grasps sit at ~200x;
+        a value near 1.0 would be a grip about to slip.
+        """
+        need = self.grip_required_n
+        if need <= 0.0:
+            return float("inf")
+        return self.grip_force_n / need
+
+    @property
+    def measurements(self) -> dict[str, Any]:
+        """The numbers behind the verdict, as plain floats.
+
+        A property rather than a field so the derived quantities -- the friction cone's
+        requirement and the margin over it -- cannot disagree with the raw readings they
+        came from. ``to_dict`` is built from this.
+        """
+        margin = self.grip_margin
+        return {
+            "toolErrorM": round(self.tool_error_m, 6),
+            "spanOnPartM": round(self.span_on_part_m, 6),
+            "partWidthM": round(self.part_width_m, 6),
+            "gripForceN": round(self.grip_force_n, 4),
+            "gripRequiredN": round(self.grip_required_n, 4),
+            "gripMargin": None if margin == float("inf") else round(margin, 1),
+            "gripForceDuringLiftN": round(self.grip_force_during_lift_n, 4),
+            "partDriftOnCloseM": round(self.part_drift_on_close_m, 6),
+            "partRiseM": round(self.part_rise_m, 6),
+            "partCarriedToBin": self.part_carried_to_bin,
+            "partInBin": self.part_inside_bin,
+            "partResting": self.part_resting,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "partId": self.part_id,
+            "binId": self.bin_id,
+            "robotId": self.robot_id,
+            "criteria": dict(self.criteria),
+            "failures": list(self.failures),
+            "measurements": self.measurements,
+        }
+
+
+def evaluate_grasp(
+    *,
+    part_id: str,
+    bin_id: str,
+    robot_id: str,
+    mass_kg: float,
+    tool_error_m: float,
+    part_width_m: float,
+    span_on_part_m: float,
+    grip_force_n: float,
+    part_rise_m: float,
+    part_carried_to_bin: bool,
+    part_inside_bin: bool,
+    part_resting: bool,
+    grip_force_during_lift_n: float = 0.0,
+    part_drift_on_close_m: float = 0.0,
+) -> GraspEvidence:
+    """Turn one pick's readings into a verdict. The only place a grasp is judged.
+
+    Seven criteria, each a statement about a different thing, so a failure names what
+    actually went wrong instead of collapsing to "grasp failed":
+
+    1. ``tracking``     -- the tool was where it was told to be when it closed.
+    2. ``pads_on_faces`` -- the pads stalled at the part's own width, on both flat faces.
+    3. ``grip``          -- the squeeze exceeded what the friction cone needs for this mass.
+    4. ``part_rose``      -- the part rose with the jaw, so it was carried and not nudged.
+    5. ``carried``        -- it travelled to the destination still in the jaws.
+    6. ``part_in_bin``    -- it ended fully inside the cavity.
+    7. ``part_resting``   -- and it had stopped moving.
+
+    (2), (4) and (5) are the three that the live runner used to omit.
+    """
+    required_n = required_grip_n(mass_kg)
+
+    e = GraspEvidence(
+        part_id=part_id, bin_id=bin_id, robot_id=robot_id,
+        tool_error_m=tool_error_m,
+        span_on_part_m=span_on_part_m,
+        grip_force_n=grip_force_n,
+        grip_force_during_lift_n=grip_force_during_lift_n,
+        part_drift_on_close_m=part_drift_on_close_m,
+        part_width_m=part_width_m,
+        part_rise_m=part_rise_m,
+        part_carried_to_bin=part_carried_to_bin,
+        part_inside_bin=part_inside_bin,
+        part_resting=part_resting,
+    )
+    e._grip_required_n = required_n          # noqa: SLF001 - derived, not a constructor arg
+
+    c = e.criteria
+    c["tracking"] = tool_error_m < TRACKING_TOLERANCE_M
+    # The pads have to have stalled at the part's own width, on both flat faces. A span still
+    # near the free shut figure means they closed on something thinner than the part.
+    c["pads_on_faces"] = (
+        span_on_part_m > SPAN_SHUT_MAX_M
+        and abs(span_on_part_m - part_width_m) <= ON_PART_SPAN_TOLERANCE_M
+    )
+    # The friction cone, not "greater than zero". 0 N is the floor for "the pads closed on
+    # air"; anything above it has to actually hold this part's weight with a margin.
+    c["grip"] = grip_force_n >= max(GRIP_MIN_N, required_n)
+    # The part rose with the jaw. Without this, a part that was knocked or punted into the
+    # tray by anything at all would pass criteria 6 and 7.
+    c["part_rose"] = part_rise_m >= LIFT_MIN_RISE_M
+    c["carried"] = bool(part_carried_to_bin)
+    c["part_in_bin"] = bool(part_inside_bin)
+    c["part_resting"] = bool(part_resting)
+
+    if not c["tracking"]:
+        e.failures.append(
+            f"tracking {tool_error_m * 1000:.2f} mm >= {TRACKING_TOLERANCE_M * 1000:.1f} mm")
+    if not c["pads_on_faces"]:
+        e.failures.append(
+            f"span on part {span_on_part_m * 1000:.1f} mm is not the part's "
+            f"{part_width_m * 1000:.1f} mm width, so the pads are not on both faces")
+    if not c["grip"]:
+        e.failures.append(
+            f"grip force {grip_force_n:.3f} N below the {required_n:.3f} N the friction cone "
+            f"needs for {mass_kg * 1000:.0f} g")
+    if not c["part_rose"]:
+        e.failures.append(
+            f"part rose only {part_rise_m * 1000:.1f} mm on a 100 mm lift "
+            f"(needs {LIFT_MIN_RISE_M * 1000:.0f} mm): it was not carried")
+    if not c["carried"]:
+        e.failures.append("the part was not over the destination while still held")
+    if not c["part_in_bin"]:
+        e.failures.append("the part did not end fully inside the destination cavity")
+    if not c["part_resting"]:
+        e.failures.append("the part was still moving when the task was judged")
+
+    return e
+
+
 class GraspProbe:
     """Runs one pick-lift-place against a live cell and reports what actually happened.
 
@@ -323,23 +528,12 @@ class GraspProbe:
         m["grip_force_n"] = round(self.cell.grip_force_n(self.robot_id), 4)
         m["pad_contacts"] = self.cell.pad_contact_forces(self.robot_id)
 
-        # The on-part span is evidence about the *grasp*, not about the linkage: the pads
-        # have to have stalled at the part's width, on both flat faces. A span still near
-        # the free shut figure means they closed on something thinner than the part -- a
-        # corner, or nothing.
+        # The on-part span and the squeeze are recorded here but *judged* at the end, by
+        # ``evaluate_grasp`` -- the same function the live orchestrator runs. A probe and a
+        # demo that scored a grasp by different rules could disagree about whether it was
+        # real, and then a test would certify something the demo reported as a failure.
         on_part_width = part_cfg.grasp_width_m
         m["part_grasp_width_m"] = on_part_width
-        criteria["pads_on_faces"] = (
-            m["span_on_part_m"] > SPAN_SHUT_MAX_M
-            and abs(m["span_on_part_m"] - on_part_width) <= ON_PART_SPAN_TOLERANCE_M
-        )
-        criteria["grip"] = m["grip_force_n"] > GRIP_MIN_N
-        if not criteria["pads_on_faces"]:
-            failures.append(
-                f"span on part {m['span_on_part_m'] * 1000:.1f} mm is not the part's "
-                f"{on_part_width * 1000:.1f} mm width, so the pads are not on both faces")
-        if not criteria["grip"]:
-            failures.append(f"grip force {m['grip_force_n']:.4f} N <= {GRIP_MIN_N} N")
 
         # The part must still be where it was. A close that shoves the part away has not
         # grasped it, whatever the pads report.
@@ -366,12 +560,6 @@ class GraspProbe:
         m["part_rise_m"] = round(rise, 6)
         m["part_after_lift"] = {"x": lifted.x, "y": lifted.y, "z": lifted.z}
         m["grip_force_during_lift_n"] = round(self.cell.grip_force_n(self.robot_id), 4)
-
-        criteria["part_rose"] = rise >= LIFT_MIN_RISE_M
-        if not criteria["part_rose"]:
-            failures.append(
-                f"part rose only {rise * 1000:.1f} mm on a 100 mm lift "
-                f"(needs {LIFT_MIN_RISE_M * 1000:.0f} mm)")
 
         # -- 4. place and release -------------------------------------------
         # Drop from a little above the rim so the part falls into the cavity rather than
@@ -413,15 +601,27 @@ class GraspProbe:
         m["part_inside_bin"] = inside
         m["part_lin_speed"] = final.lin_speed
 
-        criteria["part_in_bin"] = inside
-        criteria["part_resting"] = final.resting
-        if not criteria["part_in_bin"]:
-            failures.append(
-                f"part ended at ({final.x:.4f}, {final.y:.4f}), not inside "
-                f"{bin_id} (centre {bin_cfg.x:.4f}, {bin_cfg.y:.4f})")
-        if not criteria["part_resting"]:
-            failures.append(
-                f"part still moving at the end: {final.lin_speed:.4f} m/s")
+        # -- 6. one verdict, shared with the live orchestrator ---------------
+        evidence = evaluate_grasp(
+            part_id=part_id, bin_id=bin_id, robot_id=self.robot_id,
+            mass_kg=part_cfg.mass_kg,
+            tool_error_m=m["tool_error_m"],
+            part_width_m=on_part_width,
+            span_on_part_m=m["span_on_part_m"],
+            grip_force_n=m["grip_force_n"],
+            part_rise_m=rise,
+            part_carried_to_bin=m["part_carried_to_bin"],
+            part_inside_bin=inside,
+            part_resting=final.resting,
+            grip_force_during_lift_n=m["grip_force_during_lift_n"],
+            part_drift_on_close_m=m["part_drift_on_close_m"],
+        )
+        criteria.update(evidence.criteria)
+        failures.extend(evidence.failures)
+        m["grip_required_n"] = round(evidence.grip_required_n, 4)
+        m["grip_margin"] = (None if evidence.grip_margin == float("inf")
+                            else round(evidence.grip_margin, 1))
+        m["evidence"] = evidence.to_dict()
 
         return GraspResult(
             ok=all(criteria.values()),

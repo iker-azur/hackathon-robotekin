@@ -503,6 +503,442 @@ Verified from the parts' own state: `part_1` rests at **z = 0.0619**, which is b
 floor at 0.0469 plus a 15 mm half-cube — on the tray floor, not merely inside the
 footprint.
 
+## 11a. The gap between the probe and the live orchestrator
+
+**The most important correction in the project, and it was found by reading the code rather
+than by running it.**
+
+`GraspProbe.run` judged a grasp on eight criteria. `orchestrator.TaskRunner` -- the thing
+that actually runs during the demo -- judged the same grasp on **two**:
+
+```python
+GRASP_FORCE_FLOOR_N = 0.0          # "a squeeze below this is not carrying anything"
+...
+inside, resting = self.judge()     # where did the part end up, and has it stopped?
+```
+
+The first constant described an intention the code did not implement: **any force above zero
+passed**. The second asked only where the part ended up, not whether *this robot* had put it
+there.
+
+So both of the demo's own documented failure modes passed as completed tasks:
+
+| Failure | Documented in | Force | Ended in tray | Old verdict | Correct |
+|---|---|---|---|---|---|
+| **The punt** -- pads on a corner, part shoved 36 mm | section 4 | **103 N** | yes, if it landed there | **done** | not a grasp |
+| **A part that never left the table** | -- | any | yes, if knocked in | **done** | not a grasp |
+
+The 103 N row is the one that matters. That number is *real* -- it is what PhysX reports when
+the pads are jammed on a corner. It is also exactly what a working grip reports, because a
+working grip on this hardware sits at the 60 N effort limit too. **Force alone cannot tell
+them apart**, and a demo that used it to decide success was reporting success it had not
+measured.
+
+### The fix: one verdict, shared
+
+`grasp.evaluate_grasp` is now the single definition of "the grasp was real", and both the
+offline probe and the live orchestrator build one and obey it. Seven criteria, each a reading
+from a different phase, each a different claim:
+
+| # | Criterion | Claim | Was live? |
+|---|---|---|---|
+| 1 | `tracking` | the tool was where it was told to be when it closed | yes |
+| 2 | `pads_on_faces` | the pads stalled at the part's own width, on both faces | **no** |
+| 3 | `grip` | the squeeze exceeded the **friction cone** for this mass | partly (`> 0`) |
+| 4 | `part_rose` | the part rose with the jaw | **no** |
+| 5 | `carried` | it travelled to the destination still in the jaws | **no** |
+| 6 | `part_in_bin` | it ended fully inside the cavity | yes |
+| 7 | `part_resting` | and it had stopped moving | yes |
+
+Criterion 3 is no longer a constant. It is `2*mu*N >= m*g` with a 2x safety factor, computed
+per part from its measured mass -- 0.31 N for the 28.1 g cube, 0.03 N for the 2.9 g ball. A
+grip is reported with its **margin** over that figure, so a pass can be judged comfortable
+rather than merely true. The demo's reference grasps sit near **x200**.
+
+Criteria 2, 4 and 5 are the three that close the gap. (2) rejects the punt. (4) and (5)
+require that *this arm* carried *this part*, which nothing else can satisfy -- a part knocked
+into the tray by another arm now fails.
+
+### What it cost
+
+Nothing, which is the honest finding. Every measured grasp in section 11d passes all seven
+with room. The strictness is free, because the strictness was never the problem -- **the check
+was missing, not the physics**. A gripper that could barely hold something would have been the
+sign of a real defect; these are far inside the requirement.
+
+One more thing changed with it: a close that fails is now abandoned at tick 45 rather than
+after the full lift and transfer. A grasp that was never going to take used to cost the whole
+cell 780 control ticks before anyone heard about it, and left an arm hovering over the part
+another robot was about to try.
+
+---
+
+## 11b. Simulated time was being counted locally
+
+Unrelated to grasping, and found while instrumenting the above.
+
+```python
+for robot in self.robots.values():
+    ...
+    phase = task.runner.advance()
+    self.control_ticks += 1
+    self.sim_time_s += dt          # per ROBOT, not per tick
+```
+
+`IsaacCell.step` advances the physics **once per robot**, so the physics advances *N* times per
+`orchestrator.step()` for *N* working robots -- and `_hold_idle` incremented `control_ticks`
+**without** incrementing `sim_time_s` at all. A cell with three robots and one task therefore
+reported a third of the time that had actually been simulated.
+
+`sim_time_s` is now read from the cell, which accumulates `sim_dt * substeps` for every
+physics substep and has no opinion about how many arms are busy. In a demo whose entire
+argument is that the numbers come from the simulation rather than from the code's own
+opinion, the clock was the one number invented locally.
+
+---
+
+## 11c. Two reachability numbers, and only one of them is real
+
+`materials.MAX_REACH_M` is **335 mm**. It is the geometric envelope and it is correct as
+geometry. The arm is demonstrated out to about **235 mm** at a low target, and the difference
+is 100 mm.
+
+`validate()` was checking the envelope. So it accepted cells the arm cannot serve, and every
+grasp in them failed with a tool error of 146-268 mm and zero grip force. The joint angles say
+why:
+
+| Target | horizontal | error | shoulder_lift | elbow_flex |
+|---|---|---|---|---|
+| `part_1` | 260.6 mm | 182.0 mm | **-92.7 deg** | **+79.8 deg** |
+| `part_3` | 221.1 mm | 148.6 mm | **-92.7 deg** | **+79.8 deg** |
+
+`shoulder_lift`'s limit is +-100 deg with `JOINT_LIMIT_MARGIN_RAD` 0.15, so the projection
+floor is **-91.4 deg**. `elbow_flex` is -100/+90, so its ceiling is **+81.4 deg**. Both arms
+are pinned against their own projection floors. The tool stops a constant ~105 mm along the
+correct direction -- the errors are exactly `horizontal - 105 mm` for every target. Identical
+with `DEMO12_ARM_COLLISION=`, so it is kinematic and not contact.
+
+**The cause is that `ArmController._wrist_for_down` is a fit**, measured against the
+articulation's own forward kinematics over the *original* work area only. Outside it the
+commanded wrist angle is wrong by enough degrees that the tool stops converging. So
+`config.WORKING_RADIUS_M = 0.235` is not a guess about the hardware; it is the boundary of
+what has been demonstrated, and `collect_errors` now checks against it.
+
+Two more things turned up while widening the cell, both reverted and both documented at the
+constant:
+
+* **The bench is load-bearing.** `settle` retracts each arm to `base_y - 0.10`, 100 mm behind
+  its own base, which overhangs the original bench's back edge by 65 mm. Growing the table
+  pushed that edge to 130 mm behind the bases, so the retract pose sat **on the tabletop** and
+  five enabled arm colliders pushed against it. Measured: 0/6.
+* **A derived layout is a function of its inputs.** Placing parts as fractions of the
+  reachable span, with the span computed from the *enabled* bases, made the whole cell a
+  function of `--robots`: `bin_1` landed at x = -0.027 m with one arm and 0.099 m with two,
+  both outside the work area. Derive from the invariant set and treat the parameter as a
+  subset question.
+
+---
+
+## 11d. Four tasks over two arms needed a scheduler, not four schedulers
+
+With a task per part, the run ended **0/4** with tracking errors of 146-208 mm. That reads
+exactly like a reachability failure, and for a while that is what it was assumed to be. The
+tell was that the *first* task failed too, before any crowding could accumulate.
+
+It was the assignment policy. Its costs were:
+
+```
+robot_2 with nothing else busy
+    part_1  total 0.294 (reach 0.233)
+    part_4  total 0.296 (reach 0.232)   <- cheapest thing in the cell for this arm
+
+robot_2 with robot_1 already on part_1 at x=0.290
+    part_2  total 0.285  conflict 0.140   <- clear
+    part_4  total 0.732  conflict 0.084   <- CONFLICT
+    part_3  total 0.796  conflict 0.070   <- CONFLICT
+```
+
+Every term was a property of **one arm and one part** -- reach, carry, retries. Nothing knew
+another arm was already reaching into the same patch of bench, so each arm took whatever was
+nearest *itself*, and since all the arms face the same way down the same table, the two
+nearest things to two different arms were 70 mm apart.
+
+The fix is a fourth term: `CONFLICT_RADIUS_M = 0.130`, applied when a candidate pick is within
+that distance of a part another working arm already holds. Measured boundaries: **70 mm loses
+the grasp, 140 mm runs cleanly in parallel**. It is a *cost* rather than a rule so the
+interface can show why an arm went elsewhere -- `AssignmentCost.to_dict()` carries `conflictM`
+and `conflicted`, and the timeline shows the term beside the decision.
+
+**This is the difference between a scheduler and a collaboration.** Three of the four terms
+say "what is cheap for me"; the fourth says "what is already taken". Without it, adding robots
+makes the cell worse, which is the opposite of the point of having more than one.
+
+---
+
+## 11e. Measured results
+
+Two robots, two colour-matched tasks:
+
+```
+Demo 12: 2 robot(s), 4 parts, 2 bins, 2 tasks
+OK: 2 task(s) completed in 57.3 s simulated, 2796 control ticks
+```
+
+Two robots, **every part tasked** (`--all-tasks`), which is the contention case:
+
+```
+Demo 12: 2 robot(s), 4 parts, 2 bins, 4 tasks
+OK: 4 task(s) completed in 148.3 s simulated, 8242 control ticks
+```
+
+| Task | Part | Span / width | Grip | Friction cone needs | Rise | Tracking | Attempts |
+|---|---|---|---|---|---|---|---|
+| `task_1` | 30 mm ABS cube | 29.40 / 30.0 mm | 60.9 N | 0.31 N | 99.1 mm | 0.38 mm | 1 |
+| `task_2` | 30 mm cylinder | 29.20 / 30.0 mm | 60.5 N | 0.24 N | 99.0 mm | 0.28 mm | 1 |
+| `task_3` | 25 mm ABS cube | 24.60 / 25.0 mm | 44.9 N | 0.18 N | 99.0 mm | 0.13 mm | 1 |
+| `task_4` | 20 mm PET ball | 19.10 / 20.0 mm | 25.4 N | 0.03 N | 99.2 mm | 0.10 mm | 1 |
+
+Four tasks, four attempts, **grasp success 1.0**, and all seven criteria passing on every one
+-- 28 of 28.
+
+The number worth quoting is the friction margin: a **60.9 N** squeeze holding a part that needs
+**0.31 N**, a factor of ~197. The strictness of section 11a cost nothing, because the
+strictness was never the problem -- the missing checks were, and the grips were never
+marginal.
+
+Utilisation in the four-task run was `robot_1 0.34 / robot_2 1.00`, and that imbalance is
+real rather than a rounding artefact: `robot_2`'s base is nearest three of the four parts, so
+the conflict term pushes work its way and leaves `robot_1` with one pick before the queue
+empties. It is reported in `/api/metrics` and drawn in the interface rather than smoothed over
+-- a cell that quietly hides which arm did the work is the problem this demo started from.
+
+---
+
+## 11f. Six bugs in the HTTP surface, all of them invisible until it was run
+
+Twenty-three routes and a WebSocket had been written, documented in the README, typechecked by
+the client, and **never executed once**. `demo12/tests/test_server.py` now runs all of them
+against a scripted cell in 1.7 s, with no GPU. Six defects, found on the first execution.
+
+| # | Defect | How it presented |
+|---|---|---|
+| 1 | `ReachEnvelope.min_m` -- the attribute is `min_reach_m` | **500** on `/api/scene`: the scene editor never loaded |
+| 2 | `rank_robots(task_id)` bound to `?task_id=`, client sends `?taskId=` | **422** on every call: the "why this robot" panel never opened |
+| 3 | `MoveTask.to_dict()` emitted `part_id` / `bin_id`; everything else read `partId` | queued nothing, applied nothing, no visible error |
+| 4 | `next_seq` was `next(self._seq)`, consuming the counter | cursor drifted on every read, forever |
+| 5 | `/api/command` took `applied` from `Queue.put()`'s return, which is `None` | `applied` was always `null` |
+| 6 | `apply: true` on an unparsed command did nothing and said nothing | silent no-op |
+
+### Bug 3 is the one worth reading
+
+`MoveTask.to_dict()` was `asdict(self)`, and it was **the only snake_case value in the entire
+HTTP surface**. Everything else already agreed on camelCase:
+
+```
+ledger.py:78              "partId": e.part_id          <- writes camelCase
+ledger.py:104             part_id=str(t["partId"])     <- reads camelCase
+config.py (from_dict)     t["partId"]                  <- reads camelCase
+server.py (drain_commands) t["partId"]                 <- reads camelCase
+web/src/api.ts            { id, partId, binId, label }  <- typed camelCase
+MoveTask.to_dict()        asdict(self)                 <- part_id  <- the odd one out
+```
+
+So `/api/plan`, `/api/scenarios`, `/api/command` and `/api/tasks/submit` all serialised with
+`part_id`, and `drain_commands` read them back with `t["partId"]`. That raises `KeyError`
+**inside a `try` that catches and publishes**, so the run did not crash and the server did not
+log an exception. It queued nothing, applied nothing, and wrote a line into `lastError` that
+nothing in the interface displays. Every planning button in the demo would have looked alive
+and done nothing at all.
+
+The same defect broke `SceneConfig` round-tripping: `/api/scene/validate` handed its own output
+to `/api/scene/apply` and the mission arrived empty.
+
+Both are fixed by giving `MoveTask` an explicit camelCase `to_dict`, and both are now pinned by
+`test_plan_turns_moves_into_tasks_without_touching_the_queue`,
+`test_an_applied_command_is_confirmed_truthfully` and
+`test_scene_validate_accepts_the_default_scene_and_rejects_a_damaged_one`.
+
+### Bug 4 is subtler than it looks
+
+`next_seq` was a property that consumed an `itertools.count`. Reading it advanced it. The
+interface fetches the cursor on a snapshot and again on a log read, twenty times a second, so
+the cursor moved continuously with nothing happening. `since()` filters `seq > cursor`, so no
+event was ever lost -- but "nothing has happened" became unrepresentable, and any client keying
+its redraw on cursor change redrew forever. The sequence numbers came out as 1, 2, then 3 and 4
+for two events, which is what gave it away.
+
+### What this says about the rest
+
+Not "write more tests" -- **run the thing once**. Every one of these was in code that was
+reviewed, documented and typechecked. The failure mode they share is a contract mismatch
+between two components that were each individually correct, and the only thing that finds
+those is executing the seam between them.
+
+The live process itself -- the Isaac cell behind these routes, the supervisor restart, and the
+WebSocket's frame timing -- still needs a real run. What these tests cover is the half a judge
+touches first.
+
+### The durable answer to bug 3: a contract test
+
+`test_contract.py` parses the field names `web/src/api.ts` declares and asserts the server
+actually sends them, endpoint by endpoint. It is the only thing in the project that looks at
+both sides of the wire at once, which is the only place this class of defect can be seen --
+`tsc` typechecks the client against its own declarations and learns nothing about what any
+endpoint produces.
+
+It also pins the specific field names (`partId`, not `part_id`) and round-trips a submitted
+task through the queue using the exact comprehension `drain_commands` uses, so the seam that
+broke is tested rather than assumed.
+
+### And one test that was passing for the wrong reason
+
+`test_grasp.py`'s `cell` fixture is `scope="module"` -- one cell for all the tests. The four
+parts get *consumed* as the module runs, moved into their bins, and there is no way to put one
+back: `IsaacCell` offers no `write_root_pose_to_sim` by design ("the physics is the
+authority"), which is the right rule for a demo whose whole claim is that nothing is faked.
+
+So `test_a_faulted_robot_hands_its_task_over`, which ran last and used `part_1`/`part_2`, was
+starting on parts that `test_two_robots_complete_two_tasks_from_real_physics` had already
+delivered. The task was "done" without any robot ever picking anything up. It passed, and it
+was asserting a fault handoff it had not watched.
+
+The obvious fix -- give it a fresh cell -- **segfaulted the suite.** `exit=-1073741819`,
+which is `0xC0000005`, an access violation. `IsaacCell.__init__` creates a
+`SimulationContext`, and the module's own docstring already said it cannot:
+
+> `SimulationContext` is effectively a singleton -- Isaac Lab registers it on construction
+> and will not hand out a second one -- so this cannot build a fresh cell per test.
+
+That note was in the file. It was read, and then a fixture was added that contradicted it.
+
+**And there is no allocation that fixes it by moving parts around**: four parts, two tests
+that each want two. So the fix is not isolation, it is **one run making both claims**. The
+fault is now injected into the two-robot test itself:
+
+* the faulted arm must release the task it was holding
+* the other arm -- mid-pick on its own part -- must take it and carry it to the bin
+* `carried` must be true on the handed-over task, which can only happen if an arm had the
+  part in its jaws on the way there
+
+That covers the old two-robot test *and* the old fault test, tests the handoff under load
+rather than in isolation, and has no ordering dependency left. Seven tests instead of eight,
+and no second cell.
+
+The tick budget also came down from 80,000 to 20,000. A two-task mission finishes in ~2,800
+control ticks, so 20,000 is 7x margin; 80,000 was 28x, which is harmless when passing and is
+half an hour when failing.
+
+---
+
+## 11g. The supervisor asked the server to save the queue, and the queue was never saved
+
+`demo12/tools/verify_live.py` starts a real supervisor against a real Isaac cell and checks
+the three things a scripted cell cannot reach. Everything passed except one thing that took a
+close look to see:
+
+```
+[launcher] roster change: 2 -> 3
+[launcher] asking the server to save its ledger first
+[launcher]   {"ok":true,"queued":"relaunch_plan"}
+[launcher] asking the server to stop
+[launcher] restarting with 3 robot(s)
+...
+out12/ledger.json  ->  MISSING
+```
+
+`launcher.stop()` does the right thing in principle. `Popen.terminate()` is
+`TerminateProcess`: immediate, and it runs **no** shutdown hooks. So uvicorn's `on_event`
+never fires, and `run_loop` never returns, which means the `capture_ledger(orch).save(...)` at
+the bottom of `server.main()` never runs. The supervisor therefore POSTs `/api/relaunch-plan`
+first -- and that endpoint *queued* the request like every other one.
+
+So the server answered `200 {"ok": true, "queued": "relaunch_plan"}`, the supervisor read that
+as success, and called `terminate()` before the simulation thread had drained a single item.
+**The file was never written.** The restart came back with an empty queue, which from the
+outside is indistinguishable from a successful one: same robots, same scene, nothing to do.
+
+This is the same bug the docstring on `request_ledger_save` says it was written to fix --
+"the first roster change went 2 -> 3 perfectly and came back with `{"restored": false}`" -- so
+the fix reproduced the original failure in a new shape. Asking is not enough; the answer has
+to mean it.
+
+**Fixed on both sides:**
+
+* `/api/relaunch-plan` writes the file on the calling thread and returns `saved: true` only
+  after checking it is on disk. It still does not mutate the orchestrator's queue beyond
+  requeueing, because the restore path demotes active states anyway.
+* `request_ledger_save` reads `saved`, retries for a few seconds if the server says it did not
+  save, and returns `"NOT SAVED -- the task queue will not survive this restart"` otherwise.
+  `stop()` prints that as `***` and says the queue will come back as the default mission.
+
+Re-measured on the same machine:
+
+```
+[launcher]   saved 2 task(s) to .../out12/ledger.json
+  [PASS] the supervisor wrote the ledger before killing the process  -- 2 task(s)
+  [PASS] the ledger entries use the names restore reads
+  [PASS] the queue came back rather than reverting to the default mission
+```
+
+The lesson is the same one as section 11a: **a component's idea of what it did is not the
+component's record of what it did.** `/api/relaunch-plan` returned `ok: true` while doing
+nothing durable. Nothing in the request path can tell the difference -- only reading the file.
+
+### And then the supervisor leaked its own child
+
+Verifying the restart turned up a second thing, in the same area. After two runs of
+`verify_live` there were two `demo12.server` processes still alive, each holding a full Isaac
+Sim. Cause: `Popen.terminate()` on the launcher is `TerminateProcess`, which delivers no
+signal, so the launcher's `SIGTERM` handler -- the one that calls `stop()` on its child --
+never runs. **Terminating the supervisor does not terminate the server.**
+
+That is not untidy. Isaac holds the GPU for as long as a process lives, so two leaked
+children were the reason the test suite appeared to need twenty minutes per test: four Isaac
+processes competing for one RTX 5060 Ti. Every slow run in this project's log had a leaked
+process somewhere, and it looked exactly like "Isaac is slow".
+
+`verify_live.stop_supervisor` now stops the supervisor first, then looks for anything still
+answering on the port and kills it by PID -- and **fails the run if the port is still
+serving**, because a verification script that leaks what it verifies is worse than one that
+fails.
+
+That check immediately earned its place, and then exposed itself. The first version of the
+sweep shelled out to `wmic process`, which **no longer exists on this machine** -- it raised
+"not recognised", found nothing, printed nothing, and let the orphan live. The run still
+failed, correctly, on "the server outlived the supervisor". A cleanup step that silently does
+nothing is worse than no cleanup step, because the run still looks tidy.
+
+The replacement uses `psutil` and matches on **argv structure**, not substrings: an argument
+exactly equal to `demo12.server`, followed by `--port` whose successor is the port. The
+substring version matched this very script -- its own path contains
+`demos/07_multi_robot_orchestration/demo12/server.py` -- so it was willing to kill whatever was
+inspecting it. Checked against five stand-ins: both real servers on the port are killed, and
+a server on another port, an unrelated module with the same port, and `--port=8099` written
+as one token all survive.
+
+### And the scene reload, which was the last untested path
+
+`{"scene": "scene.json"}` goes through the same supervisor restart as the roster change, so
+it is worth checking -- and "it loaded the file" proves nothing, because the failure mode is a
+new process quietly building the default scene while the interface shows an edit it is not
+running.
+
+So the edit is a real coordinate move. `part_4` from (0.360, -0.472) to (0.330, -0.472),
+validated before anything restarts, applied through the editor's own endpoint, and then read
+back from two places:
+
+```
+[PASS] the edited scene validates before anything is restarted  -- part_4 (0.36, -0.472) -> (0.33, -0.472)
+[PASS] the restarted process is serving the edited geometry      -- part_4 ... 'x': 0.33
+[PASS] and the rigid body is physically there too               -- body at (0.33, -0.472)
+[PASS] the edited cell is itself valid                          -- []
+```
+
+The second line is config, the third is physics. A restart that reloaded the JSON but rebuilt
+the default cell would pass the first and fail the second.
+
+---
+
 ## 12. Why 240 Hz
 
 `PHYSICS_DT_S = 1/240`. A 30 mm cube held between two pads is a small-lever-arm two-point

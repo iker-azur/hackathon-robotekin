@@ -20,8 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from demo12.ledger import (LedgerEntry, OrchestratorLedger, capture)
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from test_orchestrator import FakeCell, _make, _scene_with  # noqa: E402
+# ``demo12.tests`` is a package, so the scripted cell comes in through it rather than by
+# putting this directory on ``sys.path`` -- which is what made the import work only under
+# pytest's default import mode, and broke the moment a second test module needed the class.
+from demo12.tests.test_orchestrator import (  # noqa: E402
+    FakeCell, _make, _scene_with)
 
 
 def _ledger(**overrides) -> OrchestratorLedger:
@@ -137,7 +140,7 @@ def test_capture_only_marks_verified_what_the_physics_agrees_with():
     This is the whole point. An orchestrator that says ``done`` while the part is still on
     the bench must not be able to write that into a file that survives a restart.
     """
-    scene = _scene_with(1, ["part_1"])
+    scene = _scene_with(2, ["part_1"])
     # Scripted so the grasp succeeds: the fake moves part_1 into bin_1 when it verifies.
     cell = FakeCell(scene, {"task_1": True})
     orch = _make(scene, cell)
@@ -185,7 +188,7 @@ def test_capture_survives_a_cell_that_cannot_answer():
     rather than the orchestrator's -- a cell that cannot answer ``part_state`` at all would
     stop the orchestrator long before this point.
     """
-    scene = _scene_with(1, ["part_1"])
+    scene = _scene_with(2, ["part_1"])
     cell = FakeCell(scene, {"task_1": True})
     orch = _make(scene, cell)
     for _ in range(40_000):

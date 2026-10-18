@@ -51,6 +51,11 @@ def main() -> int:
                         help="run without a Kit window (the default)")
     parser.add_argument("--gui", dest="headless", action="store_false",
                         help="show Isaac Sim, so the cell can be watched")
+    parser.add_argument("--all-tasks", action="store_true",
+                        help="give every part a task, not only the colour-matched ones. A "
+                             "denser mission and a harder one: two arms end up working the "
+                             "middle of the cell at the same time, which is the contention "
+                             "worth watching and also the part most likely to collide.")
     args = parser.parse_args()
 
     env_loader.prepare_runtime(headless=args.headless)
@@ -61,7 +66,7 @@ def main() -> int:
     from demo12.isaac_env import ARM_BODIES_WITH_COLLISION, IsaacCell
     from demo12.orchestrator import MultiRobotOrchestrator
 
-    scene = default_scene(args.robots)
+    scene = default_scene(args.robots, assign_all=args.all_tasks)
     cell = IsaacCell(scene, device="cuda:0", headless=args.headless)
     cell.settle(90)
 

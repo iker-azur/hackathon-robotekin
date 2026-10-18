@@ -1,136 +1,50 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
 /**
- * Demo 12 -- live view of the cell.
+ * Demo 12 -- the shell.
  *
- * Reads the WebSocket for state and the MJPEG endpoint for the render. Nothing here
- * computes anything: no task status, no progress, no "done". Every value on screen came
- * from the server, which read it from PhysX. A component that derived its own opinion
- * about whether a pick succeeded is exactly the thing this demo was rebuilt to stop doing.
+ * Reads the WebSocket for state and polls `/api/events` for the collaboration log. Nothing
+ * here computes a verdict: no task status, no progress, no "done". Every value on screen
+ * came from the server, which read it from PhysX. A component that formed its own opinion
+ * about whether a pick worked would be the exact thing this demo was rebuilt to stop doing,
+ * so the rule holds all the way to the top.
  *
- * The frame is an <img> pointed at /api/frame.jpg and nudged with a cache-busting query.
- * If there is no frame -- headless Kit with no viewport -- the image errors and the panel
- * says so with the server's own reason, rather than showing a placeholder that would let a
- * dead render look alive.
+ * Four views, because the four questions are different:
+ *
+ *   Cell          what is happening right now, and where everything is
+ *   Plan          what I want to happen -- assign, type a command, apply
+ *   Collaboration who is doing what, why, and what it cost
+ *   Editor        the cell's geometry, which costs a restart and says so
  */
 
-const API = "http://127.0.0.1:8000";
-const WS = "ws://127.0.0.1:8000/ws";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, API, WS, type EventRecord, type Lang, type Snapshot } from "./api";
+import { t, num } from "./i18n";
+import CellMap from "./CellMap";
+import Timeline from "./Timeline";
+import Evidence, { CRITERION_LABEL_KEYS } from "./Evidence";
+import Planner from "./Planner";
+import SceneEditor from "./SceneEditor";
 
-type Health = {
-  running: boolean;
-  steps: number;
-  lastError: string | null;
-  errorCount: number;
-};
+type Tab = "cell" | "plan" | "collab" | "editor";
 
-type Robot = { id: string; state: string; taskId: string | null; note: string };
-type Task = {
-  id: string;
-  partId: string;
-  binId: string;
-  label: string;
-  state: string;
-  assignedRobot: string | null;
-  previousRobots: string[];
-  attempts: number;
-  note: string;
-  holding: string | null;
+const TAB_KEY: Record<Tab, string> = {
+  cell: "tabCell", plan: "tabPlan", collab: "tabCollab", editor: "tabEditor",
 };
-type Part = {
-  id: string;
-  x: number;
-  y: number;
-  z: number;
-  yawDeg: number;
-  linSpeed: number;
-  resting: boolean;
-};
-type Bin = { id: string; label: string; x: number; y: number; innerM: number[] };
-
-type Snapshot = {
-  simTimeS: number;
-  controlTicks: number;
-  allTasksCompleted: boolean;
-  tasksCompleted: number;
-  tasksTotal: number;
-  failuresInjected: number;
-  reassignments: number;
-  robots: Robot[];
-  tasks: Task[];
-  health?: Health;
-  cell?: { parts: Part[]; bins: Bin[]; tableTopZ: number };
-  frameError?: string;
-};
-
-const STATE_ES: Record<string, string> = {
-  queued: "en cola",
-  approaching: "acerccando",
-  closing: "cerrando",
-  lifting: "levantando",
-  transferring: "trasladando",
-  releasing: "soltando",
-  verifying: "verificando",
-  done: "completado",
-  failed: "fallido",
-};
-
-const STATE_COLOUR: Record<string, string> = {
-  queued: "#6b7280",
-  approaching: "#3d7fd6",
-  closing: "#d98c1f",
-  lifting: "#d98c1f",
-  transferring: "#d98c1f",
-  releasing: "#a855f7",
-  verifying: "#a855f7",
-  done: "#3aa76d",
-  failed: "#e0483c",
-};
-
-function Pill({ value, text }: { value: string; text?: string }) {
-  return (
-    <span
-      style={{
-        background: STATE_COLOUR[value] ?? "#6b7280",
-        color: "#fff",
-        borderRadius: 10,
-        padding: "2px 9px",
-        fontSize: 11,
-        fontWeight: 600,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {text ?? STATE_ES[value] ?? value}
-    </span>
-  );
-}
 
 function Frame() {
   const [nonce, setNonce] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const timer = useRef<number | null>(null);
 
-  // A plain <img> re-requested on an interval. No canvas, no worker, and the server is
-  // already doing the expensive part.
   useEffect(() => {
-    timer.current = window.setInterval(() => setNonce((n) => n + 1), 700);
-    return () => {
-      if (timer.current) window.clearInterval(timer.current);
-    };
+    const id = window.setInterval(() => setNonce((n) => n + 1), 700);
+    return () => window.clearInterval(id);
   }, []);
 
   return (
-    <div style={{ border: "1px solid #d8dce3", borderRadius: 8, overflow: "hidden" }}>
+    <div className="frame">
       {error ? (
-        <div style={{ padding: 20, color: "#8a5a00", background: "#fff8e6", fontSize: 13 }}>
-          <strong>Sin imagen.</strong>
-          <div style={{ marginTop: 6, fontFamily: "ui-monospace, monospace", fontSize: 11 }}>
-            {error}
-          </div>
-          <div style={{ marginTop: 6, fontSize: 12 }}>
-            Arranca el servidor con <code>--gui</code> para tener una ventana de Isaac Sim, o
-            acepta que este panel quede vacío en headless.
-          </div>
+        <div className="frame-error">
+          <strong>Sin imagen / No image</strong>
+          <code>{error}</code>
         </div>
       ) : (
         <img
@@ -138,14 +52,12 @@ function Frame() {
           alt="Isaac Sim"
           onError={async () => {
             try {
-              const res = await fetch(`${API}/api/state`);
-              const body = await res.json();
-              setError(body.frameError ?? "el servidor no devolvio una imagen");
+              const body = await (await fetch(`${API}/api/state`)).json();
+              setError(body.frameError ?? "the server returned no image");
             } catch {
-              setError("no hay servidor en 127.0.0.1:8000");
+              setError("no server at 127.0.0.1:8000");
             }
           }}
-          style={{ width: "100%", display: "block", background: "#0d1017" }}
         />
       )}
     </div>
@@ -153,244 +65,393 @@ function Frame() {
 }
 
 export default function App() {
+  const [lang, setLang] = useState<Lang>(() =>
+    (localStorage.getItem("demo12-lang") as Lang) || "en");
   const [state, setState] = useState<Snapshot | null>(null);
-  const [socketUp, setSocketUp] = useState(false);
+  const [socketUp, setSocketUp] = useState<"connecting" | "up" | "down">("connecting");
+  const [tab, setTab] = useState<Tab>("cell");
+  const [events, setEvents] = useState<EventRecord[]>([]);
+  const [showPhases, setShowPhases] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<string | null>(null);
+  const [selectedPart, setSelectedPart] = useState<string | null>(null);
+  const [hoveredBin, setHoveredBin] = useState<string | null>(null);
+  const [plan, setPlan] = useState<Map<string, string>>(new Map());
+  const cursor = useRef(0);
 
   useEffect(() => {
+    localStorage.setItem("demo12-lang", lang);
+    document.documentElement.lang = lang;
+  }, [lang]);
+
+  const tr = useCallback((k: string) => t(lang, k), [lang]);
+
+  // -- live state ---------------------------------------------------------
+  useEffect(() => {
     const ws = new WebSocket(WS);
-    ws.onopen = () => setSocketUp(true);
-    ws.onclose = () => setSocketUp(false);
-    ws.onmessage = (event) => setState(JSON.parse(event.data));
+    ws.onopen = () => setSocketUp("up");
+    ws.onclose = () => setSocketUp("down");
+    ws.onerror = () => setSocketUp("down");
+    ws.onmessage = (e) => setState(JSON.parse(e.data));
     return () => ws.close();
   }, []);
 
-  const post = useCallback(async (path: string) => {
-    await fetch(`${API}${path}`, { method: "POST" });
+  // Events are polled on a cursor rather than pushed whole, so a long demo does not
+  // re-transfer the whole log twice a second.
+  useEffect(() => {
+    let alive = true;
+    const pull = async () => {
+      try {
+        const res = await api.events(cursor.current);
+        if (!alive) return;
+        cursor.current = res.cursor;
+        setEvents((prev) => {
+          const merged = [...prev, ...res.events];
+          const seen = new Set<number>();
+          return merged.filter((e) => !seen.has(e.seq) && seen.add(e.seq)).slice(-600);
+        });
+      } catch {
+        /* the server is down; the socket indicator already says so */
+      }
+    };
+    void pull();
+    const id = window.setInterval(pull, 1000);
+    return () => { alive = false; window.clearInterval(id); };
   }, []);
 
-  const health = state?.health;
-  const parts = state?.cell?.parts ?? [];
-  const bins = state?.cell?.bins ?? [];
+  const tasks = state?.tasks ?? [];
+  const robots = state?.robots ?? [];
+  const scene = state?.scene ?? null;
+  const metrics = state?.metrics ?? null;
 
-  const done = state?.allTasksCompleted ?? false;
-  const progress = useMemo(() => {
-    if (!state || state.tasksTotal === 0) return 0;
-    return (state.tasksCompleted / state.tasksTotal) * 100;
-  }, [state]);
+  // The plan starts from what the cell is already being asked to do, so the panel reflects
+  // reality until someone edits it.
+  useEffect(() => {
+    setPlan(new Map(tasks.map((x) => [x.partId, x.binId])));
+  }, [tasks.length]);
+
+  const onApplied = useCallback(() => {
+    api.state().then(setState).catch(() => undefined);
+  }, []);
+
+  const pickPart = useCallback((id: string) => {
+    setSelectedPart((cur) => (cur === id ? null : id));
+  }, []);
+
+  const pickBin = useCallback((binId: string) => {
+    setSelectedPart((cur) => {
+      if (!cur) return cur;
+      setPlan((p) => new Map(p).set(cur, binId));
+      return null;
+    });
+    setTab("plan");
+  }, []);
+
+  const focus = useMemo(
+    () => tasks.find((x) => x.id === selectedTask) ?? tasks[0] ?? null,
+    [tasks, selectedTask],
+  );
+
+  const progress = metrics && metrics.tasksTotal > 0
+    ? (metrics.tasksCompleted / metrics.tasksTotal) * 100 : 0;
 
   return (
-    <div style={{ fontFamily: "system-ui, sans-serif", maxWidth: 1180, margin: "0 auto", padding: 20 }}>
-      <header style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 14 }}>
-        <h1 style={{ fontSize: 20, margin: 0 }}>Demo 12 — Orquestación multi-robot</h1>
-        <span style={{ fontSize: 12, color: socketUp ? "#3aa76d" : "#e0483c" }}>
-          {socketUp ? "● WebSocket conectado" : "○ sin conexión"}
-        </span>
+    <div className={`app lang-${lang}`}>
+      <header className="head">
+        <div className="brand">
+          <h1>{tr("appTitle")}</h1>
+          <span className="sub">{tr("appSubtitle")}</span>
+        </div>
+
+        <nav className="tabs">
+          {(["cell", "plan", "collab", "editor"] as Tab[]).map((k) => (
+            <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
+              {tr(TAB_KEY[k])}
+            </button>
+          ))}
+        </nav>
+
+        <div className="head-right">
+          <button className="lang-toggle"
+                  onClick={() => setLang(lang === "es" ? "en" : "es")}>
+            {lang === "es" ? "ES" : "EN"}
+          </button>
+          <span className={`conn ${socketUp}`}>
+            {socketUp === "up" ? "●" : socketUp === "connecting" ? "◌" : "○"}{" "}
+            {tr(socketUp === "up" ? "connected"
+               : socketUp === "connecting" ? "connecting" : "disconnected")}
+          </span>
+        </div>
       </header>
 
-      {/* Health is shown before anything else. A demo that looks fine while the loop is
-          throwing has told you nothing useful. */}
-      {health?.lastError && (
-        <div
-          style={{
-            background: "#fdecea",
-            border: "1px solid #f3b0a8",
-            color: "#8a1c10",
-            padding: 10,
-            borderRadius: 6,
-            marginBottom: 14,
-            fontSize: 13,
-          }}
-        >
-          <strong>Error del orquestador</strong> ({health.errorCount}×
-          ): {health.lastError}
+      {state?.lastError && (
+        <div className="banner bad">
+          <strong>{tr("error")}</strong> ({state.errorCount}×): {state.lastError}
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 18 }}>
-        <div>
-          <Frame />
-
-          <div style={{ display: "flex", gap: 8, margin: "12px 0" }}>
-            <button onClick={() => post("/api/run")} style={btn(true)}>
-              Ejecutar
-            </button>
-            <button onClick={() => post("/api/stop")} style={btn(false)}>
-              Detener
-            </button>
-            {(state?.robots ?? []).map((r) => (
-              <button key={r.id} onClick={() => post(`/api/fault/${r.id}`)} style={btn(false)}>
-                Fallar {r.id}
-              </button>
-            ))}
-            {(state?.robots ?? [])
-              .filter((r) => r.state === "faulted")
-              .map((r) => (
-                <button key={r.id} onClick={() => post(`/api/repair/${r.id}`)} style={btn(false)}>
-                  Reparar {r.id}
-                </button>
-              ))}
+      {/* ---------------------------------------------------------- CELL */}
+      {tab === "cell" && (
+        <div className="grid-cell">
+          <div className="col-main">
+            <CellMap
+              lang={lang}
+              scene={scene}
+              robots={robots}
+              tasks={tasks}
+              parts={state?.parts ?? []}
+              bins={scene?.bins ?? state?.bins ?? []}
+              selectedPart={selectedPart}
+              onPickPart={pickPart}
+              onPickBin={pickBin}
+              hoveredBin={hoveredBin}
+            />
+            <p className="hint centre">
+              {selectedPart
+                ? `${tr("clickForTarget")} (${selectedPart})`
+                : tr("plannerHint")}
+            </p>
           </div>
 
-          <section style={card}>
-            <h2 style={h2}>Tareas</h2>
-            <div style={{ height: 6, background: "#e5e7eb", borderRadius: 3, marginBottom: 10 }}>
-              <div
-                style={{
-                  height: "100%",
-                  width: `${progress}%`,
-                  background: done ? "#3aa76d" : "#3d7fd6",
-                  borderRadius: 3,
-                  transition: "width .3s",
-                }}
-              />
-            </div>
-            <table style={table}>
-              <thead>
-                <tr>
-                  <th>Tarea</th>
-                  <th>Pieza → destino</th>
-                  <th>Estado</th>
-                  <th>Fase</th>
-                  <th>Robot</th>
-                  <th>Intentos</th>
-                  <th>Nota</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(state?.tasks ?? []).map((t) => (
-                  <tr key={t.id}>
-                    <td>{t.id}</td>
-                    <td>
-                      {t.partId} → {t.binId}
-                    </td>
-                    <td>
-                      <Pill value={t.state} />
-                    </td>
-                    <td style={{ fontSize: 12, color: "#4b5563" }}>
-                      {t.holding ? STATE_ES[t.holding] ?? t.holding : "—"}
-                    </td>
-                    <td>{t.assignedRobot ?? "—"}</td>
-                    <td>{t.attempts}</td>
-                    <td style={{ fontSize: 11, color: "#6b7280", maxWidth: 260 }}>
-                      {t.note || (t.previousRobots.length ? `antes: ${t.previousRobots.join(", ")}` : "")}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-        </div>
+          <div className="col-side">
+            <Frame />
 
-        <div>
-          <section style={card}>
-            <h2 style={h2}>Resumen</h2>
-            <dl style={{ margin: 0, fontSize: 13 }}>
-              <Row k="Simulado (s)" v={state?.simTimeS?.toFixed(1) ?? "—"} />
-              <Row k="Ticks de control" v={state?.controlTicks ?? "—"} />
-              <Row k="Tareas" v={`${state?.tasksCompleted ?? 0} / ${state?.tasksTotal ?? 0}`} />
-              <Row k="Reasignaciones" v={state?.reassignments ?? 0} />
-              <Row k="Fallos inyectados" v={state?.failuresInjected ?? 0} />
-              <Row
-                k="Resultado"
-                v={done ? "todas completadas" : state ? "en curso" : "—"}
-                colour={done ? "#3aa76d" : undefined}
-              />
-            </dl>
-          </section>
-
-          <section style={card}>
-            <h2 style={h2}>Robots</h2>
-            {(state?.robots ?? []).map((r) => (
-              <div key={r.id} style={{ fontSize: 13, marginBottom: 8 }}>
-                <strong>{r.id}</strong>{" "}
-                <Pill
-                  value={r.state === "faulted" ? "failed" : r.state === "working" ? "closing" : "queued"}
-                  text={r.state === "idle" ? "libre" : r.state === "working" ? "ocupado" : "averiado"}
-                />{" "}
-                <span style={{ color: "#6b7280" }}>{r.taskId ?? ""}</span>
+            <section className="card">
+              <h2>{tr("activity")}</h2>
+              <div className="bar">
+                <div className="bar-fill"
+                     style={{ width: `${progress}%`,
+                              background: metrics?.tasksFailed ? "#d98c1f" : "#3aa76d" }} />
               </div>
-            ))}
-          </section>
-
-          <section style={card}>
-            <h2 style={h2}>Piezas</h2>
-            <table style={table}>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Posición (m)</th>
-                  <th>v (m/s)</th>
-                  <th>Reposo</th>
-                </tr>
-              </thead>
-              <tbody>
-                {parts.map((p) => (
-                  <tr key={p.id}>
-                    <td>{p.id}</td>
-                    <td style={{ fontFamily: "ui-monospace, monospace", fontSize: 11 }}>
-                      {p.x.toFixed(3)}, {p.y.toFixed(3)}, {p.z.toFixed(3)}
-                    </td>
-                    <td>{p.linSpeed.toFixed(4)}</td>
-                    <td>{p.resting ? "sí" : "no"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 8 }}>
-              Una tarea solo se marca completada si la pieza está dentro de la cavidad del
-              destino <em>y</em> en reposo. Las dos cosas se leen del cuerpo rígido.
-            </div>
-          </section>
-
-          <section style={card}>
-            <h2 style={h2}>Destinos</h2>
-            {bins.map((b) => (
-              <div key={b.id} style={{ fontSize: 13 }}>
-                <strong>{b.id}</strong> — {b.label} en ({b.x.toFixed(3)}, {b.y.toFixed(3)}),
-                interior {(b.innerM[0] * 1000).toFixed(0)}×
-                {(b.innerM[1] * 1000).toFixed(0)} mm
+              <dl className="kv">
+                <Row k={tr("simTime")} v={`${num(lang, state?.simTimeS ?? 0, 1)} s`} />
+                <Row k={tr("controlTicks")} v={num(lang, state?.controlTicks ?? 0, 0)} />
+                <Row k={tr("completed")} v={`${metrics?.tasksCompleted ?? 0} / ${metrics?.tasksTotal ?? 0}`} />
+              </dl>
+              <div className="robots">
+                {robots.map((r) => {
+                  const task = tasks.find((x) => x.id === r.taskId);
+                  const pct = Math.round(r.utilisation * 100);
+                  return (
+                    <div key={r.id} className={`robot st-${r.state}`}>
+                      <div className="robot-head">
+                        <strong>{r.id}</strong>
+                        <span className={`pill ${r.state}`}>
+                          {tr(r.state === "idle" ? "free" : r.state === "working" ? "busy" : "faulted")}
+                        </span>
+                        <span className="dim">{r.taskId ?? ""}</span>
+                        <span className="spacer" />
+                        {r.state !== "faulted" ? (
+                          <button className="tiny" onClick={() => api.fault(r.id).then(onApplied)}>
+                            {tr("fault")}
+                          </button>
+                        ) : (
+                          <button className="tiny" onClick={() => api.repair(r.id).then(onApplied)}>
+                            {tr("repair")}
+                          </button>
+                        )}
+                      </div>
+                      <div className="robot-bar">
+                        <div className="robot-fill"
+                             style={{ width: `${pct}%`,
+                                      background: r.state === "faulted" ? "#e0483c"
+                                        : r.state === "working" ? "#3aa76d" : "#475569" }} />
+                        <span>{pct}%</span>
+                      </div>
+                      <div className="robot-meta dim">
+                        {task?.progress && (
+                          <span>
+                            {tr(task.progress.phase)} ·{" "}
+                            {Math.round(task.progress.fraction * 100)}%
+                          </span>
+                        )}
+                        <span>{num(lang, r.gripN, 1)} N</span>
+                        <span>{num(lang, r.spanM * 1000, 1)} mm</span>
+                        <span>{r.tasksCompleted} {tr("tasksDone")}</span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            ))}
-          </section>
+              <div className="row">
+                <button onClick={() => api.faults().then(onApplied)}>{tr("faultAll")}</button>
+                <button onClick={() => {
+                  robots.filter((r) => r.state === "faulted")
+                    .forEach((r) => void api.repair(r.id));
+                  onApplied();
+                }}>{tr("repair")} all</button>
+              </div>
+            </section>
+
+            <section className="card">
+              <h2>{tr("task")}</h2>
+              <div className="task-list">
+                {tasks.map((task) => (
+                  <button key={task.id}
+                          className={`task st-${task.state} ${
+                            focus?.id === task.id ? "on" : ""}`}
+                          onClick={() => setSelectedTask(task.id)}>
+                    <span className="t-id">{task.partId} → {task.binId}</span>
+                    <span className={`pill ${task.state}`}>{tr(task.state)}</span>
+                    <span className="dim">
+                      {task.assignedRobot ?? "—"}
+                      {task.attempts > 1 ? ` · ×${task.attempts}` : ""}
+                    </span>
+                    {task.progress && task.state !== "done" && task.state !== "failed" && (
+                      <span className="t-prog">
+                        <i style={{ width: `${task.progress.fraction * 100}%` }} />
+                      </span>
+                    )}
+                  </button>
+                ))}
+                {tasks.length === 0 && <p className="hint">{tr("noMoves")}</p>}
+              </div>
+              {focus && (
+                <>
+                  <h3>{tr("evidence")}</h3>
+                  <p className="hint small">{tr("evidenceHint")}</p>
+                  <Evidence lang={lang} evidence={focus.evidence} note={focus.note} />
+                </>
+              )}
+            </section>
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* ---------------------------------------------------------- PLAN */}
+      {tab === "plan" && (
+        <div className="two-col">
+          <Planner lang={lang} scene={scene} tasks={tasks}
+                    running={state?.running ?? false}
+                    plan={plan} setPlan={setPlan} onApplied={onApplied} />
+          <div>
+            <CellMap lang={lang} scene={scene} robots={robots} tasks={tasks}
+                     parts={state?.parts ?? []} bins={scene?.bins ?? state?.bins ?? []}
+                     selectedPart={selectedPart}
+                     onPickPart={pickPart}
+                     onPickBin={pickBin}
+                     hoveredBin={hoveredBin} />
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------ COLLAB */}
+      {tab === "collab" && (
+        <div className="two-col">
+          <section className="card">
+            <h2>{tr("collabTitle")}</h2>
+            <p className="hint">{tr("collabHint")}</p>
+            <Timeline lang={lang} events={events} counts={state?.eventCounts ?? {}}
+                      showPhases={showPhases} onTogglePhases={setShowPhases} />
+          </section>
+
+          <div>
+            {metrics && (
+              <section className="card">
+                <h2>{tr("metrics")}</h2>
+                <div className="metrics">
+                  <Metric label={tr("graspSuccess")}
+                          value={`${Math.round(metrics.graspSuccessRate * 100)}%`}
+                          sub={`${metrics.tasksCompleted}/${metrics.attempts} ${tr("attempts").toLowerCase()}`} />
+                  <Metric label={tr("tasksPerMin")}
+                          value={num(lang, metrics.tasksPerSimMinute, 2)} />
+                  <Metric label={tr("reassignments")} value={String(metrics.reassignments)} />
+                  <Metric label={tr("injectedFaults")} value={String(metrics.failuresInjected)} />
+                  <Metric label={tr("meanRise")}
+                          value={`${num(lang, metrics.meanPartRiseMm, 1)} mm`} />
+                  <Metric label={tr("meanGrip")}
+                          value={`${num(lang, metrics.meanGripN, 1)} N`} />
+                  <Metric label={tr("meanError")}
+                          value={`${num(lang, metrics.meanToolErrorMm, 2)} mm`} />
+                  <Metric label={tr("load")}
+                          value={`${metrics.tasksCompleted}/${metrics.tasksTotal}`} />
+                </div>
+
+                {Object.keys(metrics.criteriaPassed).length > 0 && (
+                  <>
+                    <h3>{tr("evidence")}</h3>
+                    <table className="crit-table">
+                      <thead>
+                        <tr><th /><th>✓</th><th>✗</th></tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(metrics.criteriaPassed).map(([k, v]) => (
+                          <tr key={k}>
+                            <td>{tr(CRITERION_LABEL_KEYS[k] ?? k)}</td>
+                            <td className="ok">{v.passed}</td>
+                            <td className={v.failed ? "bad" : "dim"}>{v.failed}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+              </section>
+            )}
+
+            <section className="card">
+              <h2>{tr("load")}</h2>
+              {robots.map((r) => {
+                const busy = r.busyTicks;
+                const idle = r.idleTicks;
+                const total = Math.max(1, busy + idle);
+                return (
+                  <div key={r.id} className="load-row">
+                    <span className="lbl">{r.id}</span>
+                    <div className="stacked">
+                      <div className="s-busy" style={{ width: `${(busy / total) * 100}%` }} />
+                      <div className="s-idle" style={{ width: `${(idle / total) * 100}%` }} />
+                    </div>
+                    <span className="dim">
+                      {Math.round((busy / total) * 100)}% · {r.tasksCompleted} {tr("tasksDone")}
+                    </span>
+                  </div>
+                );
+              })}
+              <div className="legend small">
+                <span><i className="s-busy" /> {tr("busy")}</span>
+                <span><i className="s-idle" /> {tr("idle")}</span>
+              </div>
+            </section>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------ EDITOR */}
+      {tab === "editor" && (
+        <div className="two-col">
+          <section className="card">
+            <h2>{tr("editorTitle")}</h2>
+            <SceneEditor lang={lang} scene={scene} onApplied={onApplied} />
+          </section>
+          <div>
+            <CellMap lang={lang} scene={scene} robots={robots} tasks={tasks}
+                     parts={state?.parts ?? []} bins={scene?.bins ?? state?.bins ?? []}
+                     selectedPart={null}
+                     onPickPart={() => undefined}
+                     onPickBin={() => undefined}
+                     hoveredBin={null} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function Row({ k, v, colour }: { k: string; v: React.ReactNode; colour?: string }) {
+function Row({ k, v }: { k: string; v: string }) {
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
-      <dt style={{ color: "#6b7280" }}>{k}</dt>
-      <dd style={{ margin: 0, fontWeight: 600, color: colour }}>{v}</dd>
+    <div className="kv-row">
+      <dt>{k}</dt>
+      <dd>{v}</dd>
     </div>
   );
 }
 
-const card: React.CSSProperties = {
-  background: "#fff",
-  border: "1px solid #d8dce3",
-  borderRadius: 8,
-  padding: 14,
-  marginBottom: 14,
-};
-
-const h2: React.CSSProperties = { fontSize: 14, margin: "0 0 10px" };
-
-const table: React.CSSProperties = {
-  width: "100%",
-  borderCollapse: "collapse",
-  fontSize: 12,
-};
-
-function btn(primary: boolean): React.CSSProperties {
-  return {
-    padding: "6px 12px",
-    borderRadius: 6,
-    border: "1px solid #c9ced8",
-    background: primary ? "#3d7fd6" : "#fff",
-    color: primary ? "#fff" : "#1f2937",
-    cursor: "pointer",
-    fontSize: 12,
-  };
+function Metric({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="metric">
+      <span className="m-label">{label}</span>
+      <span className="m-value">{value}</span>
+      {sub && <span className="m-sub dim">{sub}</span>}
+    </div>
+  );
 }

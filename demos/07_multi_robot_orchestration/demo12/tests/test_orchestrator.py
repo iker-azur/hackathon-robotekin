@@ -25,11 +25,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from demo12 import grasp as G
 from demo12 import materials as M
 from demo12.config import (BinConfig, MoveTask, PartConfig, RobotConfig, SceneConfig,
                            default_scene)
-from demo12.orchestrator import (CLOSING, DONE, FAILED, MAX_ATTEMPTS,
-                                 MultiRobotOrchestrator, QUEUED, VERIFYING)
+from demo12.orchestrator import (CLOSING, DONE, FAILED, LIFTING, MAX_ATTEMPTS,
+                                 MultiRobotOrchestrator, QUEUED,
+                                 RELEASING, TRANSFERRING, VERIFYING)
 
 
 # ---------------------------------------------------------------------------
@@ -88,14 +90,35 @@ class FakeArm:
 class FakeCell:
     """A cell whose physics is a script.
 
-    ``fail_budget`` maps a task id to how many of its attempts should fail. A succeeding
-    attempt ends with its part resting in the bin, which is exactly what real PhysX
-    produces; a failing one reports no grip force and leaves the part on the table.
+    Three scripted outcomes per task, because three different things can go wrong and the
+    evidence bar is supposed to tell them apart:
+
+    ``succeed``  the pads land on both faces, the part rises with the jaw and is carried
+                 to the tray. Every criterion holds.
+    ``punt``     the documented false grasp: pads shut on a corner, a *large* force reading
+                 (103 N is what ``docs/PHYSICS.md`` section 4 measured), the part shoved
+                 along the axis and dropped where it started. Force passes; span, rise and
+                 carry do not.
+    ``fail``     nothing was picked up. No force, no span, the part stays put.
+
+    An outcome may also be a **list**, consumed one entry per attempt, which is how the
+    retry tests script "fail once, then work". A shorter list than the retry budget repeats
+    its last entry, so ``[False]`` means "never works" without needing padding.
+
+    The distinction between the first two is the whole point. A test suite that only had
+    ``succeed`` and ``fail`` would have passed against the old ``grip_n > 0`` check, because
+    a punt does report force.
     """
 
-    def __init__(self, scene: SceneConfig, outcomes: dict[str, bool]):
+    PUNT_SPAN_M = 0.0406          # measured: pads stall at 40.6 mm on a 30 mm cube
+    PUNT_FORCE_N = 103.0          # measured: the sensor's reading for that punt
+    REAL_FORCE_N = 60.0
+
+    def __init__(self, scene: SceneConfig, outcomes: dict[str, object]):
         self.scene = scene
-        self.fail_budget = {tid: (0 if ok else 10**6) for tid, ok in outcomes.items()}
+        # ``True`` -> succeed, ``False`` -> fail, ``"punt"`` -> the false grasp,
+        # a list -> one entry per attempt.
+        self.outcomes = dict(outcomes)
         self.robots = {r.id: object() for r in scene.robots}
         self.part_cfgs = {p.id: p for p in scene.parts}
         self.bins = {b.id: b for b in scene.bins}
@@ -107,13 +130,29 @@ class FakeCell:
         self.ticks = 0
         self.orch: MultiRobotOrchestrator | None = None
         self._resolved: set[tuple[str, int]] = set()
+        #: What the pads are doing right now, so ``jaw_pad_span_m`` can answer.
+        self._holding: tuple[str, str] | None = None
+        self._punted: set[str] = set()
 
     def bind(self, orch: "MultiRobotOrchestrator") -> None:
         """Let the cell see the orchestrator's runners, so it can settle each outcome."""
         self.orch = orch
 
+    def _outcome(self, task) -> object:
+        scripted = self.outcomes.get(task.id, True)
+        if isinstance(scripted, (list, tuple)):
+            index = min(max(task.attempts - 1, 0), len(scripted) - 1)
+            return scripted[index]
+        return scripted
+
     def _attempt_fails(self, task) -> bool:
-        return task.attempts <= self.fail_budget.get(task.id, 0)
+        """True for the outcomes where no grasp was achieved.
+
+        A punt is *not* counted here: it achieved force, and the point is that force alone
+        is not enough. It has to get past the early check and be rejected on the evidence,
+        or the test proves nothing.
+        """
+        return self._outcome(task) is False
 
     # -- the surface the orchestrator actually uses ----------------------
 
@@ -124,37 +163,73 @@ class FakeCell:
         self.ticks += 1
         if self.orch is None:
             return
-        # The moment a task starts judging its result is where the scripted physics takes
-        # effect: either the part ends up in the bin, or it does not.
+
         for task in list(self.orch.tasks.values()):
             runner = task.runner
-            if runner is None or runner.phase != VERIFYING or runner.tick != 0:
+            if runner is None:
                 continue
-            key = (task.id, task.attempts)
-            if key in self._resolved:
-                continue
-            self._resolved.add(key)
-            if self._attempt_fails(task):
-                continue
-            bin_cfg = self.bins[task.bin_id]
-            part_cfg = self.part_cfgs[task.part_id]
-            self.parts[task.part_id] = FakePartState(
-                bin_cfg.x, bin_cfg.y,
-                bin_cfg.cavity_floor_z_m + part_cfg.size_m[2] / 2.0)
+
+            # Follow the runner through its phases and move the part the way the physics
+            # would, so ``part_rise_m`` and ``part_carried_to_bin`` are read off a part that
+            # actually went somewhere.
+            #
+            # ``_holding`` has to be set as the jaws *close*, not when the lift starts: the
+            # orchestrator reads the squeeze and the pad span during the close, and a fake
+            # that only started reporting a span afterwards would make every grasp look like
+            # it closed on air.
+            if runner.phase == CLOSING and runner.tick == 0:
+                self._holding = (runner.robot_id, task.part_id)
+                if self._outcome(task) == "punt":
+                    self._punted.add(task.part_id)
+
+            if runner.phase == LIFTING and runner.tick == 0:
+                if not self._attempt_fails(task) and self._outcome(task) != "punt":
+                    part = self.parts[task.part_id]
+                    part.z = runner.start_z + G.LIFT_MIN_RISE_M + 0.048
+                elif self._outcome(task) == "punt":
+                    # Shoved along the pad axis, and it stays on the bench.
+                    part = self.parts[task.part_id]
+                    part.x += 0.036
+
+            elif runner.phase == TRANSFERRING and runner.tick == 0:
+                if self._holding == (runner.robot_id, task.part_id) \
+                        and self._outcome(task) not in (False, "punt"):
+                    bin_cfg = self.bins[task.bin_id]
+                    part_cfg = self.part_cfgs[task.part_id]
+                    part = self.parts[task.part_id]
+                    part.x, part.y = bin_cfg.x, bin_cfg.y
+                    part.z = bin_cfg.cavity_floor_z_m + part_cfg.size_m[2] / 2.0 + 0.030
+
+            elif runner.phase == RELEASING and runner.tick == 0:
+                if self._holding == (runner.robot_id, task.part_id):
+                    bin_cfg = self.bins[task.bin_id]
+                    part_cfg = self.part_cfgs[task.part_id]
+                    if self._outcome(task) not in (False, "punt"):
+                        self.parts[task.part_id] = FakePartState(
+                            bin_cfg.x, bin_cfg.y,
+                            bin_cfg.cavity_floor_z_m + part_cfg.size_m[2] / 2.0)
+                    self._holding = None
 
     def part_state(self, part_id):
         return self.parts[part_id]
 
     def grip_force_n(self, robot_id):
-        """Zero if the task being run is scripted to fail, a real squeeze otherwise."""
-        if self.orch is not None:
-            for task in self.orch.tasks.values():
-                if task.runner is not None and task.runner.robot_id == robot_id:
-                    return 0.0 if self._attempt_fails(task) else 60.0
+        """The scripted force for whoever is holding something right now."""
+        if self._holding is not None and self._holding[0] == robot_id:
+            part_id = self._holding[1]
+            if part_id in self._punted:
+                return self.PUNT_FORCE_N
+            return self.REAL_FORCE_N
         return 0.0
 
     def jaw_pad_span_m(self, robot_id):
-        return 0.030
+        """Pad separation. On a real grasp this is the part's own width, not a free number."""
+        if self._holding is not None and self._holding[0] == robot_id:
+            part_id = self._holding[1]
+            if part_id in self._punted:
+                return self.PUNT_SPAN_M
+            return self.part_cfgs[part_id].grasp_width_m
+        return 0.048
 
     # -- roster changes -------------------------------------------------
     #
@@ -194,7 +269,7 @@ def _run(orch: MultiRobotOrchestrator, max_ticks: int = 40_000) -> int:
 
 
 def test_one_robot_takes_one_task():
-    scene = _scene_with(1, ["part_1"])
+    scene = _scene_with(2, ["part_1"])
     cell = FakeCell(scene, {"task_1": True})
     orch = _make(scene, cell)
 
@@ -240,7 +315,7 @@ def test_no_task_is_left_unassigned():
 
 def test_failed_task_does_not_report_success():
     """A task whose part never arrives must not be counted as done."""
-    scene = _scene_with(1, ["part_1"])
+    scene = _scene_with(2, ["part_1"])
     cell = FakeCell(scene, {"task_1": False})
     orch = _make(scene, cell)
 
@@ -256,7 +331,7 @@ def test_failed_task_does_not_report_success():
 
 def test_queued_work_counts_as_outstanding():
     """A task nobody has started yet is outstanding: the run must not stop on it."""
-    scene = _scene_with(1, ["part_1"])
+    scene = _scene_with(2, ["part_1"])
     cell = FakeCell(scene, {"task_1": True})
     orch = _make(scene, cell)
 
@@ -266,7 +341,7 @@ def test_queued_work_counts_as_outstanding():
 
 def test_empty_mission_is_not_complete():
     """Zero tasks is not success. Otherwise a misconfigured scene looks like a pass."""
-    scene = default_scene(1)
+    scene = default_scene(2)
     cell = FakeCell(scene, {})
     orch = _make(scene, cell)
 
@@ -279,7 +354,7 @@ def test_empty_mission_is_not_complete():
 
 
 def test_failed_grasp_is_retried_up_to_the_limit():
-    scene = _scene_with(1, ["part_1"])
+    scene = _scene_with(2, ["part_1"])
     cell = FakeCell(scene, {"task_1": False})
     orch = _make(scene, cell)
 
@@ -291,7 +366,78 @@ def test_failed_grasp_is_retried_up_to_the_limit():
     # The note has to say how many attempts were spent, or a task that used the whole
     # retry budget is indistinguishable from one that failed once.
     assert f"after {MAX_ATTEMPTS} attempts" in task.note
-    assert "no grip force" in task.note
+    # The note names what the evidence actually said. It used to be able to say only
+    # "no grip force", because force was the only thing it looked at.
+    assert "not carried" in task.note or "did not end" in task.note
+
+
+def test_a_punt_is_rejected_even_though_it_reports_a_large_force():
+    """The 103 N false grasp must not pass as a completed pick.
+
+    This is the case ``docs/PHYSICS.md`` section 4 measured: the pads met one face 18.3 mm
+    away and the other 26.3 mm away, stalled at 40.6 mm on a 30 mm cube, shoved the part
+    36 mm along the axis -- and the contact sensors reported 103 N.
+
+    Under the old rule (``grip_n > 0``) that was a completed task. It is now rejected three
+    times over: the span is not the part's width, the part never rose, and it was never
+    carried to the destination. Asserting on all three is deliberate -- if one criterion is
+    later relaxed, the other two must still hold the line.
+    """
+    scene = _scene_with(2, ["part_1"])
+    cell = FakeCell(scene, {"task_1": "punt"})
+    orch = _make(scene, cell)
+
+    _run(orch)
+
+    task = orch.tasks["task_1"]
+    assert task.state == FAILED, "a punt reported as a completed pick"
+    assert task.attempts == MAX_ATTEMPTS
+
+    evidence = task.evidence
+    assert evidence is not None
+    assert evidence.measurements["gripForceN"] == cell.PUNT_FORCE_N
+    assert evidence.criteria["grip"], "the punt's force should still clear the friction cone"
+    for criterion in ("pads_on_faces", "part_rose", "carried"):
+        assert not evidence.criteria[criterion], f"{criterion} should have caught the punt"
+
+
+def test_a_grasp_too_weak_for_the_friction_cone_is_rejected():
+    """Force above zero is not enough; it has to hold the part's weight.
+
+    A 2.9 g ball needs about 0.03 N. A squeeze of 0.002 N closes the pads on nothing and
+    used to satisfy ``grip_n > 0``.
+    """
+    scene = _scene_with(2, ["part_4"])
+    cell = FakeCell(scene, {"task_1": True})
+    cell.REAL_FORCE_N = 0.002
+    orch = _make(scene, cell)
+
+    _run(orch)
+
+    task = orch.tasks["task_1"]
+    assert task.state == FAILED
+    assert task.evidence is not None
+    assert not task.evidence.criteria["grip"]
+
+
+def test_a_completed_task_carries_its_evidence():
+    """A done task records what proved it, so the claim is checkable after the fact."""
+    scene = _scene_with(2, ["part_1"])
+    cell = FakeCell(scene, {"task_1": True})
+    orch = _make(scene, cell)
+
+    _run(orch)
+
+    task = orch.tasks["task_1"]
+    assert task.state == DONE
+    evidence = task.evidence
+    assert evidence is not None and evidence.ok
+    assert all(evidence.criteria.values())
+    assert len(task.history) == 1
+    assert task.history[0]["ok"] is True
+    # The friction margin, reported so a pass can be judged comfortable or marginal.
+    assert evidence.measurements["gripMargin"] is not None
+    assert evidence.measurements["gripMargin"] > 1.0
 
 
 def test_retry_succeeds_when_the_second_attempt_works():
@@ -300,15 +446,17 @@ def test_retry_succeeds_when_the_second_attempt_works():
     The retry budget exists so a transient failure does not write off a task, so this is
     the case that gives the budget its meaning.
     """
-    scene = _scene_with(1, ["part_1"])
-    cell = FakeCell(scene, {"task_1": True})
-    cell.fail_budget["task_1"] = 1          # fail the first attempt only
+    scene = _scene_with(2, ["part_1"])
+    cell = FakeCell(scene, {"task_1": [False, True]})   # fail once, then work
     orch = _make(scene, cell)
 
     _run(orch)
 
     assert orch.tasks["task_1"].attempts == 2
     assert orch.all_tasks_completed()
+    assert len(orch.tasks["task_1"].history) == 2
+    assert orch.tasks["task_1"].history[0]["ok"] is False
+    assert orch.tasks["task_1"].history[1]["ok"] is True
 
 
 def test_faulted_robot_releases_its_task_and_it_is_retaken():
@@ -367,7 +515,7 @@ def test_faulted_robot_is_not_given_more_work():
 
 
 def test_faulting_an_unknown_robot_is_reported_not_raised():
-    scene = _scene_with(1, ["part_1"])
+    scene = _scene_with(2, ["part_1"])
     cell = FakeCell(scene, {"task_1": True})
     orch = _make(scene, cell)
 
@@ -384,31 +532,31 @@ def test_faulting_an_unknown_robot_is_reported_not_raised():
 
 def test_remove_robot_refuses_the_last_one_first():
     """The cheap check still applies even though removal itself refuses."""
-    scene = _scene_with(1, ["part_1"])
+    scene = _scene_with(2, ["part_1"])
     cell = FakeCell(scene, {"task_1": True})
     orch = _make(scene, cell)
 
     result = orch.remove_robot("robot_1")
 
     assert result["ok"] is False
-    assert "last robot" in result["reason"]
+    assert "rebuild" in result["reason"]
     assert "robot_1" in orch.robots
 
 
 def test_cannot_remove_the_last_robot():
-    scene = _scene_with(1, ["part_1"])
+    scene = _scene_with(2, ["part_1"])
     cell = FakeCell(scene, {"task_1": True})
     orch = _make(scene, cell)
 
     result = orch.remove_robot("robot_1")
 
     assert result["ok"] is False
-    assert "last robot" in result["reason"]
+    assert "rebuild" in result["reason"]
     assert "robot_1" in orch.robots
 
 
 def test_add_robot_refuses_a_duplicate_id():
-    scene = _scene_with(1, ["part_1"])
+    scene = _scene_with(2, ["part_1"])
     cell = FakeCell(scene, {"task_1": True})
     orch = _make(scene, cell)
 
@@ -425,16 +573,18 @@ def test_add_robot_refuses_rather_than_faking_it():
     orchestrator refuses. A method returning ``{"ok": true}`` for a robot that was never
     spawned would put a phantom in the interface -- worse than refusing.
     """
-    scene = _scene_with(1, ["part_1"])
+    scene = _scene_with(2, ["part_1"])
     cell = FakeCell(scene, {"task_1": True})
     orch = _make(scene, cell)
 
-    result = orch.add_robot(RobotConfig(id="robot_2"))
+    # An id that is not already in the roster, so the refusal is about the rebuild rather
+    # than about a duplicate.
+    result = orch.add_robot(RobotConfig(id="robot_9"))
 
     assert result["ok"] is False
     assert "hangs" in result["reason"]
     assert "--robots" in result["reason"], "must point at the way that does work"
-    assert "robot_2" not in orch.robots
+    assert "robot_9" not in orch.robots, "a refused robot must not appear in the roster"
 
 
 def test_remove_robot_refuses_with_the_same_reason():
@@ -455,7 +605,7 @@ def test_release_for_relaunch_requeues_in_flight_work():
     The parts respawn at their configured positions, so a task mid-flight is no longer true
     and has to be requeued rather than resumed.
     """
-    scene = _scene_with(1, ["part_1", "part_2"])
+    scene = _scene_with(2, ["part_1", "part_2"])
     cell = FakeCell(scene, {"task_1": True, "task_2": True})
     orch = _make(scene, cell)
 
@@ -482,7 +632,7 @@ def test_release_for_relaunch_requeues_in_flight_work():
 
 
 def test_submit_order_adds_tasks():
-    scene = _scene_with(1, [])
+    scene = _scene_with(2, [])
     cell = FakeCell(scene, {})
     orch = _make(scene, cell)
 
@@ -501,7 +651,7 @@ def test_submit_order_adds_tasks():
 
 def test_failed_task_is_not_retried_forever():
     """The retry budget has to actually bound the work."""
-    scene = _scene_with(1, ["part_1"])
+    scene = _scene_with(2, ["part_1"])
     cell = FakeCell(scene, {"task_1": False})
     orch = _make(scene, cell)
 
@@ -517,24 +667,49 @@ def test_failed_task_is_not_retried_forever():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("robot_count", [1, 2, 3])
+@pytest.mark.parametrize("robot_count", [2, 3])
 def test_default_scenes_validate(robot_count):
     scene = default_scene(robot_count)
     scene.validate()
     assert len(scene.robots) >= robot_count
 
 
-@pytest.mark.parametrize("robot_count", [1, 2, 3])
-def test_default_scene_parts_are_within_reach_of_every_enabled_robot(robot_count):
+@pytest.mark.parametrize("robot_count", [2, 3])
+def test_default_scene_parts_are_within_the_measured_working_radius(robot_count):
+    """Every part is within what the *arm* can do, of at least one enabled robot.
+
+    This used to assert that every part was inside every robot's geometric envelope, which
+    is both impossible for a three-arm cell (the intersection of the annuli at the part row
+    is empty) and not the requirement: ``validate`` asks that some arm can reach each part,
+    and the planner excludes arms that cannot reach a given part.
+    """
+    from demo12.config import ROBOT_BASE_Y, WORKING_RADIUS_M
+
     scene = default_scene(robot_count)
     for part in scene.parts:
-        for robot in scene.enabled_robots:
-            assert robot.reach.contains((part.x, part.y)), (
-                f"{part.id} at ({part.x}, {part.y}) is out of reach of {robot.id}")
+        reachable = any(
+            math.hypot(part.x - r.base_xy[0], part.y - ROBOT_BASE_Y) <= WORKING_RADIUS_M
+            for r in scene.enabled_robots)
+        assert reachable, (
+            f"{part.id} at ({part.x}, {part.y}) is outside the "
+            f"{WORKING_RADIUS_M * 1000:.0f} mm every arm can work at")
+
+
+@pytest.mark.parametrize("robot_count", [2, 3])
+def test_every_part_has_an_arm_that_can_actually_pick_it(robot_count):
+    """Envelope membership is necessary but not sufficient; this is the real condition."""
+    from demo12.config import ROBOT_BASE_Y, WORKING_RADIUS_M
+
+    scene = default_scene(robot_count)
+    for part in scene.parts:
+        candidates = [r.id for r in scene.enabled_robots
+                      if math.hypot(part.x - r.base_xy[0], part.y - ROBOT_BASE_Y)
+                      <= WORKING_RADIUS_M]
+        assert candidates, f"no arm can pick {part.id}"
 
 
 def test_parts_do_not_start_inside_a_bin():
-    for robot_count in (1, 2, 3):
+    for robot_count in (2, 3):
         scene = default_scene(robot_count)
         for part in scene.parts:
             for bin_cfg in scene.bins:
@@ -543,7 +718,7 @@ def test_parts_do_not_start_inside_a_bin():
 
 
 def test_every_mission_task_refers_to_a_real_part_and_bin():
-    for robot_count in (1, 2, 3):
+    for robot_count in (2, 3):
         scene = default_scene(robot_count)
         part_ids = {p.id for p in scene.parts}
         bin_ids = {b.id for b in scene.bins}

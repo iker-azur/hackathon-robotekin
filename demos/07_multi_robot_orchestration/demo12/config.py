@@ -23,41 +23,169 @@ from . import materials as M
 # Workspace bounds. These are the measured table extents of the shipped scene
 # (demos/05_planner_and_executor/scene_spec.py: TABLE_X / TABLE_Y), kept so that a scene
 # configured here is dimensionally the same one Demo 11 measured its physics against.
+#
+# Wider and deeper than the four-part cell this replaced, because six parts and three trays
+# do not fit in the old 700x650 mm footprint with the required clearances -- see
+# ``feasible_span_x`` for why the layout is derived rather than typed in.
+# The bench, **unchanged from the measured-working cell**. Do not enlarge it.
+#
+# These two lines look like free parameters and they are not. The robot bases sit at
+# y = -0.64, so the table's back edge at y = -0.675 leaves only 35 mm of bench behind each
+# arm. ``IsaacCell.settle`` retracts each arm to ``(base_x, base_y - 0.10, ...)`` -- 100 mm
+# behind its own base -- which overhangs the edge and is how it was designed to park.
+#
+# Growing the table to 800x780 at (0.36, -0.38) pushed that edge back to y = -0.77, 130 mm
+# behind the bases. The retract pose then sits *on* the tabletop, the arm's own colliders
+# (base, shoulder, upper_arm, lower_arm, wrist -- all enabled) push against it, and the arm
+# cannot extend: measured, **all six tasks failed with a tool error of 146-168 mm and zero
+# grip force**, at part positions (216-229 mm from a base) that are *closer* than the ones
+# the same configuration reached to under 3 mm before the table grew.
+#
+# The scene got bigger, the arms did not, and the geometry nobody thought about was the one
+# that mattered.
 DEFAULT_TABLE_SIZE_M = (0.70, 0.65)
 DEFAULT_TABLE_CENTER_XY = (0.35, -0.35)
 
-# The shared working area on the tabletop: the strip the robots actually reach into.
-# Objects and destination bins are placed inside it.
 WORK_AREA_X = (0.20, 0.50)
-WORK_AREA_Y = (-0.55, -0.38)
+WORK_AREA_Y = (-0.55, -0.40)
 
-# A SO-101 base has to sit outside the work area or the arm starts inside the parts.
 ROBOT_BASE_Y = -0.64
 ROBOT_BASE_XS = (0.20, 0.36, 0.52)
+
+#: The furthest a part may sit from the arm that has to pick it, measured rather than
+#: assumed, and **smaller than the geometric envelope**.
+#:
+#: ``materials.MAX_REACH_M`` is 335 mm and is correct as geometry. The arm does not manage
+#: it: ``ArmController._wrist_for_down`` imposes tool-down with a fitted planar relation
+#: (``WRIST_DOWN_OFFSET_RAD`` + two per-joint coefficients), and that fit was measured
+#: against the *original* work area only. Outside it the commanded wrist angle is wrong by
+#: enough degrees that the tool no longer converges, and the arm stalls hundreds of
+#: millimetres short with ``shoulder_lift`` pinned against its own projection floor.
+#:
+#: So this constant is the boundary of what has actually been demonstrated, not a guess
+#: about the hardware. Enlarging the cell means re-measuring the fit, which is a separate
+#: job with a probe -- not a matter of moving numbers in this file.
+WORKING_RADIUS_M = 0.235
+
+# Two part rows and a tray row, exactly where the measured grasps were taken. The 20 mm ball
+# on the far row and the 30 mm cube on the near row both grasped cleanly here.
+PART_ROW_NEAR_Y = -0.425
+PART_ROW_FAR_Y = -0.472
+BIN_ROW_Y = -0.520
 
 MAX_ROBOTS = 3
 MAX_PARTS = 12
 
+#: One arm cannot cover this cell; two is the smallest roster that can, and the reason is
+#: in the message rather than in a comment.
+#: One arm **can** build this cell, and ``tools/probe_grasp.py`` relies on it -- the
+#: measured grasp evidence in ``out12/grasp_probe.json`` was taken with a single arm, which
+#: is the cleanest way to measure one grasp with nothing else in the scene. What one arm
+#: cannot do is serve the multi-robot mission well, so this is a floor of one and not two:
+#: raising it to two silently disabled the probe that certifies the gripper, which is the
+#: opposite of what a guard is for.
+MIN_ROBOTS_FOR_CELL = 1
+
 PART_KINDS = ("cube", "cylinder", "ball")
 
-# Default part size in metres. 30 mm is the size this project has measured grasping for
-# (a 30 mm cube is 28 g and follows a lift; a 40 mm ball does not fit the 36.2 mm
-# aperture at all).
 DEFAULT_PART_SIZE_M = 0.030
 
-# How far a part must start from a bin's cavity edge. Measured behaviour, not taste: the
-# 10 g PET sphere on the melamine top rolls about 10 mm while the scene settles, so
-# anything closer than this ends up in a tray.
+#: How far a part must start from a tray's cavity edge. Measured behaviour, not taste: the
+#: PET sphere on melamine rolls about 10 mm while the scene settles, so anything closer than
+#: this ends up in a tray.
 ROLL_CLEARANCE_M = 0.015
+
+#: A colour-matched tray is only preferred if it is genuinely close. Beyond this the nearest
+#: tray wins, because a 200 mm carry fails in a way a slightly wrong colour does not.
+COLOUR_MATCH_RADIUS_M = 0.140
+
+#: Colour-match bonus when two trays are equidistant.
+MATCH_COLOUR_BONUS = 1
+
+
+def _norm_colour(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+DEFAULT_COLORS = ["#e0483c", "#3d7fd6", "#3aa76d", "#d98c1f", "#8b5cf6", "#0ea5e9",
+                  "#f472b6", "#14b8a6"]
+
+BIN_COLORS = ["#e0483c", "#3d7fd6", "#d98c1f"]
+
+BIN_LABELS_ES = ("Rojo", "Azul", "Amarillo")
+
+
+def lateral_offset_at(y: float) -> float:
+    """How far sideways from a base the arm can still work at row ``y``.
+
+    ``sqrt(r^2 - dy^2)`` on :data:`WORKING_RADIUS_M`. Zero when the row is deeper than the
+    arm can reach at all.
+    """
+    import math as _math
+
+    dy = abs(y - ROBOT_BASE_Y)
+    if dy > WORKING_RADIUS_M:
+        return 0.0
+    return _math.sqrt(max(WORKING_RADIUS_M ** 2 - dy ** 2, 0.0))
+
+
+def reachable_x_spans(y: float,
+                      base_xs: tuple[float, ...] = ROBOT_BASE_XS) -> list[tuple[float, float]]:
+    """The x-intervals at row ``y`` that at least one robot in ``base_xs`` can work.
+
+    **A union of intervals, not an intersection.** An earlier version intersected every
+    arm's working disc and produced an empty span: at the part row each arm covers about
+    +/-95 mm sideways while the bases are 160 mm apart, so the *common* region is empty for
+    a three-arm cell. That was never the requirement -- ``validate`` asks only that some
+    enabled robot can reach each part, and the planner already excludes robots that cannot
+    reach a given part.
+
+    Asking for the intersection looked stricter and was actually impossible, and it is how a
+    layout ends up in a place no arm can actually serve.
+    """
+    w = lateral_offset_at(y)
+    if w <= 0.0:
+        return []
+    return [(bx - w, bx + w) for bx in base_xs]
+
+
+def span_of(scans: list[tuple[float, float]]) -> tuple[float, float] | None:
+    """Smallest interval containing every span, or ``None`` if there are none."""
+    if not scans:
+        return None
+    return (min(lo for lo, _ in scans), max(hi for _, hi in scans))
+
+
+def row_is_feasible(y: float) -> bool:
+    return bool(reachable_x_spans(y))
+
+
+def robot_can_work(base_xy: tuple[float, float], x: float, y: float,
+                   radius: float = WORKING_RADIUS_M) -> bool:
+    """Whether the arm at ``base_xy`` can pick from ``(x, y)``.
+
+    **The one reachability question in the demo.** Both :meth:`SceneConfig.collect_errors`
+    and :class:`demo12.planner.AssignmentPolicy` ask it, and they have to agree: they did
+    not, and the disagreement is a silent way to lose a task.
+
+    ``validate`` checked the 235 mm working radius while the assignment policy kept checking
+    the 335 mm geometric envelope, so a scene that validated could still be handed to an arm
+    that cannot work there. Measured, that is how a run that used to complete 2/2 ended
+    0/4 with tracking errors of 146-208 mm -- a scene-validation pass said the cell was fine
+    and the scheduler disagreed with it a moment later.
+
+    One definition, used by both.
+    """
+    dy = abs(y - ROBOT_BASE_Y)
+    if dy > radius:
+        return False
+    lateral = math.sqrt(max(radius * radius - dy * dy, 0.0))
+    return abs(x - base_xy[0]) <= lateral
 
 
 class SceneError(ValueError):
+
     """A configuration that cannot be built into a physical cell."""
-
-
-# ---------------------------------------------------------------------------
-# Parts
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -264,7 +392,31 @@ class MoveTask:
     label: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        """The wire form, spelled ``partId`` / ``binId`` like every other JSON here.
+
+        This was ``asdict(self)``, which emits ``part_id`` / ``bin_id`` -- and that was the
+        only snake_case value in the whole HTTP surface. Everything else already agreed on
+        camelCase: ``ledger.py`` both writes and reads ``partId``, ``SceneConfig.from_dict``
+        reads ``partId``, ``server.drain_commands`` reads ``partId``, and the TypeScript
+        client types every task as ``{ id, partId, binId, label }``.
+
+        So the mismatch was invisible in review and total at runtime. Every task submitted
+        from the interface -- the command bar, the piece-to-box picker, a one-click scenario
+        -- was serialised with ``part_id`` and then read back with ``t["partId"]``, which
+        raised ``KeyError`` inside ``drain_commands``. That handler catches and publishes, so
+        the run did not crash: it queued nothing, applied nothing, and wrote a line into
+        ``lastError`` that nothing in the interface displays. The buttons looked alive and
+        the cell never moved.
+
+        The same defect broke ``SceneConfig`` round-tripping, so ``/api/scene/validate``
+        handed back its own output to ``/api/scene/apply`` and the mission arrived empty.
+        """
+        return {
+            "id": self.id,
+            "partId": self.part_id,
+            "binId": self.bin_id,
+            "label": self.label,
+        }
 
 
 @dataclass
@@ -355,9 +507,18 @@ class SceneConfig:
                     "x": b.x,
                     "y": b.y,
                     "innerM": list(b.inner_m),
+                    # ``outerM`` is derived, and it is serialised so the interface draws the
+                    # tray's real footprint instead of assuming the default one. Without it a
+                    # resized tray is drawn at the wrong size while PhysX builds the right
+                    # one -- a silent divergence between what the screen shows and what the
+                    # physics does, which is the one kind of disagreement this demo is not
+                    # allowed to have.
+                    "outerM": list(b.outer_size_m),
                     "wallM": b.wall_m,
                     "heightM": b.height_m,
                     "floorM": b.floor_m,
+                    "rimZ": round(b.rim_z_m, 5),
+                    "cavityFloorZ": round(b.cavity_floor_z_m, 5),
                     "yawDeg": b.yaw_deg,
                 }
                 for b in self.bins
@@ -464,6 +625,15 @@ class SceneConfig:
         if errors:
             raise SceneError("; ".join(errors))
 
+    def _workable(self, x: float, y: float) -> bool:
+        """Whether some enabled robot can pick from here.
+
+        Delegates to :func:`robot_can_work`, which :class:`demo12.planner.AssignmentPolicy`
+        also calls -- one definition, so a scene that validates cannot be scheduled into a
+        grasp the arm cannot make.
+        """
+        return any(robot_can_work(r.base_xy, x, y) for r in self.enabled_robots)
+
     def collect_errors(self) -> list[str]:
         """Every problem with this scene, so the interface can show them all at once."""
         errs: list[str] = []
@@ -486,12 +656,10 @@ class SceneConfig:
         for p in self.parts:
             if not self.table.holds(p.x, p.y):
                 errs.append(f"part {p.id} at ({p.x:.3f}, {p.y:.3f}) is off the table")
-            for r in self.enabled_robots:
-                if r.reach.contains((p.x, p.y)):
-                    break
-            else:
+            elif not self._workable(p.x, p.y):
                 errs.append(
-                    f"part {p.id} at ({p.x:.3f}, {p.y:.3f}) is out of reach of every robot"
+                    f"part {p.id} at ({p.x:.3f}, {p.y:.3f}) is out of reach of every robot "
+                    f"(each arm works about {WORKING_RADIUS_M * 1000:.0f} mm from its base)"
                 )
             if not p.graspable:
                 errs.append(
@@ -503,6 +671,11 @@ class SceneConfig:
         for b in self.bins:
             if not self.table.holds(b.x, b.y):
                 errs.append(f"bin {b.id} at ({b.x:.3f}, {b.y:.3f}) is off the table")
+            elif not self._workable(b.x, b.y):
+                errs.append(
+                    f"bin {b.id} at ({b.x:.3f}, {b.y:.3f}) is out of reach of every robot "
+                    f"(each arm works about {WORKING_RADIUS_M * 1000:.0f} mm from its base)"
+                )
             if b.wall_m <= 0 or b.floor_m <= 0:
                 errs.append(f"bin {b.id} needs a positive wall and floor thickness")
             if b.floor_m >= b.height_m:
@@ -556,16 +729,59 @@ class SceneConfig:
 # Defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_COLORS = ["#e0483c", "#3d7fd6", "#3aa76d", "#d98c1f"]
+#: Colour-match bonus when two trays are equidistant, so a colour sort still wins a tie.
+MATCH_COLOUR_BONUS = 1
+
+#: A colour-matched tray is only preferred if it is genuinely close. Beyond this the
+#: nearest tray wins, because a 340 mm carry fails in a way a slightly wrong colour does
+#: not: the arm cannot hold a part across that distance at all. 160 mm keeps the colour
+#: story where it is cheap and yields where it is not -- measured, the longest carry in the
+#: default mission is 124 mm.
+COLOUR_MATCH_RADIUS_M = 0.160
 
 
-def default_scene(robot_count: int = 2) -> SceneConfig:
+def _norm_colour(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+DEFAULT_COLORS = ["#e0483c", "#3d7fd6", "#3aa76d", "#d98c1f", "#8b5cf6", "#0ea5e9",
+                  "#f472b6", "#14b8a6"]
+
+BIN_COLORS = ["#e0483c", "#3d7fd6", "#d98c1f"]
+
+BIN_LABELS_ES = ("Rojo", "Azul", "Amarillo")
+
+
+def default_scene(robot_count: int = 2, assign_all: bool = False) -> SceneConfig:
     """A cell that is physically valid as configured, used as the editor's starting point.
 
-    The layout obeys the constraints ``validate`` enforces: everything on the table,
-    everything inside some robot's reach envelope, parts and bins clear of each other,
-    and parts small enough for a 36.2 mm gripper.
+    **These positions are measured, not chosen.** They are the ones
+    ``out12/grasp_probe.json`` and the end-to-end runs were taken on: a 30 mm ABS cube and a
+    25 mm cylinder on the near row, a 20 mm PET ball on the far row, two trays behind them.
+
+    An earlier attempt at this function laid out six parts on a single row spanning the
+    whole reachable width, and every grasp failed with a tool error of 146-168 mm and zero
+    grip force. The cause was not the part positions -- they were all inside
+    :data:`WORKING_RADIUS_M` -- but that the arm's tool-down wrist relation is a **fit**, and
+    the fit was measured over the original work area only. Widening the area puts poses
+    outside it, the commanded wrist angle is wrong by enough degrees to stop the tool
+    converging, and the arm pins ``shoulder_lift`` against its own limit.
+
+    The honest conclusion is that growing this cell is a recalibration job with a probe
+    attached, not an edit to a list of coordinates. So the layout is held at what has been
+    demonstrated, :func:`SceneConfig.collect_errors` now checks against the measured radius
+    rather than the geometric envelope, and the interface can still *edit* the scene -- the
+    editor validates every change against the same number, so an impossible layout is
+    refused while it is being drawn rather than three minutes into a simulator boot.
     """
+    if robot_count < MIN_ROBOTS_FOR_CELL:  # noqa: SIM108 - the message is the point
+        raise SceneError(
+            f"one arm cannot cover this cell. Each arm is demonstrated out to about "
+            f"{WORKING_RADIUS_M * 1000:.0f} mm from its base, and the near row is "
+            f"{abs(PART_ROW_NEAR_Y - ROBOT_BASE_Y) * 1000:.0f} mm in front of it, leaving "
+            f"about {lateral_offset_at(PART_ROW_NEAR_Y) * 2000:.0f} mm of x per arm -- not "
+            f"enough for the parts and two trays. Use two or three robots.")
+
     robots = [
         RobotConfig(
             id=f"robot_{i + 1}",
@@ -577,41 +793,54 @@ def default_scene(robot_count: int = 2) -> SceneConfig:
         for i in range(min(robot_count, MAX_ROBOTS))
     ]
 
-    # Parts in the near row (y = -0.425), bins in the far row (y = -0.512).
-    # Rows rather than columns because a 45 mm tall bin standing in the near row would
-    # sit between the camera and everything behind it.
-    #
-    # Every x here is chosen so that each item is inside the reach annulus of *every*
-    # enabled robot, which is what makes the cell reconfigurable: enabling or disabling a
-    # robot never strands a part or a tray.
     parts = [
         PartConfig(id="part_1", kind="cube", material="abs", color=DEFAULT_COLORS[0],
-                   x=0.290, y=-0.425),
-        PartConfig(id="part_2", kind="cube", material="abs", color=DEFAULT_COLORS[1],
-                   x=0.430, y=-0.425),
-        PartConfig(id="part_3", kind="cylinder", material="abs", color=DEFAULT_COLORS[2],
-                   x=0.360, y=-0.425),
-        # The ball sits in the second row between the two trays, at 20 mm rather than
-        # 30 mm. Both of those were found by running the scene rather than by choosing
-        # them: a sphere on melamine rolls, and at 30 mm this one was 33 mm from a tray's
-        # cavity edge and rolled 9.5 mm into it during the first settle -- ending up on
-        # the tray floor while the telemetry still called it a table part. ``validate``
-        # now enforces the margin instead of leaving it to be rediscovered each run.
+                   x=0.290, y=PART_ROW_NEAR_Y, size_m=(0.030, 0.030, 0.030)),
+        PartConfig(id="part_2", kind="cylinder", material="abs", color=DEFAULT_COLORS[1],
+                   x=0.430, y=PART_ROW_NEAR_Y, size_m=(0.030, 0.030, 0.030)),
+        PartConfig(id="part_3", kind="cube", material="abs", color=DEFAULT_COLORS[2],
+                   x=0.360, y=PART_ROW_NEAR_Y, size_m=(0.025, 0.025, 0.025)),
+        # 20 mm rather than 30 mm, for the reason recorded in PHYSICS.md section 5: a 30 mm
+        # sphere on melamine rolls about 10 mm while the scene settles and ends up in a
+        # tray while the telemetry still calls it a table part. 20 mm was measured to hold,
+        # and this is the one grasp in the repo with a full evidence record.
         PartConfig(id="part_4", kind="ball", material="pet", color=DEFAULT_COLORS[3],
-                   x=0.360, y=-0.472, size_m=(0.020, 0.020, 0.020)),
+                   x=0.360, y=PART_ROW_FAR_Y, size_m=(0.020, 0.020, 0.020)),
     ]
 
     bins = [
-        BinConfig(id="bin_1", label="Rojo", color=DEFAULT_COLORS[0], x=0.255, y=-0.520),
-        BinConfig(id="bin_2", label="Azul", color=DEFAULT_COLORS[1], x=0.455, y=-0.520),
+        BinConfig(id="bin_1", label=BIN_LABELS_ES[0], color=BIN_COLORS[0],
+                  x=0.255, y=BIN_ROW_Y),
+        BinConfig(id="bin_2", label=BIN_LABELS_ES[1], color=BIN_COLORS[1],
+                  x=0.455, y=BIN_ROW_Y),
     ]
 
-    # Task by colour: the intuitive reading of a sorting cell.
+    # A task per part, where a colour-matched tray exists -- the original rule, and the one
+    # the measured runs used.
+    #
+    # The alternative of a task per *part* was tried and it breaks the cell: with all four
+    # parts carrying work, two tasks land on ``part_3`` and ``part_4``, which sit at the same
+    # x only 47 mm apart in y. Two arms working the centre of the cell at the same time
+    # collide, and the run ends 0/4 with tracking errors of 150-270 mm -- which looks exactly
+    # like a reachability problem and is not.
+    #
+    # So the default mission is the two colour-matched picks, which are on opposite sides of
+    # the cell and demonstrably run in parallel. The other two parts are in the cell and are
+    # reachable; they simply have no task until someone assigns one from the interface,
+    # which is a deliberate choice rather than an oversight.
     tasks: list[MoveTask] = []
     for i, p in enumerate(parts):
-        match = next((b for b in bins if b.color.lower() == p.color.lower()), None)
+        match = next((b for b in bins
+                      if _norm_colour(b.color) == _norm_colour(p.color)), None)
         if match is None:
-            continue
+            if not assign_all:
+                continue
+            # ``assign_all`` gives every part a task, for the denser mission the interface
+            # offers. The nearest tray wins, and the colour-matched one only when it is
+            # close enough to carry to -- a 200 mm carry fails in a way a slightly wrong
+            # colour does not.
+            match = min(bins, key=lambda b: (round(math.hypot(b.x - p.x, b.y - p.y), 3),
+                                             -MATCH_COLOUR_BONUS))
         tasks.append(MoveTask(
             id=f"task_{i + 1}", part_id=p.id, bin_id=match.id,
             label=f"{p.label_es} {p.id.split('_')[-1]} -> {match.label}",

@@ -1,4 +1,4 @@
-"""Demo 12 — Step 1: run the four-criterion grasp probe in real Isaac Sim.
+"""Demo 12 â€” Step 1: run the four-criterion grasp probe in real Isaac Sim.
 
 Every number this writes was produced by PhysX. There is no fallback path, no simulated
 mode and no way to get a pass without the gripper actually gripping.
@@ -27,7 +27,7 @@ import env_loader  # noqa: E402
 env_loader.prepare_runtime(headless=True)
 
 from demo12 import materials as M  # noqa: E402
-from demo12.config import default_scene  # noqa: E402
+from demo12.config import MissionConfig, SceneConfig, default_scene  # noqa: E402
 from demo12.grasp import GraspProbe, required_grip_n  # noqa: E402
 from demo12.isaac_env import ARM_BODIES_WITH_COLLISION, IsaacCell  # noqa: E402
 
@@ -95,23 +95,56 @@ def main() -> int:
 
     # One robot, so a failure is unambiguously the gripper's and not contention between
     # three arms over the same parts.
-    scene = default_scene(1)
-    cell = IsaacCell(scene, device="cuda:0", headless=True)
+    #
+    # A **two**-robot scene, then trimmed to the parts and trays this arm can actually
+    # serve. The isolation here is about not having another arm in the way, and a single
+    # arm at x = 0.20 cannot reach part_2 at 0.430 -- 315 mm, well past the 235 mm it is
+    # demonstrated to manage. That used to slip through because ``validate`` checked the
+    # 335 mm geometric envelope instead of what the arm does, so this probe was building a
+    # cell it had no hope of completing and calling the result a gripper verdict.
+    scene = default_scene(2)
+    robot_id = scene.robots[0].id     # `scene.robots` is a list of configs, not an id map
+    reach = scene.robot(robot_id).reach
+
+    def _usable(item) -> bool:
+        from demo12.config import ROBOT_BASE_Y, WORKING_RADIUS_M
+        import math as _math
+        return (_math.hypot(item.x - scene.robot(robot_id).base_xy[0],
+                            item.y - ROBOT_BASE_Y) <= WORKING_RADIUS_M)
+
+    kept_bins = [b for b in scene.bins if _usable(b)]
+    kept_parts = [p for p in scene.parts if _usable(p)]
+    if not kept_bins or not kept_parts:
+        raise SystemExit(f"{robot_id} cannot reach any part or tray in the default cell")
+
+    trimmed = SceneConfig(
+        table=scene.table,
+        robots=[r for r in scene.robots if r.id == robot_id],
+        parts=kept_parts,
+        bins=kept_bins,
+        mission=MissionConfig(tasks=[]),
+    )
+    trimmed.validate()
+
+    cell = IsaacCell(trimmed, device="cuda:0", headless=True)
     cell.settle(90)
 
-    robot_id = next(iter(cell.robots))
+    
 
     # Try the two smallest, most tractable parts first: a 20 mm PET ball is the easiest
     # thing a friction gripper can hold, and part_1 is a 30 mm ABS cube.
     attempts: list[dict] = []
 
-    for part_id in ("part_1", "part_4"):
+    # Iterate the parts the trimmed cell actually holds, and pick the destination from the
+    # cell's own bins: the trimmed scene may contain only the trays this one arm can reach,
+    # and asking for one it does not have is a KeyError that reads like a physics failure.
+    for part_id in [p.id for p in trimmed.parts]:
         part_cfg = cell.part_cfgs[part_id]
         # Not every part has a mission task -- tasks are built by colour match, and the ball
         # has no bin of its colour. Fall back to the first bin rather than assuming a task
         # exists, so the probe can be pointed at any part in the cell.
-        bin_id = next((t.bin_id for t in scene.mission.tasks if t.part_id == part_id),
-                      scene.bins[0].id)
+        bin_id = next((t.bin_id for t in trimmed.mission.tasks if t.part_id == part_id),
+                      trimmed.bins[0].id)
 
         print(f"\n--- {part_id} ({part_cfg.kind}, "
               f"{part_cfg.size_m[0] * 1000:.0f} mm, "
