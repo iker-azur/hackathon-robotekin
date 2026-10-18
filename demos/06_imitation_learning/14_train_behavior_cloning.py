@@ -55,8 +55,9 @@ class BCPolicy(nn.Module):
     architecture.
     """
 
-    def __init__(self, state_dim: int, action_dim: int, hidden: int = HIDDEN):
+    def __init__(self, state_dim: int, action_dim: int, phase_dim: int = 0, hidden: int = HIDDEN):
         super().__init__()
+        self.phase_dim = phase_dim
         # The image trunk: three convolutions down from 480x640 to a 60x80 feature
         # map, then pooled. The kernel sizes are chosen so each block halves the
         # spatial size, which is the usual habit rather than a tuned result.
@@ -69,7 +70,7 @@ class BCPolicy(nn.Module):
         # The state trunk: the strongest signal in this dataset, because the arm's
         # current pose already explains most of where it has to go next.
         self.state = nn.Sequential(
-            nn.Linear(state_dim, hidden), nn.ReLU(),
+            nn.Linear(state_dim + phase_dim, hidden), nn.ReLU(),
             nn.Linear(hidden, hidden), nn.ReLU(),
         )
         self.head = nn.Sequential(
@@ -78,7 +79,10 @@ class BCPolicy(nn.Module):
             nn.Linear(hidden, action_dim),
         )
 
-    def forward(self, image, state):
+    def forward(self, image, state, phase=None):
+        # The phase is concatenated onto the state rather than given its own
+        # branch: it is one number, and the point of feeding it at all is that the
+        # plan cannot be told apart from joint angles alone. See ``il_dataset``.
         # The dataset hands frames back in one of two layouts depending on the
         # video backend installed: (B, C, H, W) from the decoder, or (B, 1, H, W, C)
         # when a frame has been decoded as an image array. Both are put into
@@ -92,6 +96,9 @@ class BCPolicy(nn.Module):
         else:
             image = image.permute(0, 3, 1, 2)
         image = image.float() / 255.0
+        if phase is not None and self.phase_dim:
+            phase = phase.reshape(phase.shape[0], -1).float()
+            state = torch.cat([state, phase], dim=-1)
         features = torch.cat([self.image(image), self.state(state)], dim=-1)
         return self.head(features)
 
@@ -148,7 +155,11 @@ def main() -> int:
     output_dir = Path(__file__).resolve().parent / "outputs" / args.output
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    policy = BCPolicy(state_dim=data.env_cfg.STATE_DIM, action_dim=data.env_cfg.ACTION_DIM).to(args.device)
+    policy = BCPolicy(
+        state_dim=data.env_cfg.STATE_DIM,
+        action_dim=data.env_cfg.ACTION_DIM,
+        phase_dim=data.PHASE_DIM if data.PHASE_KEY in dataset.features else 0,
+    ).to(args.device)
     optimiser = torch.optim.AdamW(policy.parameters(), lr=args.lr, weight_decay=1e-4)
 
     # Normalisation comes from the dataset's own statistics. Without it the
@@ -174,7 +185,12 @@ def main() -> int:
         images = torch.stack([dataset[i][data.IMAGE_KEY] for i in index]).to(args.device)
         if images.dim() == 5:  # decoded video frames arrive as (B, 1, H, W, C)
             images = images[:, 0]
-        predicted = policy(images, states)
+        # Present only when the dataset carries it, so this still runs against a
+        # dataset recorded before the phase existed.
+        phases = None
+        if data.PHASE_KEY in dataset.features:
+            phases = torch.stack([dataset[i][data.PHASE_KEY] for i in index]).float().to(args.device)
+        predicted = policy(images, states, phases)
         target = normalise(actions, action_mean, action_std)
         loss = nn.functional.mse_loss(predicted, target)
 
@@ -191,6 +207,7 @@ def main() -> int:
             "state_dict": policy.state_dict(),
             "state_dim": data.env_cfg.STATE_DIM,
             "action_dim": data.env_cfg.ACTION_DIM,
+            "phase_dim": policy.phase_dim,
         },
         output_dir / "bc_policy.pt",
     )

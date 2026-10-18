@@ -106,6 +106,131 @@ def patch_last_checkpoint() -> None:
     lerobot_train.update_last_checkpoint = update_last_checkpoint
 
 
+def patch_episode_metadata_loader() -> None:
+    """Avoid a LeRobot/Datasets hang on the episode stats columns.
+
+    LeRobot 0.4.4 loads the whole episode parquet through
+    ``datasets.Dataset.from_parquet`` and only then removes every ``stats/*``
+    column. On this dataset that conversion hangs in Datasets' schema inference.
+    The stats are also available in ``meta/stats.json`` and the standard loader
+    discards the per-episode copies, so read the small parquet shards with
+    PyArrow and create the HF Dataset from only the columns LeRobot keeps.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    import lerobot.datasets.lerobot_dataset as lerobot_dataset
+
+    def load_episodes(local_dir):
+        episodes_dir = Path(local_dir) / "meta" / "episodes"
+        paths = sorted(episodes_dir.glob("*/*.parquet"))
+        if not paths:
+            raise FileNotFoundError(
+                f"Provided directory does not contain any episode parquet file: {episodes_dir}"
+            )
+
+        tables = []
+        for path in paths:
+            parquet = pq.ParquetFile(path)
+            columns = [name for name in parquet.schema.names if not name.startswith("stats/")]
+            tables.append(parquet.read(columns=columns))
+
+        table = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
+        return lerobot_dataset.datasets.Dataset(table)
+
+    lerobot_dataset.load_episodes = load_episodes
+
+
+def patch_frame_data_loader() -> None:
+    """Load the frame parquet through Arrow instead of Datasets' slow cast.
+
+    Datasets.from_parquet also stalls on the dataset's 25,600 row frame shard
+    when LeRobot supplies a Features schema. The Arrow table is small and
+    already has the correct fixed-size vectors; scalar one-element fields
+    (timestamp and indices) need to be wrapped as
+    length-one vectors, while the reserved environment-state field is kept as a
+    vector for ACT's encoder.
+    """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    import lerobot.datasets.lerobot_dataset as lerobot_dataset
+
+    import il_dataset as data
+
+    env_state_key = data.ACT_ENV_STATE_KEY
+    original_load_info = lerobot_dataset.load_info
+    original_load_stats = lerobot_dataset.load_stats
+
+    def load_info_with_act_environment_state(root):
+        info = original_load_info(root)
+        features = info.get("features", {})
+        if data.PHASE_KEY in features:
+            features[env_state_key] = features.pop(data.PHASE_KEY)
+        return info
+
+    def load_stats_with_act_environment_state(root):
+        stats = original_load_stats(root)
+        if stats and data.PHASE_KEY in stats:
+            stats[env_state_key] = stats.pop(data.PHASE_KEY)
+        return stats
+
+    lerobot_dataset.load_info = load_info_with_act_environment_state
+    lerobot_dataset.load_stats = load_stats_with_act_environment_state
+
+    def load_nested_dataset(pq_dir, features=None, episodes=None):
+        pq_dir = Path(pq_dir)
+        paths = sorted(pq_dir.glob("*/*.parquet"))
+        if not paths:
+            raise FileNotFoundError(
+                f"Provided directory does not contain any parquet file: {pq_dir}"
+            )
+
+        tables = []
+        for path in paths:
+            parquet = pq.ParquetFile(path)
+            table = parquet.read()
+            if data.PHASE_KEY in table.column_names:
+                table = table.rename_columns([
+                    env_state_key if name == data.PHASE_KEY else name
+                    for name in table.column_names
+                ])
+            if episodes is not None and "episode_index" in table.column_names:
+                mask = pc.is_in(
+                    table["episode_index"], value_set=pa.array(episodes)
+                )
+                table = table.filter(mask)
+            if features is not None:
+                for name, feature in features.items():
+                    if name not in table.column_names:
+                        continue
+                    length = getattr(feature, "length", None)
+                    if name == env_state_key and length is None:
+                        # LeRobot may store a one-element environment state as
+                        # an Arrow scalar, while ACT expects a batched vector.
+                        length = 1
+                    column = table[name].combine_chunks()
+                    if (
+                        length is not None
+                        and not pa.types.is_list(column.type)
+                        and not pa.types.is_large_list(column.type)
+                        and not pa.types.is_fixed_size_list(column.type)
+                    ):
+                        array = pa.FixedSizeListArray.from_arrays(
+                            column, list_size=length
+                        )
+                        table = table.set_column(
+                            table.column_names.index(name), name, array
+                        )
+            tables.append(table)
+
+        table = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
+        return lerobot_dataset.datasets.Dataset(table)
+
+    lerobot_dataset.load_nested_dataset = load_nested_dataset
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -202,6 +327,8 @@ def main() -> int:
     from lerobot.scripts.lerobot_train import train
 
     patch_last_checkpoint()
+    patch_episode_metadata_loader()
+    patch_frame_data_loader()
     train(cfg)
 
     print("")

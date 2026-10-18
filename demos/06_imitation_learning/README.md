@@ -52,9 +52,10 @@ se ejecuta esa red en el robot. En este proyecto:
 | 3 | red | aprende ese mapeo con LeRobot |
 | 4 | simulación | ejecuta la red y se mide si el cubo acaba donde debía |
 
-Lo que la red **no** recibe en ningún momento es la posición del cubo. Solo ve la
-cámara frontal y el estado de sus propias articulaciones. Tiene que deducir dónde
-está el cubo de la imagen.
+La entrada visual básica es la cámara frontal y el estado de las articulaciones.
+En las pruebas adicionales, ACT también recibió una fase o el centroide
+normalizado del cubo como `observation.environment_state`; ninguna variante
+completó la tarea (resultados abajo).
 
 ### Behavior Cloning (demo 14)
 
@@ -247,6 +248,17 @@ Opciones: `--batch`, `--chunk`, `--action-steps`, `--device`, `--output`,
 `--no-vae` (entrena ACT sin su cuello de botella variacional; ver
 [Limitaciones](#limitaciones)).
 
+Para repetir las dos pruebas de 40 episodios:
+
+```powershell
+# fase como environment_state
+python .\demos\06_imitation_learning\15_train_act.py --dataset so101_lift_cube_phase --steps 20000 --output 15_act_phase
+
+# fallback con coordenadas de cube_detect.py
+python .\demos\06_imitation_learning\tools\20_add_cube_detect_state.py
+python .\demos\06_imitation_learning\15_train_act.py --dataset so101_lift_cube_cube_detect --steps 20000 --output 15_act_cube_detect
+```
+
 ### Paso 3 — demo 16: ejecutar la política en la simulación
 
 ```powershell
@@ -434,37 +446,49 @@ Windows 11, Isaac Sim 5.1, RTX 5060 Ti 16 GB.
 | desplazamiento del cubo | ~10 cm, el objetivo |
 | pasos por demostración | 640 |
 | tiempo por demostración | ~35 s |
-| dataset completo | 25 episodios, 16 000 frames, ~1.6 GB |
+| dataset original | 25 episodios, 16 000 frames, ~1.6 GB |
+| dataset de fase de la prueba actual | **40 episodios, 25 600 frames, 0 fallos** |
 
 ### Entrenamiento (demo 15)
 
 | métrica | valor |
 |---|---|
-| entrenamiento ACT | 20 000 pasos, ~57 min |
-| velocidad | ~6 pasos/s con batch 8 |
-| checkpoint | ~80 MB de pesos |
-| error sobre el propio dataset | **0.19** (unidades de la acción) |
+| ACT base (ejecución anterior) | 20 000 pasos, ~57 min; error de entrenamiento registrado: 0,19 |
+| ACT con fase como `environment_state` | 20 000 pasos, ~44 min |
+| ACT con centroide de `cube_detect.py` | 20 000 pasos, ~39 min 30 s |
+| pérdida final de ese entrenamiento | 0,055 en los lotes de entrenamiento; no predice éxito en simulación |
+| pesos del checkpoint probado | ~206 MB |
 
 ### Evaluación (demo 16)
 
-**Resultado honesto: 0/5 episodios completan la tarea.**
+**Resultado honesto: las dos entradas adicionales probadas dan 0/5.**
 
-La política aprendió a reproducir la demostración con un error de 0.19 sobre el
-dataset, pero ejecutada en bucle cerrado se queda estática: el brazo se acerca al
-cubo y se queda suspendido sin llegar a agarrarlo. Ver
-[`results/16_evaluation.md`](results/16_evaluation.md) para el detalle.
+ACT con la fase disponible como `observation.environment_state` obtuvo 0/5. El
+centroide normalizado de `cube_detect.py` también obtuvo 0/5: la altura máxima del
+cubo fue 5,6 cm en los cinco episodios (sigue en la mesa), con errores finales de
+9,5–10,3 cm. El detector produjo una observación en los 25 600 fotogramas del
+dataset; eso no bastó para que ACT aprendiera la recogida. Por tanto, no es
+correcto afirmar que la fase hace que esta política funcione: ACT recibió la fase,
+pero no completó la tarea. La evidencia está en
+[`results/16_evaluation.md`](results/16_evaluation.md).
+
+La primera prueba con fase guardada bajo el nombre `observation.phase` no llegaba
+al codificador de ACT, que sólo usa su entrada reservada `observation.environment_state`.
+Se corrigió ese mapeo y se volvió a entrenar; el resultado siguió siendo 0/5.
+Después se midió el fallback con coordenadas del detector, también sin éxito. Las
+dos pruebas muestran que añadir una señal no corrige por sí sola el control en
+bucle cerrado.
 
 Esto **no** es un fallo de los demos, es el resultado de intentarlo. Es el error
 de imitación clásico (*compounding error*, en inglés), y es la lección más útil
 del conjunto:
 
-* **El error se acumula.** La demostración son 640 pasos encadenados. Si la
-  política se equivoca un 0,2 % en cada paso, al final del episodio está en un
-  estado que el profesor nunca visitó, y ahí su comportamiento no está definido.
+* **El error se acumula.** La demostración son 640 pasos encadenados. Un error
+  temprano puede llevar la política a un estado que el profesor nunca visitó.
 * **La política no ve el futuro.** El profesor sabe que va a bajar el brazo en
   el paso 130; la política solo ve la foto y las articulaciones del paso en el
   que está.
-* **Hay un atractor estático.** Con 25 demostraciones casi idénticas y un brazo
+* **Hay un atractor estático.** Incluso con 40 demostraciones y un brazo
   que se mueve milímetros por paso, "quédate donde estás" es una solución con
   pérdida muy baja. La política la encontró.
 
@@ -478,17 +502,17 @@ Intentos documentados que **no** lo resolvieron, y por qué:
 3. **Entrenar ACT sin VAE** (`--no-vae`) y con 30 000 pasos: la política
    predice mejor sobre el dataset, pero el bucle cerrado sigue igual.
 
-Lo que **sí** lo resolvería, y en este orden de efectividad:
+Vías que quedan por estudiar:
 
 | cambio | por qué |
 |---|---|
-| **muchas más demostraciones** (100-200, con más variedad) | el único que ataca directamente el error acumulado |
+| **más variedad en las demostraciones** | cubre estados que la política no ha visto; el dataset actual tiene 40 episodios, pero un plan casi fijo |
 | **más variedad en la tarea** (otros puntos de dejada, más altura) | cubre estados que la política no ha visto |
 | **chunk más largo** (`--chunk 40`) | una planificación más larga absorbe mejor un error pequeño |
 
-**Tres demos que funcionan completos**, disponibles en esta misma carpeta, son
-mejores que cinco a medio hacer. Aquí los cinco funcionan; la política aún no
-completa la tarea, y eso está medido y documentado en lugar de escondido.
+Las pruebas de esta carpeta ejecutan los scripts de principio a fin, pero la
+política ACT todavía no completa la tarea. Ambas evaluaciones están medidas y
+documentadas en [`results/16_evaluation.md`](results/16_evaluation.md).
 
 
 ---
@@ -497,11 +521,11 @@ completa la tarea, y eso está medido y documentado en lugar de escondido.
 
 Esto es un campo de juego, no un sistema listo para producción.
 
-**La política no completa la tarea todavía.** 0/5 en la evaluación medida. El
-porqué está en [Resultados medidos](#resultados-medidos) y en
-[`results/16_evaluation.md`](results/16_evaluation.md); el resumen es que la
-política aprende la demostración pero el bucle cerrado acumula error. No es un
-bug sin arreglar: es lo que hay que resolver con más demostraciones.
+**La política no completa la tarea todavía.** Tanto la fase como el centroide de
+`cube_detect.py` se probaron como entrada de ACT y ambos dieron 0/5. Consulta
+[Resultados medidos](#resultados-medidos) y
+[`results/16_evaluation.md`](results/16_evaluation.md). La fase se conectó al
+campo reservado que ACT procesa, pero eso tampoco hizo que la política funcionara.
 
 **Las demostraciones son casi idénticas.** El profesor ejecuta el mismo plan
 siempre; solo cambian la posición del cubo (±3.5 cm), su orientación (±30°) y
@@ -514,9 +538,9 @@ cámara. Si el cubo aparece en otro sitio del que el profesor alcanzaba, no hay
 demostración que lo cubra.
 
 **El profesor es tramposo, y conviene saberlo.** Sabe dónde está el cubo y sujeta
-el cubo cinemáticamente mientras la pinza está cerrada. La política tiene que
-deducir la posición del cubo de la imagen, así que parte con desventaja real: le
-pedimos aprender de alguien que tenía información privilegiada.
+el cubo cinemáticamente mientras la pinza está cerrada. Las pruebas adicionales
+de ACT con fase y con el detector se documentan abajo; ambas fallaron, así que no
+se debe presentar ninguna como una solución del problema.
 
 **El criterio de éxito no es el de la tarea original.** Ver
 [La tarea](#la-tarea).
@@ -542,9 +566,9 @@ levantar Kit, hay que volver a lanzarlo.
 
 ## Por dónde seguir
 
-1. **Más demostraciones, con más variedad.** Es el cambio con mejor relación
-   esfuerzo/resultado, y el único que ataca directamente el fallo medido: 100
-   episodios en vez de 25, con el cubo en más sitios y en más orientaciones.
+1. **Más demostraciones, con más variedad.** El dataset ya tiene 40 episodios;
+   cubrir más estados y variar el plan puede ayudar más que repetirlo en más
+   posiciones cercanas.
 2. **Más variedad en la tarea.** Variar la altura de la recogida, el punto de
    dejada, el número de objetos. La variedad de las demostraciones es el techo de
    la variedad de la política.
@@ -627,6 +651,7 @@ levantar Kit, hay que volver a lanzarlo.
 ├── 14_train_behavior_cloning.py         ← demo 14: Behavior Cloning en PyTorch puro
 ├── 15_train_act.py                      ← demo 15: ACT con el pipeline de LeRobot
 ├── 16_evaluate_policy.py                ← demo 16: ejecutar y medir en simulación
+├── tools/20_add_cube_detect_state.py    ← prepara dataset con estado del detector
 ├── data/                                ← datasets (git-ignored)
 ├── outputs/                             ← checkpoints (git-ignored)
 └── results/                             ← informes medidos (sí en git)

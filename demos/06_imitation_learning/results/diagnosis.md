@@ -244,14 +244,11 @@ LeRobot está cerrada **en esta máquina y en esta versión**.
 
 ### La salida que queda dentro de LeRobot
 
-Dar a la política un estado que **sí** distinga las fases. `cube_detect.py` ya
-encuentra el cubo con ~10 mm de error, y la posición del cubo es precisamente lo
-que separa a `lift` de `carry` (uno va al cubo, el otro se aleja). Es la misma
-lógica que un historial, pero comprimida a dos números.
-
-Eso **no** es un parche: es un `observation` más, y LeRobot lo soporta sin tocar
-nada. Y como el detector es analítico y exacto, la política deja de tener que
-extraer de 921 600 píxeles una cantidad que ya se sabe.
+Una hipótesis fue dar a la política un estado adicional. `cube_detect.py` mide el
+centroide con alrededor de 10 mm de error en la muestra de validación, así que se
+probó como `observation.environment_state`. La evaluación completa posterior,
+descrita en la sección 10, mostró que esta observación por sí sola no basta para
+que ACT complete la tarea.
 
 ## 10. La posición del cubo tampoco sirve (medido)
 
@@ -269,7 +266,7 @@ La posición del cubo quita como mucho un **15 %**, y el número **se estanca**:
 con un umbral de 20 px, muy por encima de lo que da el detector, quedan 12544 pares.
 No es una calibración que se pueda afinar.
 
-### Por qué: el cubo desaparece justo cuando lo necesitaría
+### Qué mostraba la muestra inicial
 
 Medido sobre el episodio 0:
 
@@ -279,10 +276,11 @@ Medido sobre el episodio 0:
 | `go down` | sí (47 px) |
 | `close` … `retract` | **no, en las seis** |
 
-Desde `close` el cubo está **agarrado**: la mordaza lo tapa. El detector sólo lo
-encuentra mientras está en la mesa, y las colisiones que quedan están
-exactamente en las fases con la mordaza cerrada. La posición del cubo es
-redundante con la del brazo mientras se la lleva.
+En esa muestra, desde `close` el cubo estaba agarrado y la mordaza lo tapaba.
+El dataset ampliado usado en la prueba final dio una medida distinta: el detector
+encontró una mancha en los **25 600/25 600** fotogramas. La visibilidad de la
+mancha, por sí sola, no demuestra que su centroide separe las fases ni que ACT
+pueda aprender a recoger.
 
 ### El muro, con números
 
@@ -301,10 +299,13 @@ observación mejor las arregla.
 
 ### Conclusión honesta
 
-Con ACT (`n_obs_steps=1`) y este plan, **la tarea no es aprendible**, y no es por
-falta de datos, de entrenamiento ni de percepción. La información que falta es
-*cuál es la fase*, y en este plan ésa vive en el tiempo: el brazo recorre las
-mismas configs a distinta fase del movimiento.
+Con ACT (`n_obs_steps=1`) y este plan, la observación aislada sigue siendo
+ambigua. Se probaron dos señales adicionales y ninguna completó la tarea: la fase
+codificada en `observation.environment_state` obtuvo 0/5, y el centroide del cubo
+con el bit de visibilidad también obtuvo 0/5. Por tanto, no hay evidencia medida
+para afirmar que dar la fase vuelva aprendible esta tarea con el ACT de esta
+versión. Los resultados finales están en
+[`16_evaluation.md`](16_evaluation.md).
 
 Las tres salidas reales, en orden de coste:
 
@@ -313,12 +314,11 @@ Las tres salidas reales, en orden de coste:
    replantear la tarea, no retocar el plan.
 2. **Una política con historial** — `PI0Config(n_obs_steps=2)`. Bloqueada por el
    fork de siglip (sección 9).
-3. **Dar la fase como entrada** — un `phase_index` en el `observation`. Es
-   artificial y no es aprendizaje por imitación de verdad, pero **desbloquea el
-   pipeline hoy** y deja la parte difícil (entrenar, evaluar, medir) resuelta.
+3. **Dar la fase como entrada** — un `phase_index` en `observation` es fácil de
+   implementar y ayuda a distinguir el tiempo del plan, pero en la prueba medida
+   no hizo que ACT completara el movimiento.
 
-La 3 es la única que se puede hacer en la sesión. Las otras dos cambian el alcance
-del demo y hay que decidirlas antes del hackathon.
+La opción 3 se implementó y entrenó; su limitación quedó medida en la evaluación.
 
 ### Verificación de la opción 3
 
@@ -335,9 +335,9 @@ es el propio interpolado: el brazo se queda quieto arriba mientras el comando
 sigue avanzando. Ninguna etiqueta lo arregla, y a 1 par por episodio tampoco
 hace falta.
 
-Conclusión: **dar la fase como entrada deja la tarea aprendible con ACT**, y es un
-cambio de una tarde: un `observation.phase` en el dataset, una línea en el
-grabador, y reentrenar.
+Conclusión: la fase se puede cablear al campo reservado que ACT procesa, pero la
+prueba de 20 000 pasos obtuvo 0/5. La implementación funciona técnicamente; la
+hipótesis de que bastaba para que ACT aprendiera la tarea no quedó confirmada.
 
 Matiz honesto: esto no es imitación en estado puro. Se le está diciendo a la
 política en qué punto del plan está, y eso **no** lo puede resolver de verdad. Es

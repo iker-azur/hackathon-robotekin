@@ -111,6 +111,7 @@ def main() -> int:
             # they lag the command by a couple of steps, so the recorded action is
             # nearly the same number as the recorded state, and a policy trained
             # on that learns the identity and stands still.
+            bounds = data.phase_bounds()
             while not expert.done:
                 state, image = data.observation_from_env(observation)
                 action = expert.action()
@@ -118,6 +119,10 @@ def main() -> int:
                     {
                         data.STATE_KEY: state,
                         data.IMAGE_KEY: image,
+                        # Which step of the plan this is. See ``il_dataset`` for
+                        # why the policy is given this and what it costs: the
+                        # task cannot be fitted from joint angles alone.
+                        data.PHASE_KEY: data.phase_vector(step, bounds),
                         data.ACTION_KEY: data.action_from_teacher(action),
                         "task": data.TASK_DESCRIPTION,
                     }

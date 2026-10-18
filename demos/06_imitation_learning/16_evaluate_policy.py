@@ -1,8 +1,9 @@
 """Run a trained policy in the SO-101 simulation and score it.
 
-This is the end of the playground. The policy sees only the front camera and the
-joint positions, and has to pick the cube up and put it down 10 cm sideways.
-Nothing tells it where the cube is.
+This is the end of the playground. The policy sees the front camera and joint
+positions. ACT checkpoints may also receive phase or cube-detector coordinates
+through LeRobot's reserved environment-state input; BC receives the phase vector.
+The evaluator scores whether the cube is placed 10 cm sideways.
 
 Two policies are supported:
 
@@ -156,7 +157,9 @@ def load_bc_policy(path: Path, device: str):
     sys.modules["train_bc"] = module
     spec.loader.exec_module(module)
     policy = module.BCPolicy(
-        state_dim=checkpoint["state_dim"], action_dim=checkpoint["action_dim"]
+        state_dim=checkpoint["state_dim"],
+        action_dim=checkpoint["action_dim"],
+        phase_dim=checkpoint.get("phase_dim", 0),
     ).to(device)
     policy.load_state_dict(checkpoint["state_dict"])
     policy.eval()
@@ -296,6 +299,21 @@ def main() -> int:
         policy, action_mean, action_std = load_bc_policy(policy_path, inference_device)
         preprocessor = postprocessor = None
 
+    # LeRobot ACT only embeds its reserved environment-state feature. Depending
+    # on its width, this checkpoint expects phase (1) or detector coordinates (3).
+    act_env_state_dim = None
+    if args.type == "act":
+        env_feature = getattr(policy.config, "input_features", {}).get(data.ACT_ENV_STATE_KEY)
+        if env_feature is not None:
+            act_env_state_dim = int(env_feature.shape[0])
+        if act_env_state_dim is None:
+            print(
+                "NOTE: this checkpoint was trained without environment state; "
+                "it will not receive phase or cube-detector coordinates."
+            )
+        elif act_env_state_dim not in (1, 3):
+            raise ValueError(f"Unsupported ACT environment-state width: {act_env_state_dim}")
+
     prepare_runtime(headless=args.headless)
 
     # The same environment the teacher ran in, so that a predicted action is
@@ -391,14 +409,46 @@ def main() -> int:
                     image_t = torch.as_tensor(
                         data.image_to_policy_input(image), device=inference_device
                     ).unsqueeze(0)
+                    # The teacher's phase is used by BC and by ACT checkpoints
+                    # trained with a one-dimensional environment-state feature.
+                    phase_t = torch.as_tensor(
+                        data.phase_vector(steps_taken - 1, bounds),
+                        dtype=torch.float32, device=inference_device,
+                    ).unsqueeze(0)
 
                     if args.type == "act":
+                        if act_env_state_dim == 1:
+                            env_state_t = phase_t
+                        elif act_env_state_dim == 3:
+                            import cube_detect
+
+                            detection = cube_detect.detect_cube(image)
+                            if detection is None:
+                                detector_state = (0.0, 0.0, 0.0)
+                            else:
+                                detector_state = (
+                                    2.0 * detection.u / (image.shape[1] - 1) - 1.0,
+                                    2.0 * detection.v / (image.shape[0] - 1) - 1.0,
+                                    1.0,
+                                )
+                            env_state_t = torch.as_tensor(
+                                detector_state, dtype=torch.float32,
+                                device=inference_device,
+                            ).unsqueeze(0)
+                        else:
+                            env_state_t = None
                         action = policy.select_action(
-                            preprocessor({data.STATE_KEY: state_t, data.IMAGE_KEY: image_t})
+                            preprocessor(
+                                {
+                                    data.STATE_KEY: state_t,
+                                    data.IMAGE_KEY: image_t,
+                                    **({data.ACT_ENV_STATE_KEY: env_state_t} if env_state_t is not None else {}),
+                                }
+                            )
                         )
                         command = postprocessor(action).squeeze(0).cpu().numpy()
                     else:
-                        predicted = policy(image_t, state_t) * action_std + action_mean
+                        predicted = policy(image_t, state_t, phase_t) * action_std + action_mean
                         command = predicted.squeeze(0).cpu().numpy()
 
                     # The action space of this environment is the teacher's, so

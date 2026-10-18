@@ -12,6 +12,7 @@ key                        contents                                       shape
 =========================  =============================================  ===============
 ``observation.state``      the 6 SO-101 joint positions, motor degrees      ``(6,)``
 ``observation.images.front``  the front camera, RGB                         ``(480, 640, 3)``
+``observation.phase``      which phase of the plan this step belongs to      ``(1,)``
 ``action``                 the teacher's 8-number IK command               ``(8,)``
 ``timestamp``              seconds since the episode start                ``(1,)``
 =========================  =============================================  ===============
@@ -23,6 +24,42 @@ joint degrees: it is the command the teacher sent to the environment's inverse-
 kinematics action term, with the first three numbers the target position of the
 ``gripper`` body in the robot base frame, the next four its orientation, and the
 last one the open/close command.
+
+Why there is a phase, stated plainly
+------------------------------------
+
+``observation.phase`` says which of the eight steps of the teacher's plan the
+robot is in. A real robot is not told this, and that is the honest limitation of
+the demo: **it is imitation learning with the plan handed over, not imitation
+learning from observation alone.** It is here because the alternative was
+measured and does not work.
+
+The expert's action is not a function of the joint angles. The arm passes
+through the same configuration in different phases of the plan - frames 299 and
+300 of a demonstration are identical to 8e-6 degrees while the plan switches from
+``lift`` to ``carry`` - and across 8 demonstrations there are **2675 frame pairs
+per episode** that share a pose within 1 degree while demanding targets more than
+1 cm apart. For those, the best any single-observation policy can do is average
+the two options, and the average is a target that goes nowhere. That is what the
+ACT rollout did: it sat still.
+
+Two things were tried that do *not* need the phase, and both were measured:
+
+* **Removing the revisits from the plan.** Giving every phase its own altitude:
+  283 ambiguous pairs per episode, worse than the 153 it started from. Offsetting
+  the carry sideways in y: 214, also worse. Both are recorded in ``expert.py``.
+* **The cube's position, from ``cube_detect.py``.** Removes at most 15% of the
+  pairs, and the count plateaus - 17056 down to 12544 even at a 20 px threshold
+  the detector cannot deliver. The reason is simple: from ``close`` onward the
+  cube is held and the gripper occludes it, so the detector only finds it during
+  the two phases where it is already redundant with the arm.
+
+A policy that saw a history instead of a single frame would resolve this
+properly - rising and descending at one and the same configuration are told apart
+by which way the arm came from. LeRobot's ACT refuses to be given one
+(``configuration_act.py:149``) and ``PI0Config`` accepts it but cannot run here
+(``results/diagnosis.md``). So this dataset records the phase, and the limitation
+is documented rather than hidden.
 
 Why the action is the command and not the joints it produced
 -----------------------------------------------------------
@@ -57,7 +94,20 @@ import il_env as env_cfg  # noqa: E402
 
 STATE_KEY = "observation.state"
 IMAGE_KEY = "observation.images.front"
+PHASE_KEY = "observation.phase"
+# LeRobot ACT only embeds its reserved environment-state feature in addition to
+# robot state and images. Demo 15 maps auxiliary observations to this key.
+ACT_ENV_STATE_KEY = "observation.environment_state"
+# Compatibility alias for older demo code that mapped phase to this reserved key.
+ACT_PHASE_KEY = ACT_ENV_STATE_KEY
 ACTION_KEY = "action"
+
+# Which phase of the expert's plan a step belongs to, as an index into
+# ``expert.PLAN``. It is recorded, fed to the policy, and **what it costs is worth
+# saying plainly**: the policy is being told where it is in the plan, which is not
+# something a real robot gets. It is here because the task cannot be fitted
+# without it - see the module docstring below and ``results/diagnosis.md``.
+PHASE_DIM = 1
 
 # The demo's task description, written into every frame of the dataset. LeRobot
 # uses it to build the language annotation of a policy, and it is the one string
@@ -114,6 +164,11 @@ def features() -> dict:
             "shape": (env_cfg.ACTION_DIM,),
             "names": list(env_cfg.ACTION_NAMES),
         },
+        PHASE_KEY: {
+            "dtype": "float32",
+            "shape": (PHASE_DIM,),
+            "names": ["phase"],
+        },
         IMAGE_KEY: {
             "dtype": "video",
             "shape": (IMAGE_HEIGHT, IMAGE_WIDTH, 3),
@@ -144,6 +199,43 @@ def observation_from_env(obs) -> tuple:
     state = convert_to_motor_degrees(flat["joint_pos"][0])
     image = np.asarray(flat["front"][0].cpu().numpy(), dtype=np.uint8)
     return state, image
+
+
+def phase_bounds() -> list[tuple[int, int, str]]:
+    """The expert's plan as ``(first_step, past_last_step, name)`` rows.
+
+    Defined here rather than in ``expert`` so the recorder and the evaluator read
+    the same boundaries and cannot drift apart. ``expert`` is not imported at
+    module level because it pulls in the simulator-facing environment module.
+    """
+    import expert as expert_module
+
+    rows, start = [], 0
+    for phase in expert_module.PLAN:
+        rows.append((start, start + phase.steps, phase.name))
+        start += phase.steps
+    return rows
+
+
+def phase_at(step: int, bounds=None) -> int:
+    """Index of the plan phase that ``step`` falls in.
+
+    Returns ``len(bounds)`` past the end of the plan rather than raising, because
+    the evaluator is allowed to run past the demonstrations' length and wants a
+    sensible number to feed the policy instead of an exception.
+    """
+    rows = bounds if bounds is not None else phase_bounds()
+    for index, (first, last, _) in enumerate(rows):
+        if first <= step < last:
+            return index
+    return len(rows)
+
+
+def phase_vector(step: int, bounds=None) -> "np.ndarray":
+    """``phase_at`` as the ``(1,)`` float32 array the dataset stores."""
+    import numpy as np
+
+    return np.array([float(phase_at(step, bounds))], dtype=np.float32)
 
 
 def image_to_policy_input(image_hwc):
