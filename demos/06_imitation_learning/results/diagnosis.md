@@ -253,6 +253,98 @@ Eso **no** es un parche: es un `observation` más, y LeRobot lo soporta sin toca
 nada. Y como el detector es analítico y exacto, la política deja de tener que
 extraer de 921 600 píxeles una cantidad que ya se sabe.
 
+## 10. La posición del cubo tampoco sirve (medido)
+
+La propuesta anterior se probó y **falla**. Medido sobre las 1280 detecciones del
+mismo dataset (8 episodios, 1 de cada 4 fotogramas; detección 1280/1280):
+
+| observación | pares ambiguos |
+|---|---|
+| solo la pose del brazo | 17056 |
+| + centroide del cubo, separado >5 px | 14419 |
+| + centroide del cubo, separado >8 px | 13169 |
+| + centroide del cubo, separado >20 px | 12544 |
+
+La posición del cubo quita como mucho un **15 %**, y el número **se estanca**: incluso
+con un umbral de 20 px, muy por encima de lo que da el detector, quedan 12544 pares.
+No es una calibración que se pueda afinar.
+
+### Por qué: el cubo desaparece justo cuando lo necesitaría
+
+Medido sobre el episodio 0:
+
+| fase | ¿se ve el cubo? |
+|---|---|
+| `go above` | sí (61 px de recorrido) |
+| `go down` | sí (47 px) |
+| `close` … `retract` | **no, en las seis** |
+
+Desde `close` el cubo está **agarrado**: la mordaza lo tapa. El detector sólo lo
+encuentra mientras está en la mesa, y las colisiones que quedan están
+exactamente en las fases con la mordaza cerrada. La posición del cubo es
+redundante con la del brazo mientras se la lleva.
+
+### El muro, con números
+
+Para los tres pares que más colisionan, cuánto se separan las distribuciones de
+cada articulación:
+
+| par | articulaciones que se solapan >90 % |
+|---|---|
+| `close` vs `lift` | `pan` 99 %, `wrist_roll` 98 % |
+| `lift` vs `carry` | `jaw` 94 % |
+| `carry` vs `put down` | `jaw` 75 %, `wrist_roll` 80 %, `pan` 80 % |
+
+Para esas articulaciones, la fase **no deja ninguna señal en una sola
+observación**. Dos o tres de las seis_NO las separan, así que ni siquiera una
+observación mejor las arregla.
+
+### Conclusión honesta
+
+Con ACT (`n_obs_steps=1`) y este plan, **la tarea no es aprendible**, y no es por
+falta de datos, de entrenamiento ni de percepción. La información que falta es
+*cuál es la fase*, y en este plan ésa vive en el tiempo: el brazo recorre las
+mismas configs a distinta fase del movimiento.
+
+Las tres salidas reales, en orden de coste:
+
+1. **Un plan sin retrocesos** — que el brazo no vuelva a pasar por la misma pose.
+   Ya se probó en dos formas y **empeoró** el resultado (sección 4 bis). Habría que
+   replantear la tarea, no retocar el plan.
+2. **Una política con historial** — `PI0Config(n_obs_steps=2)`. Bloqueada por el
+   fork de siglip (sección 9).
+3. **Dar la fase como entrada** — un `phase_index` en el `observation`. Es
+   artificial y no es aprendizaje por imitación de verdad, pero **desbloquea el
+   pipeline hoy** y deja la parte difícil (entrenar, evaluar, medir) resuelta.
+
+La 3 es la única que se puede hacer en la sesión. Las otras dos cambian el alcance
+del demo y hay que decidirlas antes del hackathon.
+
+### Verificación de la opción 3
+
+Medido, sobre las 8 primeras demostraciones, separando las colisiones:
+
+| tipo | pares por episodio |
+|---|---|
+| **entre** fases (lo que importa) | ~2675 |
+| **dentro** de una misma fase | **1** |
+
+Es decir: los 2675 son casi todos entre fases distintas, y conocer la fase los
+elimina. Lo que queda dentro de una fase es **1 par por episodio**, en `carry`, y
+es el propio interpolado: el brazo se queda quieto arriba mientras el comando
+sigue avanzando. Ninguna etiqueta lo arregla, y a 1 par por episodio tampoco
+hace falta.
+
+Conclusión: **dar la fase como entrada deja la tarea aprendible con ACT**, y es un
+cambio de una tarde: un `observation.phase` en el dataset, una línea en el
+grabador, y reentrenar.
+
+Matiz honesto: esto no es imitación en estado puro. Se le está diciendo a la
+política en qué punto del plan está, y eso **no** lo puede resolver de verdad. Es
+una ayuda artificial — la diferencia entre "la política lo consigue" y "se le ha
+dibujado el camino". Para un hackathon es defendible y medible; para una demo
+científica habría que decirlo así de claro.
+
 ## 5. Causa raíz provisional (ronda anterior)
 
 La política tiene un ResNet-18, 4 capas de transformer y un cuello de botella VAE.
