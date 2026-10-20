@@ -172,6 +172,10 @@ class Bus:
         self._id_prefix = ""
         self._cmd_log: dict[str, dict] = {}
         self._stop = threading.Event()
+        # Pausing is an out-of-band control, like stop: it must take effect while a
+        # pick is in progress and cannot wait for the command queue to drain.
+        self._paused = threading.Event()
+        self._phase_before_pause = ""
         self._stop_cid = ""
         self._ticks: dict[str, deque] = {}
         self._metrics: dict = {}
@@ -381,6 +385,29 @@ class Bus:
         source = params.pop("source", "dashboard")
         if action == "stop":
             return self.request_stop(source)
+        if action in ("pause", "resume"):
+            cid = self.new_command(action, source, params=params)
+            self.set_command_state(cid, RUNNING)
+            if action == "pause":
+                if self.stop_requested():
+                    self.set_command_state(cid, CANCELLED, "la sesión se está deteniendo")
+                    return cid
+                with self._lock:
+                    self._phase_before_pause = self._state.get("phase", "command")
+                self._paused.set()
+                self.set_state(paused=True, phase="paused")
+                self.log("Ejecución pausada en un límite seguro de movimiento.", node="execute")
+                self.set_command_state(cid, SUCCESS, "el brazo mantiene la pose actual")
+            else:
+                self._paused.clear()
+                with self._lock:
+                    restore_phase = self._phase_before_pause or "command"
+                    self._phase_before_pause = ""
+                self.set_state(paused=False, phase=restore_phase)
+                if not self.stop_requested():
+                    self.log("Ejecución reanudada.", node="execute")
+                self.set_command_state(cid, SUCCESS, "ejecución reanudada")
+            return cid
         cid = self.new_command(action, source, params=params)
         with self._lock:
             duplicate = action in COALESCE_ACTIONS and action in self._pending_actions
@@ -469,6 +496,8 @@ class Bus:
     def prepare_session(self, session_id: str) -> None:
         """Reset session data without discarding request history or the final report."""
         self._stop.clear()
+        self._paused.clear()
+        self._phase_before_pause = ""
         self._stop_cid = ""
         self._active_command_id = ""
         with self._lock:
@@ -490,6 +519,7 @@ class Bus:
         """
         cid = self.new_command("stop", source)
         self._stop_cid = cid
+        self._paused.clear()  # never leave the worker blocked in a paused executor
         self._stop.set()
         self._cancel_pending("parada solicitada")
         self.set_command_state(cid, QUEUED)
@@ -497,6 +527,12 @@ class Bus:
 
     def stop_requested(self) -> bool:
         return self._stop.is_set()
+
+    def wait_if_paused(self) -> bool:
+        """Block between physics steps while paused; return False once stop is requested."""
+        while self._paused.is_set() and not self.stop_requested():
+            time.sleep(0.05)
+        return not self.stop_requested()
 
     def stop_command_id(self) -> str:
         return self._stop_cid

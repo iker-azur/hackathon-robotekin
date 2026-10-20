@@ -146,6 +146,7 @@ for (const m of HTML.matchAll(/<(input|select|textarea)\b([^>]*)>/g)) {
 
 // ---- the server, in memory --------------------------------------------------------------
 const sent = [];
+let envReply = { ok: true, note: "simulado", state: "QUEUED" };
 const answers = {
   "/api/state": () => ({ nodes: [], edges: [], state: {}, commands: [], events: [], metrics: {} }),
   "/api/config": () => ({
@@ -163,7 +164,7 @@ const answers = {
     ],
     layout: { work_x: [0.27, 0.52], work_y: [-0.54, -0.42], robot: [0.35, -0.64], reach: 0.33 },
   }),
-  "/api/env": body => { sent.push(body); return { ok: true, note: "simulado" }; },
+  "/api/env": body => { sent.push(body); return envReply; },
   "/api/command": () => ({ ok: true, state: "QUEUED" }),
 };
 const document = {
@@ -212,6 +213,16 @@ try {
 function byId(id) { return page.querySelector("#" + id); }
 
 async function main() {
+  const styles = HTML.slice(HTML.indexOf("<style>"), HTML.indexOf("</style>"));
+  step("shape choices have a dedicated row instead of overflowing adjacent fields",
+       /\.scene-row\s+\.mini\.kind\s*\{[^}]*flex:\s*1 0 100%/s.test(styles)
+       && /\.chips\s*\{[^}]*flex-wrap:\s*wrap/s.test(styles),
+       "kind field spans the row and its chips wrap within it");
+  step("dimension inputs share fixed aligned field widths",
+       /\.scene-row\s+\.mini\.coordinate\s*\{\s*width:\s*76px/s.test(styles)
+       && /\.scene-row\s+\.mini\s+input\[type="number"\]\s*\{[^}]*width:\s*100%/s.test(styles),
+       "coordinates use equal-width columns and fill their labels");
+
   // 1. the button is in the environment panel, to the left of start, and it opens the window
   const panel = markupBetween("env-group", 'id="cmd-group"');
   const buttonAt = panel.indexOf('id="env-config"');
@@ -225,7 +236,7 @@ async function main() {
 
   // 2. the window holds the scene editor and the session options; the panel holds neither
   const expected = ["scene-objects", "scene-containers", "scene-save", "variant-sel", "camera-sel",
-                    "rounds", "seed-in"];
+                    "rounds", "seed-in", "startup-command"];
   const popup = markupBetween("env-modal", "<main>");
   const inPanel = expected.filter(id => panel.includes(`id="${id}"`));
   const inPopup = expected.filter(id => popup.includes(`id="${id}"`));
@@ -246,6 +257,7 @@ async function main() {
   byId("rounds").dispatchEvent("input");
   step("changing the rounds changes the line",
        /3 ronda/.test(byId("env-summary").textContent), byId("env-summary").textContent);
+  byId("startup-command").value = "mueve el cilindro verde a la caja roja";
 
   // 4. start sends what the form holds, and closes the window so the start bar is visible
   byId("start").click();
@@ -253,8 +265,26 @@ async function main() {
   const last = sent[sent.length - 1];
   step("start sends the options the form holds",
        !!last && last.action === "start" && last.variant === "out_of_reach" && last.rounds === 3
-       && last.camera === "top" && last.seed === 0, JSON.stringify(last || null));
+       && last.camera === "top" && last.seed === 0
+       && last.command === "mueve el cilindro verde a la caja roja", JSON.stringify(last || null));
   step("start closes the configuration window", modal.hidden === true, "");
+
+  // Control buttons used to discard their POST replies, making a rejected action look like
+  // a dead click. Exercise each one and make sure the page confirms queueing or rejection.
+  for (const [id, action] of [["next", "next"], ["relook", "relook"],
+                               ["save", "save"], ["stop", "stop"]]) {
+    await byId(id).click();
+    step(`${id} sends its control and reports the acknowledgement`,
+         sent.some(body => body.action === action)
+         && /recibido|en cola/.test(byId("queued-note").textContent),
+         byId("queued-note").textContent);
+  }
+  envReply = { ok: false, error: "control rechazado de prueba" };
+  await byId("stop").click();
+  step("a rejected control displays the server reason",
+       byId("queued-note").textContent === "control rechazado de prueba",
+       byId("queued-note").textContent);
+  envReply = { ok: true, note: "simulado", state: "QUEUED" };
 
   // 5. Escape closes it again, as it does the other two
   byId("env-config").click();

@@ -94,6 +94,7 @@
   .gate.waiting { color: var(--warn); } .gate.running { color: var(--ok); }
   .hint { color: var(--muted); font-size: 11px; font-weight: normal; letter-spacing: 0;
           text-transform: none; }
+  .detection-ambiguous { color: var(--warn); font-weight: 600; }
   .hidden { display: none !important; }
 
   /* --- la ruta de decisión, con todo el mapa y el camino iluminado --- */
@@ -181,7 +182,7 @@
   .said { font-size: 13px; line-height: 1.35; color: var(--text); font-weight: 500; }
   .warn { font-size: 11px; line-height: 1.3; color: var(--warn); }
   .sure { font-size: 10.5px; line-height: 1.3; color: var(--muted); }
-  /* El abanico de opciones: seis filas, una por campo, con su nombre a la izquierda y ancho fijo
+  /* El abanico de opciones: siete filas, una por campo, con su nombre a la izquierda y ancho fijo
      para que todas empiecen en el mismo sitio. La fila envuelve si las opciones no caben -la de
      intención, con dieciséis, siempre envuelve-, pero ninguna cambia de alto al elegir: la pastilla
      elegida se pinta, no crece. */
@@ -258,6 +259,17 @@
   .modal-body::-webkit-scrollbar { display: none; width: 0; height: 0; }
   /* La ventana del registro: ancha, y con el registro ocupando la mayor parte de la altura. */
   .modal-box.wide { width: min(980px, 100%); }
+  #env-modal .modal-box { width: min(1440px, calc(100vw - 32px));
+                          height: min(96vh, 1080px); min-height: min(84vh, 720px);
+                          max-height: 96vh; }
+  #env-modal .modal-body { flex: 1 1 auto; min-height: 0; }
+  #env-modal .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 760px) {
+    #env-modal .modal-box { width: 100%; height: 98vh; min-height: 0; max-height: 98vh; }
+    #env-modal .split { grid-template-columns: 1fr; }
+    #env-modal .modal-foot { align-items: stretch; }
+    #env-modal .modal-foot .actions { flex-wrap: wrap; }
+  }
   .modal-box.wide #log { height: 60vh; overflow-y: auto; font-size: 12.5px; }
   /* Icono de ayuda en la barra del título: no es un botón, sólo muestra su texto al pasar el ratón. */
   .card { position: relative; }
@@ -322,11 +334,12 @@
   .modal-body .row.fit select, .modal-body .row.fit input { height: 34px; }
   .modal-body .row.fit em.hint { text-align: left; }
   .modal-body .row.fit label.field.short { flex: 0 1 150px; max-width: 150px; }
+  .area-controls .field { min-width: 110px; }
   /* El mapa de la mesa: área de trabajo en línea discontinua, recipientes huecos, piezas llenas.
      Cada color se declara como relleno y trazo a la vez, y las reglas que van después ganan por
      llegar más tarde (misma especificidad): las piezas recuperan el borde oscuro y la cavidad se
      queda hueca. */
-   .table-map { width: 100%; height: auto; max-height: 320px; display: block; background: var(--panel-2);
+   .table-map { width: 100%; height: auto; max-height: min(46vh, 460px); display: block; background: var(--panel-2);
                 border: 1px solid var(--line); border-radius: 8px; }
   .table-map .m-red { fill: #d9534f; stroke: #d9534f; }
   .table-map .m-green { fill: #43c07f; stroke: #43c07f; }
@@ -334,9 +347,14 @@
   .table-map .m-yellow { fill: #e0a93a; stroke: #e0a93a; }
   .table-map .m-purple { fill: #9a6cf0; stroke: #9a6cf0; }
   .table-map .part { stroke: #0d1017; stroke-width: .6; }
+  .table-map .invalid { stroke: #ff5d66 !important; stroke-width: 2.2; filter: drop-shadow(0 0 2px #ff5d66); }
   .table-map .tray { fill-opacity: .22; }
-  .table-map .tray-cavity { fill: none; stroke-dasharray: 2 2; }
-  .table-map .area { fill: none; stroke: var(--muted); stroke-width: .8; stroke-dasharray: 4 3; }
+  .table-map .tray-cavity { fill: none; stroke-dasharray: 2 2; pointer-events: none; }
+  .table-map text { pointer-events: none; }
+  .table-map .area { fill: rgba(76, 159, 254, .06); stroke: var(--muted); stroke-width: 1.4;
+                     stroke-dasharray: 5 3; cursor: grab; touch-action: none; }
+  .table-map .area:active { cursor: grabbing; }
+  .table-map .area.invalid { stroke: var(--fail); stroke-width: 2.5; }
   .table-map .arm { fill: var(--active); }
   .table-map .arm-line { stroke: var(--active); stroke-width: .7; stroke-dasharray: 3 2; }
   /* El alcance: un círculo discontinuo alrededor de la base y el radio que lo mide. */
@@ -348,24 +366,28 @@
   /* Una fila de la escena: tipo, cuántas, color y quitar, en una línea y con su etiqueta. Antes
      eran cuatro selects apilados a todo el ancho, así que una escena de dos grupos necesitaba
      media pantalla y ninguna fila decía qué era qué. */
-  .scene-row { display: flex; flex-wrap: wrap; gap: 4px 0; align-items: flex-end;
+  .scene-row { display: flex; flex-wrap: wrap; gap: 8px 0; align-items: center;
                padding: 5px 6px; margin-bottom: 5px; background: var(--panel-2);
                border: 1px solid var(--line); border-radius: 7px; }
   /* Cada campo ocupa el mismo ancho en todas las filas, así que sus etiquetas caen siempre en el
      mismo sitio: "pieza", "color" y "cuántas" (o "recipiente" y "color") a la misma altura y en
      el mismo hueco, y la lista se lee como una tabla en lugar de como filas que bailan. */
-  .scene-row .mini { flex: 0 0 auto; min-width: 0; margin: 0 16px 0 0; }
-  .scene-row .mini.grow { flex: 1 1 auto; }
-  .scene-row .mini.kind { width: 100px; }
+  .scene-row .mini { display: block; align-self: center; flex: 0 0 auto;
+                     min-width: 0; margin: 0 10px 0 0; }
+  .scene-row .mini.grow { flex: 1 1 180px; min-width: 180px; }
+  /* The five shape chips need more than 100 px. Give them their own full row so they can never
+     paint on top of the colour, quantity or coordinate fields beside them. */
+  .scene-row .mini.kind { flex: 1 0 100%; width: 100%; margin-right: 0; }
   .scene-row .mini.colour { width: 130px; }
   .scene-row .mini.count { width: 76px; }
-  .scene-row .mini span { display: block; font-size: 9.5px; color: var(--muted); margin-bottom: 1px;
-                          letter-spacing: .04em; }
-  .scene-row .mini input { padding: 3px 5px; font-size: 12px; }
-  .scene-row .mini input[type="number"] { width: 58px; }
+  .scene-row .mini.coordinate { width: 76px; }
+  .scene-row .mini span { display: block; height: 14px; line-height: 14px; font-size: 9.5px;
+                          color: var(--muted); margin-bottom: 3px; letter-spacing: .04em; }
+  .scene-row .mini input { height: 28px; box-sizing: border-box; padding: 3px 5px; font-size: 12px; }
+  .scene-row .mini input[type="number"] { width: 100%; min-width: 0; }
   /* Muestras de color: un círculo por color validado. El color es lo que se escanea al leer una
      escena, así que se ve en lugar de leerse en un desplegable. */
-  .swatches { display: flex; gap: 4px; }
+  .swatches { display: flex; align-items: center; gap: 4px; height: 28px; }
   .swatch { width: 22px; height: 22px; padding: 0; border-radius: 50%; }
   .swatch:hover { transform: scale(1.08); }
   .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--accent); }
@@ -373,8 +395,8 @@
   .swatch.blue { background: #4c9ffe; } .swatch.yellow { background: #e0a93a; }
   .swatch.purple { background: #9a6cf0; }
   /* Tipo de pieza y otras opciones cortas: botones que se encienden, no un desplegable. */
-  .chips { display: flex; gap: 4px; }
-  .chips .chip { font-size: 11px; padding: 3px 8px; }
+  .chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; min-height: 28px; }
+  .chips .chip { flex: 0 0 auto; width: auto; white-space: nowrap; font-size: 11px; padding: 3px 8px; }
   .chips .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   /* Quitar es un icono, no una palabra: una lista de filas con "quitar" escrito en cada una es una
      columna más de texto que no dice nada. Y va pegado a la derecha, que es donde se busca. */
@@ -497,17 +519,19 @@
   .ctrl-row .row { margin-bottom: 0; }
   .ctrl-row button.big { flex: 0 0 auto; padding: 8px 12px; font-size: 13px; font-weight: 600; }
   #start { flex: 1 1 auto; }
-  #env-group .row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  #env-group .row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
   #env-group .row > button { width: 100%; }
   #env-group .gate { padding: 0; background: none; border: 0; font-size: 12px; white-space: nowrap;
                      overflow: hidden; text-overflow: ellipsis; }
   #env-group .start-line { margin: 0; min-height: 16px; }
-  #cmd-group .examples { margin-top: 0; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
-  #cmd-group .examples button { font-size: 10.5px; line-height: 1.15; padding: 3px 4px; white-space: normal; min-height: 0; }
+  #cmd-group .examples { margin-top: 0; grid-template-columns: repeat(3, minmax(0, 1fr));
+                         grid-auto-rows: minmax(27px, auto); gap: 4px; }
+  #cmd-group .examples button { font-size: 9.45px; line-height: 1.15; padding: 2.7px 4px;
+                                white-space: normal; min-height: 0; }
   #cmd-group #queued-note:empty, #cmd-group #mic-note:empty { display: none; }
 
   /* lo que entendió el robot: a todo el ancho. La frase a la izquierda, el abanico a la derecha. */
-  .top-row { flex: 0 0 clamp(167px, 22.1vh, 187px); height: clamp(167px, 22.1vh, 187px); display: grid;
+  .top-row { flex: 0 0 clamp(188px, 24vh, 208px); height: clamp(188px, 24vh, 208px); display: grid;
              grid-template-columns: minmax(0, 7fr) minmax(0, 3fr); gap: 8px; min-height: 0; }
   .top-row > .card { min-height: 0; }
   .understand-card { min-height: 0; }
@@ -611,6 +635,22 @@
     #stage-rail .chev { display: none; }
     .stage .st-note { white-space: normal; }
   }
+  .draggable { cursor: grab; touch-action: none; }
+  .draggable:active { cursor: grabbing; stroke: #fff; stroke-width: 2; }
+  .scene-library { align-items: flex-start; margin: 10px 0; }
+  .scene-library > label.field { margin-bottom: 0; }
+  .scene-library .scene-actions { display: grid; flex: 1 1 100%; min-width: 0; width: 100%;
+                                  grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .scene-library .scene-action { display: flex; flex-direction: column; min-width: 0; }
+  .scene-library .scene-action > span { display: block; height: 19px; line-height: 19px;
+                                       margin: 0 0 3px; color: var(--muted); font-size: 9.5px;
+                                       letter-spacing: .04em; white-space: nowrap; }
+  .scene-library .scene-action > button { width: 100%; height: 40px; min-width: 0;
+                                          padding: 4px 6px; line-height: 1.15;
+                                          white-space: normal; }
+  #scene-validation.valid { color: var(--ok); }
+  #scene-validation.invalid { color: var(--warn); }
+  .coordinate { min-width: 74px; width: 74px; }
 </style>
 </head>
 <body>
@@ -767,14 +807,44 @@
         <label class="field short"><span>semilla</span>
           <input id="seed-in" type="number" step="1" value="0"></label>
       </div>
+      <label class="field startup-command-field"><span>primera orden (opcional)</span>
+        <input id="startup-command" type="text" maxlength="240"
+               placeholder="por ejemplo: mueve el cilindro verde a la caja roja"
+               autocomplete="off">
+      </label>
+      <p class="hint">La orden se ejecuta cuando el robot esté listo. Si selecciona una sola
+        geometría, se activa su perfil de agarre; las órdenes con geometrías mezcladas conservan
+        el perfil general.</p>
       <p class="hint">Se lee al pulsar <b>iniciar entorno</b>. La semilla hace que una sesión sea
         reproducible: la misma escena y el mismo azar, otra vez.</p>
 
+      <div id="scene-editor-content">
       <h3>la mesa <span class="count" id="scene-count"></span></h3>
+      <div class="row fit area-controls" aria-label="Dimensiones y posición del área de trabajo">
+        <label class="field"><span>centro X · mm</span><input id="work-area-x" type="number" step="1"></label>
+        <label class="field"><span>centro Y · mm</span><input id="work-area-y" type="number" step="1"></label>
+        <label class="field"><span>ancho · mm</span><input id="work-area-width" type="number" min="50" step="5"></label>
+        <label class="field"><span>fondo · mm</span><input id="work-area-depth" type="number" min="50" step="5"></label>
+      </div>
       <svg class="table-map" id="scene-map" preserveAspectRatio="xMidYMid meet" role="img"
-           aria-label="La mesa vista desde arriba: el área de trabajo, el alcance del brazo y lo que hay en ella"></svg>
-      <p class="hint" id="scene-legend"></p>
+           aria-label="La mesa vista desde arriba: arrastra el área de trabajo o una pieza; el círculo muestra el alcance del brazo"></svg>
+      <p class="hint" id="scene-legend">Arrastra el rectángulo azul para mover el área de trabajo. El círculo marca el alcance del brazo.</p>
       <p class="hint" id="scene-summary"></p>
+      <p class="hint" id="scene-validation" role="status">Validando escena...</p>
+      <div class="row fit scene-library">
+        <label class="field"><span>escenas guardadas</span><select id="scene-library"><option value="">elige una escena</option></select></label>
+        <label class="field"><span>nombre</span><input id="scene-name" maxlength="40" placeholder="mi_escena"></label>
+        <div class="scene-actions">
+          <div class="scene-action"><span>guardar escena</span><button id="scene-save-named" title="Guardar la escena con el nombre indicado">guardar como</button></div>
+          <div class="scene-action"><span>abrir escena</span><button id="scene-load-named" title="Cargar la escena seleccionada">cargar</button></div>
+          <div class="scene-action"><span>historial</span><button id="scene-undo" title="Deshacer el último cambio" disabled>deshacer</button></div>
+          <div class="scene-action"><span>historial</span><button id="scene-redo" title="Rehacer el último cambio deshecho" disabled>rehacer</button></div>
+          <div class="scene-action"><span>escena inicial</span><button id="scene-reset" title="Restablecer la configuración de demostración">restablecer demo</button></div>
+          <div class="scene-action"><span>archivo</span><button id="scene-export" title="Exportar la configuración como JSON">exportar JSON</button></div>
+          <div class="scene-action"><span>archivo</span><button id="scene-import-button" title="Importar una configuración desde JSON">importar JSON</button></div>
+        </div>
+        <input id="scene-import" type="file" accept="application/json,.json" hidden>
+      </div>
 
       <div class="split">
         <div class="panel">
@@ -793,6 +863,7 @@
           </div>
           <div id="scene-containers"></div>
         </div>
+      </div>
       </div>
       <h3>acciones en caliente <span class="hint">actúan sobre la sesión que ya está en marcha</span></h3>
       <div class="row fit">
@@ -857,6 +928,7 @@
             configurar
           </button>
           <button class="primary big" id="start">iniciar entorno</button>
+          <button class="big" id="pause" disabled aria-pressed="false">pausar</button>
           <button class="danger big" id="stop">detener</button>
         </div>
         <div class="hint" id="env-summary"></div>
@@ -901,6 +973,8 @@
           <span class="vopts" id="opt-count"></span></div>
         <div class="vrow"><span class="vlab" title="a dónde van">destino</span>
           <span class="vopts" id="opt-place"></span></div>
+        <div class="vrow"><span class="vlab" title="de qu&eacute; color es la caja o bandeja">color destino</span>
+          <span class="vopts" id="opt-place-color"></span></div>
         <div class="vrow"><span class="vlab" title="en qué orden">orden por</span>
           <span class="vopts" id="opt-sort"></span></div>
       </div>
@@ -939,6 +1013,7 @@
           <div class="route-now" id="route-now" role="status">esperando que el simulador arranque</div>
           <div class="hint" id="frame-note"></div>
           <div class="hint" id="camera-age" role="status"></div>
+          <div class="hint" id="grasp-note" role="status"></div>
         </div>
       </div>
     </div>
@@ -984,7 +1059,7 @@ const SWATCH = { red: "#c0392b", green: "#27ae60", blue: "#2f6fd0", yellow: "#d8
 // pintaba entero en la caja de clasificación: para leer "separa las piezas por color" había que
 // reconstruir la decisión a partir de siete filas de opciones. Ahora el robot publica la decisión
 // como frase (`classification.summary`) y esto sólo nombra lo que esa frase no dice.
-const KIND_ES = {ball:"bola",cube:"cubo",any:"pieza",box:"caja",tray:"bandeja",basket:"cesto"};
+const KIND_ES = {ball:"bola",cube:"cubo",cylinder:"cilindro",triangular_prism:"prisma triangular",hexagonal_prism:"prisma hexagonal",any:"pieza",box:"caja",tray:"bandeja",basket:"cesto"};
 const ACTION_ES = {above:"aproximar",lower:"bajar",close:"cerrar pinza",lift:"elevar",carry:"trasladar",release:"soltar",retreat:"retirar",open:"abrir pinza"};
 const COLOR_ES = { red: "rojo", green: "verde", blue: "azul", yellow: "amarillo",
                    orange: "naranja", white: "blanco", black: "negro", purple: "morado",
@@ -1007,7 +1082,7 @@ const SRC_ES = { voice: "voz", dashboard: "panel", web: "panel", terminal: "tecl
 //
 // La elección se marca con tres señales, y ninguna más: fondo lila para la elegida, un punto verde
 // delante para la que existe de verdad en la mesa, y la probabilidad del modelo al lado de la
-// elegida. Nada se mueve ni crece: son seis filas de alto fijo, y el abanico envuelve si no cabe.
+// elegida. Nada se mueve ni crece: son siete filas de alto fijo, y el abanico envuelve si no cabe.
 const INTENT_OPTS = [
   ["pick_and_place", "coger y colocar"], ["pick", "recoger"], ["give", "dar"],
   ["sort", "separar"], ["clear", "vaciar"], ["sequence", "secuencia"],
@@ -1015,7 +1090,7 @@ const INTENT_OPTS = [
   ["answer_yes", "s\u00ed"], ["answer_no", "no"], ["answer_value", "un valor"],
   ["question", "pregunta"], ["greeting", "saludo"], ["off_topic", "charla"],
   ["not_doable", "no se puede"]];
-const KIND_OPTS = [["ball", "bola"], ["cube", "cubo"], ["any", "pieza"], ["other", "otro"]];
+const KIND_OPTS = [["ball", "bola"], ["cube", "cubo"], ["cylinder", "cilindro"], ["triangular_prism", "prisma triangular"], ["hexagonal_prism", "prisma hexagonal"], ["any", "pieza"], ["other", "otro"]];
 const COLOR_OPTS = ["red", "green", "blue", "yellow", "orange", "white", "black", "purple",
                     "pink"].map(c => [c, COLOR_ES[c]]);
 const COUNT_OPTS = [["1", "uno"], ["2", "dos"], ["3", "tres"], ["4", "cuatro"], ["5", "cinco"],
@@ -1058,7 +1133,7 @@ function esc(t) {
 // caja del flujo, crecidas para acoger su contenido (HTML embebido con foreignObject).
 // El alto que ocupa el contenido vivo de cada caja, dentro de la caja. No hace falta para las
 // que no lo tienen (el foreignObject se mide contra la caja), y está aquí para las cuatro que sí.
-// La de clasificación mide 224: la frase, la fiabilidad, la duda y las seis filas de opciones.
+// La de clasificación mide 224: la frase, la fiabilidad, la duda y las siete filas de opciones.
 const CONTENT_H = { input: 76, understand: 192, plan: 176, execute: 176 };
 
 function contentMarkup(nodeId) {
@@ -1145,9 +1220,9 @@ const BOX_C = 68;
 const BOX_D = 190;
 const BOX_E = 68;
 const HEAD = 26;              // el alto que ocupan el título y la nota dentro de cada caja
-// La caja de clasificación: la frase, la fiabilidad, la duda, y las seis filas de opciones.
-// MEDIDOS en el navegador, no estimados: el contenido real mide 154 (frase 18 + fiabilidad 14 +
-// abanico 117, con la fila de intención envuelta en dos), y 192 deja holgura para que la frase
+// La caja de clasificación: la frase, la fiabilidad, la duda, y las siete filas de opciones.
+// MEDIDOS en el navegador, no estimados: el contenido real mide 174 (frase 18 + fiabilidad 14 +
+// abanico 137, con la fila de intención envuelta en dos), y 192 deja holgura para que la frase
 // ocupe dos líneas y aparezca la duda sin que nada se recorte. Ninguna fila crece, así que el
 // alto es fijo pase lo que pase, y el hueco de abajo ya no existe: antes sobraban 140 px.
 const UNDERSTAND_H = 104;
@@ -1529,13 +1604,20 @@ function optionsRow(rowId, options, chosen, present, score, swatches) {
 
 function paintVocabulary(picked) {
   const items = picked.items || [];
-  const detections = (window.state || {}).detections || [];
+  const detections = ((window.state || {}).detections || []).filter(d => !d.ambiguous);
   const kinds = items.map(i => String(i.kind || "")).filter(Boolean);
   const colors = items.map(i => String(i.color || "")).filter(Boolean);
   const counts = items.map(i => countLabel(i.count)).filter(Boolean);
   const places = [];
-  if (picked.place) places.push(String(picked.place.kind || ""));
-  for (const item of items) if (item.place) places.push(String(item.place.kind || ""));
+  const placeColors = [];
+  if (picked.place) {
+    places.push(String(picked.place.kind || ""));
+    if (picked.place.color) placeColors.push(String(picked.place.color));
+  }
+  for (const item of items) if (item.place) {
+    places.push(String(item.place.kind || ""));
+    if (item.place.color) placeColors.push(String(item.place.color));
+  }
   // "sin ordenar" es una decision tambien: cuando la orden no ordena nada, el modelo lo decidio.
   // Pero sin clasificacion no hay decision ninguna, y marcar una opcion seria inventarsela.
   const sortKey = picked.sort_by == null ? []
@@ -1564,6 +1646,10 @@ function paintVocabulary(picked) {
   for (const [kind] of PLACE_OPTS) {
     placeHere[kind] = containers.some(c => String(c.kind || "") === kind);
   }
+  const placeColorHere = {};
+  for (const color of new Set(containers.map(c => String(c.color || "")).filter(Boolean))) {
+    placeColorHere[color] = true;
+  }
   const here = keys => {
     const marks = {};
     for (const key of keys) marks[key] = true;
@@ -1575,13 +1661,16 @@ function paintVocabulary(picked) {
   // pintan en la misma fila, porque la fila nombra el recipiente. La probabilidad de la pastilla
   // elegida es la de la decisión que esa pastilla representa: el tipo; si el modelo sólo puntuó el
   // color, es la del color. El otro número, si acaso, está en la línea de fiabilidad de arriba.
-  const placeScore = scores.place_kind != null ? scores.place_kind : scores.place_color;
+  const placeScore = picked.place
+    ? (scores.place_kind != null ? scores.place_kind : scores.place_color) : null;
+  const placeColorScore = picked.place ? scores.place_color : null;
   optionsRow("opt-intent", INTENT_OPTS, picked.intent ? [String(picked.intent)] : [], null,
              scores.intent);
   optionsRow("opt-kind", KIND_OPTS, kinds, here(deskKinds), null);
   optionsRow("opt-color", COLOR_OPTS, colors, here(deskColors), null, true);
   optionsRow("opt-count", COUNT_OPTS, counts, countHere, null);
   optionsRow("opt-place", PLACE_OPTS, places, placeHere, placeScore);
+  optionsRow("opt-place-color", COLOR_OPTS, placeColors, placeColorHere, placeColorScore, true);
   optionsRow("opt-sort", SORT_OPTS, sortKey.map(String), null, scores.sort_by);
 }
 
@@ -1711,9 +1800,22 @@ function paintExamples(catalog) {
   const destinations = catalog.filter(entry => entry.container);
   const objects = catalog.filter(entry => !entry.container);
   const boxOf = color => `la caja ${feminine(COLOR_ES[color])}`;
-  const phrase = entry => entry.kind === "ball"
-    ? `la bola ${feminine(COLOR_ES[entry.color])}` : `el cubo ${COLOR_ES[entry.color]}`;
-  const labelOf = entry => entry.kind === "ball" ? `bola ${feminine(COLOR_ES[entry.color])}` : `cubo ${COLOR_ES[entry.color]}`;
+  const kindWords = {
+    ball: ["la", "bola", "las", "bolas", true],
+    cube: ["el", "cubo", "los", "cubos", false],
+    cylinder: ["el", "cilindro", "los", "cilindros", false],
+    triangular_prism: ["el", "prisma triangular", "los", "prismas triangulares", false],
+    hexagonal_prism: ["el", "prisma hexagonal", "los", "prismas hexagonales", false]
+  };
+  const wordsOf = entry => kindWords[entry.kind] || ["la", KIND_ES[entry.kind] || "pieza", "las", KIND_ES[entry.kind] || "piezas", true];
+  const phrase = entry => {
+    const [article, noun, , , feminineNoun] = wordsOf(entry), color = COLOR_ES[entry.color] || entry.color;
+    return `${article} ${noun} ${feminineNoun ? feminine(color) : color}`;
+  };
+  const labelOf = entry => {
+    const [, noun, , , feminineNoun] = wordsOf(entry), color = COLOR_ES[entry.color] || entry.color;
+    return `${noun} ${feminineNoun ? feminine(color) : color}`;
+  };
   const commands = [];
   if (objects.length && objects.every(entry => destinations.some(d => d.color === entry.color)))
     commands.push(["separar colores", "separa las piezas por colores"]);
@@ -1733,11 +1835,17 @@ function paintExamples(catalog) {
   }
   // todas las de un tipo, a un recipiente
   // cada tipo tiene su concordancia: «todos los cubos», «todas las bolas» (bola es femenino)
-  const group = { cube: { all: "todos los cubos", the: "los", noun: "cubos" },
-                  ball: { all: "todas las bolas", the: "las", noun: "bolas" } };
+  const group = {
+    cube: { all: "todos los cubos", the: "los", noun: "cubos" },
+    ball: { all: "todas las bolas", the: "las", noun: "bolas" },
+    cylinder: { all: "todos los cilindros", the: "los", noun: "cilindros" },
+    triangular_prism: { all: "todos los prismas triangulares", the: "los", noun: "prismas triangulares" },
+    hexagonal_prism: { all: "todos los prismas hexagonales", the: "los", noun: "prismas hexagonales" }
+  };
   for (const kind of [...new Set(objects.map(entry => entry.kind))]) {
     const count = objects.filter(entry => entry.kind === kind).length;
     const g = group[kind];
+    if (!g) continue;
     for (const d of destinations)
       if (count >= 2) commands.push([`${g.all.replace("todas las", "todas").replace("todos los", "todos")} → ${COLOR_ES[d.color]}`, `pon ${g.all} en ${boxOf(d.color)}`]);
     if (count >= 2 && count <= 5) {
@@ -1749,7 +1857,7 @@ function paintExamples(catalog) {
   for (const entry of objects)
     for (const other of destinations.filter(d => d.color !== entry.color))
       commands.push([`${labelOf(entry)} → ${COLOR_ES[other.color]}`, `pon ${phrase(entry)} en ${boxOf(other.color)}`]);
-  for (const [label, command] of commands.slice(0, 12)) {
+  for (const [label, command] of commands.slice(0, 9)) {
     const button = document.createElement("button"); button.textContent = label;
     button.dataset.cmd = command; button.title = command;
     // Sólo la pone en la caja: se envía cuando el usuario pulsa «enviar», no al elegir el ejemplo.
@@ -1817,6 +1925,8 @@ function paintState(state) {
     text("missed", state.missed ?? 0);
     text("variant-tag", state.variant ? `(${({contained:"con límites",open:"abierto",out_of_reach:"fuera de alcance"})[state.variant] || state.variant})` : "");
     text("frame-note", state.frame_note || "");
+    const failure = state.grasp_failure;
+    text("grasp-note", failure ? `${failure.prim || "Pieza"}: ${failure.cause}` : "");
 
     const gate = el("gate");
     const phase = state.phase || "setup";
@@ -1882,10 +1992,16 @@ function paintDetections(list) {
     const where = t.pos ? `${(t.pos[0] * 1000).toFixed(0)}, ${(t.pos[1] * 1000).toFixed(0)} mm`
                         : "sin posici\u00f3n";
     const color = t.color ? `<span class="swatch" style="background:${SWATCH[t.color] || "#888"}"></span>` : "";
-    return `<tr><td>${color}${esc(KIND_ES[t.kind] || "pieza")} ${esc(COLOR_ES[t.color] || "")}</td>` +
-           `<td>${where}</td><td>${esc(t.prim || "sin pieza")}</td></tr>`;
+    const confidence = Number.isFinite(Number(t.confidence)) ? `${Math.round(Number(t.confidence) * 100)}%` : "?";
+    const detected = t.ambiguous
+      ? `<span class="detection-ambiguous" title="${esc(t.ambiguity_reason || "Se necesita otra vista")}">grupo sin separar</span>`
+      : esc(KIND_ES[t.kind] || "pieza");
+    const status = t.ambiguous ? "Reobservar" : (t.prim ? "Asociada" : "Sin asociar");
+    return `<tr><td>${color}${detected}${t.ambiguous ? "" : ` ${esc(COLOR_ES[t.color] || "")}`}</td>` +
+           `<td>${where}</td><td>${esc(t.prim || "sin pieza")}</td><td>${t.ambiguous ? "—" : confidence}</td>` +
+           `<td class="${t.ambiguous ? "detection-ambiguous" : ""}">${status}</td></tr>`;
   });
-  table.innerHTML = `<tr><th>cosa</th><th>x, y</th><th>pieza</th></tr>${rows.join("")}`;
+  table.innerHTML = `<tr><th>cosa</th><th>x, y</th><th>pieza</th><th>confianza CV</th><th>estado</th></tr>${rows.join("")}`;
 }
 
 function paintFindings(list) {
@@ -2034,11 +2150,28 @@ const COMMAND_ES = {
 let startPending = false;
 const RUNNING_PHASES = ["ready", "scene", "waiting", "command", "sorting", "done"];
 
+function updateSceneEditorLock(state) {
+  const phase = (state || {}).phase;
+  const locked = RUNNING_PHASES.includes(phase) || ["loading", "starting", "stopping"].includes(phase);
+  const editor = el("scene-editor-content");
+  if (editor && editor.inert !== locked) {
+    editor.inert = locked;
+    editor.setAttribute("aria-disabled", String(locked));
+    text("scene-legend", locked
+      ? "Edicion bloqueada durante la sesion. Deten el entorno para cambiar la escena."
+      : "Arrastra una pieza o recipiente para moverlo; el servidor valida alcance y separaciones al guardar.");
+  }
+  for (const id of ["scene-simple", "scene-preset", "scene-save", "scene-start"]) {
+    const button = el(id); if (button) button.disabled = locked;
+  }
+}
+
 function paintStatus(state) {
   // Iniciar sólo tiene sentido antes de que el entorno exista. Un botón que no sirve se ve apagado,
   // y desde que se pulsa no se puede volver a pulsar hasta que el entorno está en marcha (o falla).
   const phase = (state || {}).phase;
   const running = RUNNING_PHASES.includes(phase);
+  updateSceneEditorLock(state);
   const start = el("start");
   // Sólo se puede iniciar mientras el robot espera esa orden.
   if (["failed", "stopped"].includes(phase)) startPending = false;
@@ -2108,7 +2241,15 @@ function applySnapshot(snap) {
   // depender de que paintNodes haya pasado antes.
   if (snap.nodes) window._stageNodes = Object.fromEntries(snap.nodes.map(n => [n.id, n]));
   if (snap.nodes) safePaint("la ruta", () => paintChanged("nodes",snap.nodes,()=>paintNodes(snap.nodes)));
-  if (snap.state) safePaint("el estado", () => paintState(snap.state));
+  if (snap.state) {
+    safePaint("el estado", () => paintState(snap.state));
+    const active = snap.state.sim === "running" && ["command", "sorting", "verifying", "recovering", "paused"].includes(snap.state.phase);
+    const pause = el("pause");
+    pause.disabled = !active;
+    pause.textContent = snap.state.paused ? "reanudar" : "pausar";
+    pause.setAttribute("aria-pressed", String(Boolean(snap.state.paused)));
+    pause.title = snap.state.paused ? "reanudar la ejecución desde la pose actual" : "pausar entre pasos de física";
+  }
   if (snap.state) safePaint("el estado del robot", () => paintStatus(snap.state));
   if (snap.commands) safePaint("las órdenes", () => paintCommands(snap.commands));
   if (snap.metrics) safePaint("el diagnóstico", () =>
@@ -2117,6 +2258,12 @@ function applySnapshot(snap) {
     for (const event of snap.events || []) appendEvent(event, false);
   });
 }
+
+el("pause").onclick = async () => {
+  const paused = Boolean((window.state || {}).paused);
+  const reply = await post("/api/env", { action: paused ? "resume" : "pause" });
+  if (!reply || !reply.ok) text("start-note", "no se pudo cambiar el estado de pausa");
+};
 
 let reconnectTimer = null;
 
@@ -2187,7 +2334,8 @@ el("start").onclick = async () => {
   const reply = await post("/api/env", { action: "start", variant: el("variant-sel").value,
                                          camera: el("camera-sel").value,
                                          rounds: Number(el("rounds").value),
-                                         seed: Number(el("seed-in").value) });
+                                         seed: Number(el("seed-in").value),
+                                         command: el("startup-command").value.trim() });
   // El arranque tarda minutos y el botón de inicio está detrás de esta ventana: si se deja
   // abierta, quien la abrió para configurar no ve la barra de arranque ni el estado.
   if (reply && reply.ok) setPopupOpen(POPUPS.find(p => p.modal === "env-modal"), false);
@@ -2257,7 +2405,10 @@ function stageNote(def) {
   const pick = (...ids) => { for (const id of ids) { const n = live[id]; if (n && n.note) return n.note; } return ""; };
   switch (def.key) {
     case "ver": {
-      const d = (state.detections || []).length;
+      const rows = state.detections || [];
+      const d = rows.filter(item => !item.ambiguous).length;
+      const uncertain = rows.filter(item => item.ambiguous).length;
+      if (uncertain) return `${d} confirmados · ${uncertain} por reobservar`;
       if (d) return `${d} ${d === 1 ? "objeto detectado" : "objetos detectados"}`;
       return pick("perceive", "capture", "ground");
     }
@@ -2346,6 +2497,7 @@ function paintDemo() {
   else if (phase === "command" || phase === "sorting") { cls = "active"; msg = "Ejecutando la orden…"; }
   else if (phase === "verifying") { cls = "active"; msg = "Verificando las colocaciones…"; }
   else if (phase === "recovering") { cls = "warn"; msg = "Recuperando una pieza que no quedó bien…"; }
+  else if (phase === "paused") { cls = "warn"; msg = "Ejecución pausada; el brazo mantiene su pose. Pulsa reanudar para continuar."; }
   box.className = cls;
   const span = box.children[1];
   if (span) span.textContent = msg;
@@ -2456,10 +2608,22 @@ for (const id of ["variant-sel", "camera-sel", "rounds", "seed-in"]) {
 }
 paintEnvSummary();
 
-el("next").onclick = () => post("/api/env", { action: "next" });
-el("relook").onclick = () => post("/api/env", { action: "relook" });
-el("save").onclick = () => post("/api/env", { action: "save" });
-el("stop").onclick = () => post("/api/env", { action: "stop" });
+const CONTROL_LABELS = {
+  next: "continuar", relook: "observar la mesa", save: "guardar el registro",
+  stop: "detener el entorno",
+};
+async function sendControl(action) {
+  const reply = await post("/api/env", { action });
+  if (!reply || !reply.ok) {
+    text("queued-note", (reply && reply.error) || `No se pudo ${CONTROL_LABELS[action] || "enviar el control"}.`);
+    return;
+  }
+  text("queued-note", `${COMMAND_ES[reply.state] || "recibido"}: ${CONTROL_LABELS[action] || action}`);
+}
+el("next").onclick = () => sendControl("next");
+el("relook").onclick = () => sendControl("relook");
+el("save").onclick = () => sendControl("save");
+el("stop").onclick = () => sendControl("stop");
 el("send").onclick = async () => {
   const box = el("cmd");
   const sentence = box.value.trim();
@@ -2561,6 +2725,8 @@ function stopMic() {
 el("mic").onclick = toggleMic;
 
 let sceneConfig = null;
+let sceneInvalidIds = new Set();
+let sceneAreaInvalid = false;
 let sceneCatalog = [];      // lo que el servidor construyó: posición y tamaño de cada cosa
 let sceneLayout = null;     // área de trabajo y base del brazo, para el mapa
 let scenePresets = {};      // las escenas predefinidas, servidas por /api/config
@@ -2592,8 +2758,13 @@ function paintSceneMap() {
     return;
   }
   const mm = value => value * 1000;
-  const [wx0, wx1] = sceneLayout.work_x.map(mm);
-  const [wy0, wy1] = sceneLayout.work_y.map(mm);       // el borde pegado al robot es wy0
+  const area = sceneConfig && sceneConfig.working_area;
+  const areaX = area ? Number(area.x_m) : (sceneLayout.work_x[0] + sceneLayout.work_x[1]) / 2;
+  const areaY = area ? Number(area.y_m) : (sceneLayout.work_y[0] + sceneLayout.work_y[1]) / 2;
+  const areaWidth = area ? Number(area.width_mm) / 1000 : sceneLayout.work_x[1] - sceneLayout.work_x[0];
+  const areaDepth = area ? Number(area.depth_mm) / 1000 : sceneLayout.work_y[1] - sceneLayout.work_y[0];
+  const wx0 = mm(areaX - areaWidth / 2), wx1 = mm(areaX + areaWidth / 2);
+  const wy0 = mm(areaY - areaDepth / 2), wy1 = mm(areaY + areaDepth / 2); // el borde pegado al robot es wy0
   const [rx, ry] = sceneLayout.robot.map(mm);
   const cx = rx, cy = -ry, reach = sceneLayout.reach * 1000;
   let left = Math.min(wx0, cx - reach), right = Math.max(wx1, cx + reach);
@@ -2605,18 +2776,28 @@ function paintSceneMap() {
     left = Math.min(left, px - w / 2); right = Math.max(right, px + w / 2);
     top = Math.min(top, py - h / 2); bottom = Math.max(bottom, py + h / 2);
     const color = `m-${item.color}`;
+    const invalid = sceneInvalidIds.has(item.id) ? "invalid" : "";
+    const drag = `data-id="${item.id}" class="${item.container ? "tray" : "part"} ${color} ${invalid} draggable"`;
     if (item.container) {
-      parts.push(`<rect class="tray ${color}" x="${px - w / 2}" y="${py - h / 2}" width="${w}" height="${h}" rx="3"/>`);
+      const rotation = `rotate(${item.yaw_deg || 0} ${px} ${py})`;
+      parts.push(`<rect ${drag} x="${px - w / 2}" y="${py - h / 2}" width="${w}" height="${h}" rx="3" transform="${rotation}"/>`);
       if (item.inner && item.inner[0]) {
         const iw = mm(item.inner[0]), ih = mm(item.inner[1]);
-        parts.push(`<rect class="tray-cavity ${color}" x="${px - iw / 2}" y="${py - ih / 2}" width="${iw}" height="${ih}"/>`);
+        parts.push(`<rect class="tray-cavity ${color}" x="${px - iw / 2}" y="${py - ih / 2}" width="${iw}" height="${ih}" transform="${rotation}"/>`);
       }
-      const label = (item.name || item.id).slice(0, 12);
+      const label = (item.name || item.id).slice(0, 12).replace(/[&<>"']/g, ch => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;"}[ch]));
       parts.push(`<text x="${px}" y="${py + 3.2}" text-anchor="middle" class="name">${label}</text>`);
-    } else if (item.kind === "ball") {
-      parts.push(`<circle class="part ${color}" cx="${px}" cy="${py}" r="${w / 2}"/>`);
+    } else if (item.kind === "ball" || item.kind === "cylinder") {
+      parts.push(`<circle ${drag} cx="${px}" cy="${py}" r="${w / 2}"/>`);
+    } else if (item.kind === "triangular_prism" || item.kind === "hexagonal_prism") {
+      const sides = item.kind === "triangular_prism" ? 3 : 6;
+      const points = Array.from({length:sides}, (_, i) => {
+        const a = (Math.PI * 2 * i / sides) + Math.PI / 2 + (Number(item.yaw_deg || 0) * Math.PI / 180);
+        return `${px + Math.cos(a) * w / 2},${py + Math.sin(a) * w / 2}`;
+      }).join(" ");
+      parts.push(`<polygon ${drag} points="${points}"/>`);
     } else {
-      parts.push(`<rect class="part ${color}" x="${px - w / 2}" y="${py - w / 2}" width="${w}" height="${w}" rx="1"/>`);
+      parts.push(`<rect ${drag} x="${px - w / 2}" y="${py - h / 2}" width="${w}" height="${h}" rx="1" transform="rotate(${item.yaw_deg || 0} ${px} ${py})"/>`);
     }
   }
   left -= 18; right += 18; top -= 14; bottom += 16;
@@ -2626,22 +2807,104 @@ function paintSceneMap() {
     `<circle class="reach" cx="${cx}" cy="${cy}" r="${reach}"/>` +
     `<line class="reach-line" x1="${cx}" y1="${cy}" x2="${cx - reach}" y2="${cy}"/>` +
     `<text x="${cx - reach / 2}" y="${cy - 4}" text-anchor="middle" class="name">${Math.round(reach)} mm</text>` +
-    `<rect class="area" x="${wx0}" y="${-wy1}" width="${wx1 - wx0}" height="${wy1 - wy0}"/>` +
+    `<rect data-work-area="true" class="area draggable ${sceneAreaInvalid ? "invalid" : ""}" x="${wx0}" y="${-wy1}" width="${wx1 - wx0}" height="${wy1 - wy0}"/>` +
     `<line class="arm-line" x1="${cx}" y1="${cy}" x2="${cx}" y2="${-wy1}"/>` +
     `<circle class="arm" cx="${cx}" cy="${cy}" r="9"/>` +
     `<text x="${cx}" y="${cy + 4}" text-anchor="middle" class="name">brazo</text>` +
     `<text x="${wx0 + 2}" y="${-wy0 + 12}" class="name">área de trabajo ${Math.round(wx1 - wx0)} × ${Math.round(wy1 - wy0)} mm</text>` +
     parts.join("");
-  text("scene-legend", `círculo discontinuo: hasta donde llega el brazo (${Math.round(reach)} mm) · ` +
-       `cuadrado: cubo · círculo: bola · hueco: recipiente`);
+  text("scene-legend", `Arrastra el área azul, las piezas o los recipientes · alcance del brazo: ${Math.round(reach)} mm`);
 }
 
 // La frase que dice qué hay en la mesa, que es lo que el robot va a leer al percibirla.
+let draggedSceneId = null, dragOffset = {x:0, y:0};
+const sceneMap = el("scene-map");
+sceneMap.addEventListener("pointerdown", event => {
+  const target = event.target.closest("[data-id], [data-work-area]");
+  if (!target) return;
+  draggedSceneId = target.dataset.workArea ? "@work-area" : target.dataset.id;
+  const point = sceneMap.createSVGPoint(); point.x = event.clientX; point.y = event.clientY;
+  const world = point.matrixTransform(sceneMap.getScreenCTM().inverse());
+  if (draggedSceneId === "@work-area") {
+    const area = sceneConfig.working_area;
+    dragOffset = {x:Number(area.x_m) - world.x / 1000, y:Number(area.y_m) + world.y / 1000};
+  } else {
+    const item = sceneCatalog.find(candidate => candidate.id === draggedSceneId);
+    if (item) dragOffset = {x:item.x - world.x / 1000, y:item.y + world.y / 1000};
+  }
+  recordSceneUndo(); sceneMap.setPointerCapture(event.pointerId);
+  event.preventDefault();
+});
+sceneMap.addEventListener("pointermove", event => {
+  if (!draggedSceneId || !sceneLayout) return;
+  const point = sceneMap.createSVGPoint(); point.x = event.clientX; point.y = event.clientY;
+  const world = point.matrixTransform(sceneMap.getScreenCTM().inverse());
+  if (draggedSceneId === "@work-area") {
+    const area = sceneConfig.working_area, tableX = sceneLayout.table_x, tableY = sceneLayout.table_y;
+    const halfWidth = Number(area.width_mm) / 2000, halfDepth = Number(area.depth_mm) / 2000;
+    area.x_m = Math.round(Math.max(tableX[0] + halfWidth, Math.min(tableX[1] - halfWidth, world.x / 1000 + dragOffset.x)) * 1000) / 1000;
+    area.y_m = Math.round(Math.max(tableY[0] + halfDepth, Math.min(tableY[1] - halfDepth, -world.y / 1000 + dragOffset.y)) * 1000) / 1000;
+    syncWorkingAreaInputs(); paintSceneMap();
+  } else {
+    setSceneItemPose(draggedSceneId, world.x / 1000 + dragOffset.x, -world.y / 1000 + dragOffset.y);
+  }
+});
+sceneMap.addEventListener("pointerup", () => { if (draggedSceneId) queueSceneValidation(); draggedSceneId = null; });
+sceneMap.addEventListener("pointercancel", () => { if (draggedSceneId) queueSceneValidation(); draggedSceneId = null; });
+function syncWorkingAreaInputs() {
+  if (!sceneConfig || !sceneConfig.working_area) return;
+  const area = sceneConfig.working_area;
+  el("work-area-x").value = Math.round(Number(area.x_m) * 1000);
+  el("work-area-y").value = Math.round(Number(area.y_m) * 1000);
+  el("work-area-width").value = Math.round(Number(area.width_mm));
+  el("work-area-depth").value = Math.round(Number(area.depth_mm));
+}
+function updateWorkingAreaFromInputs() {
+  if (!sceneConfig || !sceneLayout) return;
+  const area = sceneConfig.working_area;
+  const width = Math.max(50, Math.min((sceneLayout.table_x[1] - sceneLayout.table_x[0]) * 1000,
+    Number(el("work-area-width").value) || 50));
+  const depth = Math.max(50, Math.min((sceneLayout.table_y[1] - sceneLayout.table_y[0]) * 1000,
+    Number(el("work-area-depth").value) || 50));
+  const halfWidth = width / 2000, halfDepth = depth / 2000;
+  area.width_mm = width; area.depth_mm = depth;
+  area.x_m = Math.max(sceneLayout.table_x[0] + halfWidth, Math.min(sceneLayout.table_x[1] - halfWidth,
+    (Number(el("work-area-x").value) || 0) / 1000));
+  area.y_m = Math.max(sceneLayout.table_y[0] + halfDepth, Math.min(sceneLayout.table_y[1] - halfDepth,
+    (Number(el("work-area-y").value) || 0) / 1000));
+  syncWorkingAreaInputs(); paintSceneMap(); queueSceneValidation();
+}
+["work-area-x", "work-area-y", "work-area-width", "work-area-depth"].forEach(id => {
+  el(id).addEventListener("change", () => { recordSceneUndo(); updateWorkingAreaFromInputs(); });
+});
+function setSceneItemPose(id, x, y) {
+  let source = null, isContainer = false;
+  for (const container of [true, false]) {
+    const entries = sceneConfig[container ? "containers" : "objects"];
+    source = entries.find(entry => entry.id === id || id.startsWith(entry.id + "_"));
+    if (source) { isContainer = container; break; }
+  }
+  if (!source) return;
+  const entryList = sceneConfig[isContainer ? "containers" : "objects"];
+  if (!isContainer && Number(source.count || 1) > 1) {
+    const group = source, n = Number(group.count);
+    const members = sceneCatalog.filter(item => item.id === group.id || item.id.startsWith(group.id + "_"));
+    const split = members.map(item => ({...group, id:item.id, count:1, x:item.x, y:item.y, yaw_deg:item.yaw_deg || 0}));
+    entryList.splice(entryList.indexOf(group), 1, ...split);
+    source = split.find(item => item.id === id);
+  }
+  if (!source) return;
+  source.x = Math.round(x * 1000) / 1000; source.y = Math.round(y * 1000) / 1000;
+  const catalog = sceneCatalog.find(item => item.id === id);
+  if (catalog) { catalog.x = source.x; catalog.y = source.y; }
+  paintSceneMap(); paintSceneSummary();
+}
+
 function paintSceneSummary() {
   const pieces = sceneConfig.objects.reduce((total, entry) => total + (Number(entry.count) || 1), 0);
   const boxes = sceneConfig.containers.length;
   const groups = sceneConfig.objects.map(entry => {
-    const kind = entry.kind === "ball" ? "bola" : "cubo";
+    const kind = KIND_ES[entry.kind] || "pieza";
     const count = Number(entry.count) || 1;
     return `${count} ${kind}${count === 1 ? "" : "s"} ${SCENE_COLOR_ES[entry.color] || entry.color}`;
   });
@@ -2654,6 +2917,59 @@ function paintSceneSummary() {
     : "Todavía no hay piezas en la mesa.");
 }
 
+let sceneUndo = [], sceneRedo = [], validationTimer = null, validationSequence = 0;
+function updateHistoryButtons() {
+  el("scene-undo").disabled = sceneUndo.length === 0;
+  el("scene-redo").disabled = sceneRedo.length === 0;
+}
+function recordSceneUndo() {
+  if (!sceneConfig) return;
+  sceneUndo.push(JSON.stringify(sceneConfig));
+  if (sceneUndo.length > 50) sceneUndo.shift();
+  sceneRedo = []; updateHistoryButtons();
+}
+function queueSceneValidation() {
+  clearTimeout(validationTimer); validationSequence += 1;
+  sceneAreaInvalid = false;
+  if (sceneInvalidIds.size) { sceneInvalidIds = new Set(); paintSceneMap(); }
+  const status = el("scene-validation");
+  status.className = "hint"; status.textContent = "Validando escena...";
+  validationTimer = setTimeout(validateScene, 250);
+}
+function errorMentionsSceneId(error, id) {
+  return new RegExp(`(^|[^A-Za-z0-9_])${id}($|[^A-Za-z0-9_])`).test(error);
+}
+async function validateScene() {
+  if (!sceneConfig) return;
+  const sequence = ++validationSequence;
+  try {
+    const answer = await post("/api/config/validate", sceneConfig);
+    if (sequence !== validationSequence) return;
+    const status = el("scene-validation");
+    if (answer && answer.ok) {
+      sceneInvalidIds = new Set(); sceneAreaInvalid = false;
+      sceneConfig = answer.config || sceneConfig;
+      sceneCatalog = answer.catalog || []; sceneLayout = answer.layout || sceneLayout;
+      status.className = "hint valid"; status.textContent = "Escena valida: posiciones dentro del area y sin solapes.";
+      paintSceneMap(); paintSceneSummary();
+    } else {
+      const error = (answer && answer.error) || "";
+      sceneInvalidIds = new Set(sceneCatalog.filter(item => errorMentionsSceneId(error, item.id)).map(item => item.id));
+      sceneAreaInvalid = /\u00e1rea de trabajo|alcance seguro/i.test(error);
+      status.className = "hint invalid"; status.textContent = (answer && answer.error) || "La escena necesita ajustes.";
+      paintSceneMap();
+    }
+  } catch (_) {
+    const status = el("scene-validation"); status.className = "hint invalid";
+    status.textContent = "No se pudo validar con el servidor.";
+  }
+}
+async function restoreSceneHistory(from, to) {
+  if (!from.length || !sceneConfig) return;
+  to.push(JSON.stringify(sceneConfig)); sceneConfig = JSON.parse(from.pop()); updateHistoryButtons();
+  paintSceneEditor(); queueSceneValidation();
+}
+
 // ---- cada fila de la escena ------------------------------------------------------------
 // Una línea por grupo, con su etiqueta: tipo, cuántas y de qué color, todo a la vista. El color
 // son muestras y no un desplegable porque es lo primero que se busca al leer una escena.
@@ -2663,8 +2979,10 @@ function sceneRow(entry, container, index) {
   // otra cosa, así que se borra y el montador decide. El cubo de la escena original cambia de
   // identidad porque sus medidas y su color vienen del USD y no se pueden reescribir.
   const change = (key, value) => {
-    if (entry.id === "cube") entry.id = sceneIdentifier("pieza_");
-    entry[key] = value; delete entry.x; delete entry.y;
+    recordSceneUndo();
+    if (entry.id === "cube") { entry.id = sceneIdentifier("pieza_"); const catalogItem = sceneCatalog.find(candidate => candidate.id === "cube"); if (catalogItem) catalogItem.id = entry.id; }
+    entry[key] = value;
+    paintSceneEditor();
   };
   // ``field(label, control, cls)``: ``cls`` fija el ancho del campo (``grow`` lo deja estirarse),
   // que es lo que hace que las etiquetas caigan siempre en el mismo sitio de todas las filas.
@@ -2694,7 +3012,7 @@ function sceneRow(entry, container, index) {
     button.type = "button"; button.className = "quitar"; button.innerHTML = "&times;";
     button.title = "quitar de la escena"; button.setAttribute("aria-label", "quitar de la escena");
     button.onclick = () => {
-      sceneConfig[container ? "containers" : "objects"].splice(index, 1);
+      recordSceneUndo(); sceneConfig[container ? "containers" : "objects"].splice(index, 1);
       paintSceneEditor();
     };
     return button;
@@ -2702,9 +3020,31 @@ function sceneRow(entry, container, index) {
   if (container) {
     const name = document.createElement("input");
     name.value = entry.name || ""; name.placeholder = "nombre del recipiente";
-    name.onchange = () => { entry.name = name.value; };
+    name.onchange = () => { recordSceneUndo(); entry.name = name.value; paintSceneEditor(); };
     field("recipiente", name, "grow");
     field("color", swatches(availableColors, entry.color, value => change("color", value)), "colour");
+    const dimension = (label, key, index, min, max) => {
+      const input = document.createElement("input"); input.type = "number"; input.min = min; input.max = max; input.step = 1;
+      input.value = Array.isArray(entry[key]) ? entry[key][index] : (entry[key] || 0);
+      input.onchange = () => {
+        recordSceneUndo();
+        if (key === "size_mm") entry.size_mm[index] = Math.max(min, Math.min(max, Number(input.value) || min));
+        else entry[key] = Math.max(min, Math.min(max, Number(input.value) || min));
+        const wall = Number(entry.wall_mm || 7);
+        entry.cavity_mm = [entry.size_mm[0] - 2 * wall, entry.size_mm[1] - 2 * wall];
+        paintSceneEditor();
+      };
+      field(label, input, "coordinate");
+    };
+    dimension("ancho mm", "size_mm", 0, 10, 250);
+    dimension("fondo mm", "size_mm", 1, 10, 250);
+    dimension("alto mm", "size_mm", 2, 10, 50);
+    const wall = document.createElement("input"); wall.type = "number"; wall.min = 1; wall.max = 20; wall.step = 1; wall.value = entry.wall_mm || 7;
+    wall.onchange = () => { recordSceneUndo(); entry.wall_mm = Math.max(1, Math.min(20, Number(wall.value) || 1)); entry.cavity_mm = [entry.size_mm[0] - 2 * entry.wall_mm, entry.size_mm[1] - 2 * entry.wall_mm]; paintSceneEditor(); };
+    field("pared mm", wall, "coordinate");
+    const floor = document.createElement("input"); floor.type = "number"; floor.min = 1; floor.max = 20; floor.step = 1; floor.value = entry.floor_mm || 6;
+    floor.onchange = () => { recordSceneUndo(); entry.floor_mm = Math.max(1, Math.min(20, Number(floor.value) || 1)); paintSceneEditor(); };
+    field("base mm", floor, "coordinate");
     row.appendChild(remove());
     return row;
   }
@@ -2728,30 +3068,86 @@ function sceneRow(entry, container, index) {
     }
     return box;
   };
-  field("pieza", chips([["cube", "cubo"], ["ball", "bola"]], entry.kind, value => change("kind", value)), "kind");
+  field("pieza", chips([["cube", "cubo"], ["ball", "bola"], ["cylinder", "cilindro"], ["triangular_prism", "prisma triangular"], ["hexagonal_prism", "prisma hexagonal"]], entry.kind, value => change("kind", value)), "kind");
   field("color", swatches(availableColors, entry.color, value => change("color", value)), "colour");
   const count = document.createElement("input");
   count.type = "number"; count.min = 1; count.max = 64; count.value = entry.count || 1;
   count.onchange = () => change("count", Math.max(1, Math.min(64, Number(count.value) || 1)));
   field("cuántas", count, "count");
+  if (Number(entry.count || 1) === 1) {
+    const mmInput = (label, key, factor, min, max, step) => {
+      const input = document.createElement("input"); input.type = "number"; input.step = step;
+      input.min = min; input.max = max; input.value = entry[key] == null ? "" : Math.round(entry[key] * factor * 10) / 10;
+      input.placeholder = "auto";
+      input.onchange = () => { const value = Number(input.value); if (Number.isFinite(value)) { recordSceneUndo(); const item = sceneCatalog.find(candidate => candidate.id === entry.id); if (entry.x == null) entry.x = item ? item.x : 0.4; if (entry.y == null) entry.y = item ? item.y : -0.46; entry[key] = value / factor; if (entry.id === "cube") { entry.id = sceneIdentifier("pieza_"); const catalogItem = sceneCatalog.find(candidate => candidate.id === "cube"); if (catalogItem) catalogItem.id = entry.id; } paintSceneEditor(); } };
+      field(label, input, "coordinate");
+    };
+    const xBounds = sceneLayout ? sceneLayout.work_x.map(value => value * 1000) : [270, 520];
+    const yBounds = sceneLayout ? sceneLayout.work_y.map(value => value * 1000) : [-540, -420];
+    mmInput("x mm", "x", 1000, xBounds[0], xBounds[1], 1);
+    mmInput("y mm", "y", 1000, yBounds[0], yBounds[1], 1);
+    const yaw = document.createElement("input"); yaw.type = "number"; yaw.min = -180; yaw.max = 180; yaw.step = 5; yaw.value = entry.yaw_deg || 0;
+    yaw.onchange = () => { recordSceneUndo(); entry.yaw_deg = Math.max(-180, Math.min(180, Number(yaw.value) || 0)); paintSceneEditor(); };
+    field("giro °", yaw, "coordinate");
+    const size = document.createElement("input"); size.type = "number"; size.min = 6; size.max = 36; size.step = 1; size.value = entry.size_mm || 30;
+    size.onchange = () => { recordSceneUndo(); if (entry.id === "cube") { entry.id = sceneIdentifier("pieza_"); const catalogItem = sceneCatalog.find(candidate => candidate.id === "cube"); if (catalogItem) catalogItem.id = entry.id; } entry.size_mm = Math.max(6, Math.min(36, Number(size.value) || 30)); paintSceneEditor(); };
+    field(entry.kind === "cylinder" ? "diám mm" : "tamaño mm", size, "coordinate");
+    if (["cylinder", "triangular_prism", "hexagonal_prism"].includes(entry.kind)) {
+      const height = document.createElement("input"); height.type = "number"; height.min = 6; height.max = 60; height.step = 1; height.value = entry.height_mm || 30;
+      height.onchange = () => { recordSceneUndo(); entry.height_mm = Math.max(6, Math.min(60, Number(height.value) || 30)); paintSceneEditor(); };
+      field("alto mm", height, "coordinate");
+      const note = document.createElement("em"); note.className = "hint";
+      note.textContent = entry.kind === "cylinder"
+        ? "Cilindro: agarre lateral sujeto a validación física. Usa órdenes por color."
+        : "Prisma: el agarre depende de su tamaño y orientación; valida la escena antes de moverlo.";
+      row.appendChild(note);
+    }
+  }
   row.appendChild(remove());
   return row;
 }
+function syncScenePreview() {
+  if (!sceneConfig) return;
+  for (const item of sceneCatalog) {
+    const container = Boolean(item.container);
+    const entries = sceneConfig[container ? "containers" : "objects"];
+    const entry = entries.find(candidate => candidate.id === item.id || item.id.startsWith(candidate.id + "_"));
+    if (!entry) continue;
+    item.color = entry.color; item.yaw_deg = Number(entry.yaw_deg) || 0;
+    if (entry.kind) item.kind = entry.kind;
+    if (entry.x != null && entry.y != null) { item.x = Number(entry.x); item.y = Number(entry.y); }
+    if (container && Array.isArray(entry.size_mm)) item.size = entry.size_mm.map(value => Number(value) / 1000);
+    if (container && Array.isArray(entry.cavity_mm)) item.inner = entry.cavity_mm.map(value => Number(value) / 1000);
+    if (!container && entry.size_mm != null) item.size = [Number(entry.size_mm) / 1000, Number(entry.size_mm) / 1000,
+      (["cylinder", "triangular_prism", "hexagonal_prism"].includes(entry.kind) ? Number(entry.height_mm || 30) : Number(entry.size_mm)) / 1000];
+  }
+}
 function paintSceneEditor() {
   if (!sceneConfig) return;
+  if (!sceneConfig.working_area) {
+    const boundsX = sceneLayout ? sceneLayout.work_x : [0.27, 0.52];
+    const boundsY = sceneLayout ? sceneLayout.work_y : [-0.54, -0.42];
+    sceneConfig.working_area = {x_m:(boundsX[0] + boundsX[1]) / 2,
+      y_m:(boundsY[0] + boundsY[1]) / 2,
+      width_mm:(boundsX[1] - boundsX[0]) * 1000,
+      depth_mm:(boundsY[1] - boundsY[0]) * 1000};
+  }
+  syncScenePreview();
+  syncWorkingAreaInputs();
   paintExamples(sceneCatalog);
   for (const [group, id, container] of [["objects", "scene-objects", false], ["containers", "scene-containers", true]]) {
     const box = el(id); box.textContent = ""; sceneConfig[group].forEach((entry, index) => box.appendChild(sceneRow(entry, container, index)));
   }
   paintSceneMap();
   paintSceneSummary();
+  queueSceneValidation();
 }
 function sceneIdentifier(prefix) {
   const used = new Set([...sceneConfig.objects, ...sceneConfig.containers].map(e => e.id)); let index = 1;
   while (used.has(prefix + index)) index++; return prefix + index;
 }
-el("scene-add-object").onclick = () => { if (!sceneConfig) return; sceneConfig.objects.push({id: sceneIdentifier("pieza_"), kind: "ball", color: "red", count: 1, size_mm: 30}); paintSceneEditor(); };
-el("scene-add-container").onclick = () => { if (!sceneConfig) return; const id = sceneIdentifier("caja_"); sceneConfig.containers.push({id, name: "Recipiente " + id, color: "red", aliases: [], size_mm: [70, 70, 30], cavity_mm: [56, 56], wall_mm: 7, floor_mm: 6}); paintSceneEditor(); };
+el("scene-add-object").onclick = () => { if (!sceneConfig) return; recordSceneUndo(); sceneConfig.objects.push({id: sceneIdentifier("pieza_"), kind: "ball", color: "red", count: 1, size_mm: 30}); paintSceneEditor(); };
+el("scene-add-container").onclick = () => { if (!sceneConfig) return; recordSceneUndo(); const id = sceneIdentifier("caja_"); sceneConfig.containers.push({id, name: "Recipiente " + id, color: "red", aliases: [], size_mm: [70, 70, 30], cavity_mm: [56, 56], wall_mm: 7, floor_mm: 6}); paintSceneEditor(); };
 
 // Guardar devuelve la respuesta: quien llama decide si con ello basta (guardar) o si además
 // arranca el entorno (guardar e iniciar). El mapa se pinta con lo que el servidor construyó, no
@@ -2776,7 +3172,7 @@ async function saveScene() {
 async function loadPreset(name) {
   const answer = await post("/api/config/preset/" + name, {});
   if (answer && answer.ok) {
-    sceneConfig = answer.config; sceneCatalog = answer.catalog || [];
+    recordSceneUndo(); sceneConfig = answer.config; sceneCatalog = answer.catalog || [];
     sceneLayout = answer.layout || sceneLayout;
     text("scene-message", `Escena «${PRESET_ES[name] || name}» cargada; se aplicará al iniciar.`);
     paintSceneEditor(); paintEnvSummary();
@@ -2785,6 +3181,41 @@ async function loadPreset(name) {
   text("scene-message", (answer && answer.error) || "No se pudo cargar la escena predefinida.");
   return null;
 }
+async function refreshSceneLibrary() {
+  const data = await fetch("/api/scenes").then(r => r.json()).catch(() => ({scenes:[]}));
+  const select = el("scene-library"), selected = select.value;
+  select.innerHTML = '<option value="">elige una escena</option>' + (data.scenes || []).map(name => `<option value="${name}">${name}</option>`).join("");
+  if ((data.scenes || []).includes(selected)) select.value = selected;
+}
+el("scene-save-named").onclick = async () => {
+  const name = el("scene-name").value.trim();
+  if (!name) { text("scene-message", "Escribe un nombre para guardar la escena."); return; }
+  const answer = await post("/api/scenes/" + encodeURIComponent(name), sceneConfig);
+  if (answer && answer.ok) { sceneConfig = answer.config; sceneCatalog = answer.catalog; sceneLayout = answer.layout; text("scene-message", `Escena guardada: ${name}.`); await refreshSceneLibrary(); el("scene-library").value = name; paintSceneEditor(); }
+  else text("scene-message", answer?.error || "No se pudo guardar la escena.");
+};
+el("scene-load-named").onclick = async () => {
+  const name = el("scene-library").value;
+  if (!name) return;
+  const answer = await fetch("/api/scenes/" + encodeURIComponent(name)).then(r => r.json());
+  if (answer && answer.ok) { recordSceneUndo(); sceneConfig = answer.config; sceneCatalog = answer.catalog; sceneLayout = answer.layout; text("scene-message", `Escena cargada: ${name}.`); paintSceneEditor(); }
+  else text("scene-message", answer?.error || "No se pudo cargar la escena.");
+};
+el("scene-undo").onclick = () => restoreSceneHistory(sceneUndo, sceneRedo);
+el("scene-redo").onclick = () => restoreSceneHistory(sceneRedo, sceneUndo);
+el("scene-reset").onclick = async () => { await loadPreset("demo"); };
+el("scene-export").onclick = () => {
+  const blob = new Blob([JSON.stringify(sceneConfig, null, 2)], {type:"application/json"});
+  const url = URL.createObjectURL(blob), link = document.createElement("a");
+  link.href = url; link.download = "escena-demo11.json"; link.click(); URL.revokeObjectURL(url);
+};
+el("scene-import-button").onclick = () => el("scene-import").click();
+el("scene-import").onchange = async event => {
+  const file = event.target.files && event.target.files[0]; if (!file) return;
+  try { const imported = JSON.parse(await file.text()); recordSceneUndo(); sceneConfig = imported; paintSceneEditor(); }
+  catch (_) { text("scene-message", "El archivo JSON no contiene una escena valida."); }
+  event.target.value = "";
+};
 el("scene-save").onclick = () => saveScene();
 el("scene-start").onclick = async () => {
   const answer = await saveScene();
@@ -2797,7 +3228,7 @@ el("scene-preset").onclick = async () => {
 fetch("/api/config").then(r => r.json()).then(data => {
   sceneConfig = data.config; availableColors = data.available_colors || availableColors;
   sceneCatalog = data.catalog || []; sceneLayout = data.layout || null;
-  scenePresets = data.presets || {}; paintSceneEditor();
+  scenePresets = data.presets || {}; paintSceneEditor(); refreshSceneLibrary(); updateHistoryButtons();
 }).catch(() => text("scene-message", "No se pudo leer la configuración."));
 
 fetch("/api/state").then(r => r.json()).then(applySnapshot).then(startPolling);

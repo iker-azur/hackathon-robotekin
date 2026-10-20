@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import re
 import threading
 import time
 import wave
@@ -153,17 +154,20 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
         import scene_config
         state = bus.snapshot()["state"]
         saved = state.get("scene_config", scene_config.default_config())
+        try:
+            saved, items = scene_config.build(saved)
+        except (ValueError, TypeError):
+            items = []
         catalog = state.get("catalog")
         if catalog is None:
             # No session has built one yet (a fresh supervisor, or a page opened before starting):
             # the same items the robot would build, so the table map is never empty on purpose.
             try:
-                _, items = scene_config.build(saved)
                 catalog = scene_config.catalog(saved, items)
             except (ValueError, TypeError):
                 catalog = []
         return {"config": saved, "available_colors": list(scene_config.AVAILABLE_COLORS),
-                "catalog": catalog, "layout": scene_config.layout(),
+                "catalog": catalog, "layout": scene_config.layout(saved),
                 # The presets are served rather than written in the page, so the
                 # button and the tests read the same scene. ``demo`` is the one a
                 # live presentation should start from; ``simple`` is the two-cube
@@ -188,7 +192,18 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
         catalog = scene_config.catalog(canonical, items)
         bus.set_state(scene_config=canonical, catalog=catalog, error="")
         return {"ok": True, "config": canonical, "catalog": catalog,
-                "layout": scene_config.layout()}
+                "layout": scene_config.layout(canonical)}
+
+    @app.post("/api/config/validate")
+    def validate_config(payload: dict):
+        import scene_config
+        try:
+            canonical, items = scene_config.build(payload)
+        except (ValueError, TypeError) as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+        return {"ok": True, "config": canonical,
+                "catalog": scene_config.catalog(canonical, items),
+                "layout": scene_config.layout(canonical)}
 
     @app.post("/api/config")
     def save_config(payload: dict):
@@ -206,7 +221,50 @@ def build_app(bus: telemetry.Bus, stt=None) -> FastAPI:
         # The catalog comes back with the answer because building it is what proves the scene is
         # buildable: the page draws the table it just saved, so a scene that cannot be placed is
         # reported before a two-minute start rather than during it.
-        return {"ok": True, "config": canonical, "catalog": catalog, "layout": scene_config.layout()}
+        return {"ok": True, "config": canonical, "catalog": catalog, "layout": scene_config.layout(canonical)}
+
+    @app.get("/api/scenes")
+    def list_scenes():
+        folder = HERE.parent / "out11" / "scenes"
+        names = (path.stem for path in folder.glob("*.json")) if folder.is_dir() else ()
+        return {"scenes": sorted(name for name in names if re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", name))}
+
+    @app.get("/api/scenes/{name}")
+    def get_scene(name: str):
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", name):
+            return JSONResponse({"error": "Nombre de escena no válido."}, status_code=400)
+        path = HERE.parent / "out11" / "scenes" / f"{name}.json"
+        if not path.is_file():
+            return JSONResponse({"error": "No existe esa escena guardada."}, status_code=404)
+        import scene_config
+        try:
+            config = json.loads(path.read_text(encoding="utf-8"))
+            canonical, items = scene_config.build(config)
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        return {"ok": True, "config": canonical, "catalog": scene_config.catalog(canonical, items),
+                "layout": scene_config.layout(canonical)}
+
+    @app.post("/api/scenes/{name}")
+    def save_named_scene(name: str, payload: dict):
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", name):
+            return JSONResponse({"error": "Usa un nombre de 1 a 40 letras, cifras, guion o guion bajo."}, status_code=400)
+        state = bus.snapshot()["state"]
+        if state.get("sim") == "running" or state.get("phase") in ("loading", "starting", "stopping"):
+            return JSONResponse({"error": "Detén el entorno antes de cambiar la escena."}, status_code=409)
+        import scene_config
+        from supervisor import atomic_json
+        try:
+            canonical, items = scene_config.build(payload)
+        except (ValueError, TypeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        path = HERE.parent / "out11" / "scenes" / f"{name}.json"
+        atomic_json(path, canonical)
+        atomic_json(HERE.parent / "out11" / "scene_config.json", canonical)
+        catalog = scene_config.catalog(canonical, items)
+        bus.set_state(scene_config=canonical, catalog=catalog, error="")
+        return {"ok": True, "name": name, "config": canonical, "catalog": catalog,
+                "layout": scene_config.layout(canonical)}
 
     @app.get("/api/report")
     def report():

@@ -67,6 +67,13 @@ def fault_in_log(path) -> str:
         return ""
 
 
+def worker_error_before_ready(state: dict) -> str:
+    """Find a Python startup error so it is not mistaken for an Isaac native crash."""
+    if state.get("phase") == "failed":
+        return str(state.get("error") or "")
+    return ""
+
+
 def atomic_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
@@ -300,6 +307,10 @@ class Supervisor:
             config, items = scene_config.load(getattr(args, "scene_config", None) or (saved if saved.exists() else None))
             self.bus.set_state(scene_config=config, catalog=scene_config.catalog(config, items),
                                available_colors=list(scene_config.AVAILABLE_COLORS))
+            if scene_config.LAST_LOAD_NOTICE:
+                # The saved scene could not be run (for example a tray the arm cannot reach);
+                # the person must see why the panel shows the demo scene instead of theirs.
+                self.bus.log(scene_config.LAST_LOAD_NOTICE, level="warn")
         except (ValueError, OSError) as exc:
             self.bus.set_state(error=f"No se pudo leer la escena: {exc}", phase="failed")
 
@@ -511,6 +522,16 @@ class Supervisor:
             # one where relaunching is the right answer - a session that ran and
             # then died has already produced what it was going to produce.
             if not self.ready and not self.bus.stop_requested():
+                application_error = worker_error_before_ready(self.bus.snapshot()["state"])
+                if application_error:
+                    for channel in (self.inbox, self.updates, self.snapshots):
+                        with suppress(Exception):
+                            channel.close()
+                    self.child = None
+                    self.bus.fail_active(application_error)
+                    self.bus.set_state(phase="failed", sim="stopped", error=application_error,
+                                       start_attempt="")
+                    return
                 reason = fault_in_log(self.log_path) or (
                     f"el proceso terminó con el código {self.child.exitcode}")
                 for channel in (self.inbox, self.updates, self.snapshots):
@@ -543,10 +564,23 @@ class Supervisor:
         if self.child is not None and self.child.is_alive():
             if os.name == "nt":
                 import subprocess
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.child.pid)], capture_output=True)
-            else:
+                try:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.child.pid)],
+                                   capture_output=True, timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            if self.child.is_alive():
                 self.child.terminate()
             self.child.join(timeout=2)
+            # A Windows process tree may survive a failed/partial taskkill. Never leave the
+            # launcher waiting for that orphan to finish a long startup timeout on its own.
+            if self.child.is_alive():
+                kill = getattr(self.child, "kill", None)
+                if callable(kill):
+                    kill()
+                else:
+                    self.child.terminate()
+                self.child.join(timeout=2)
 
 
 def run(args):
