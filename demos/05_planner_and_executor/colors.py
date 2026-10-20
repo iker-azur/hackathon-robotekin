@@ -36,6 +36,20 @@ import numpy as np
 # --calibrate, which reports the area of every blob it found.
 MIN_AREA_PX = 150
 
+# A 20 mm triangular prism produced a 110 px mask in a real top-camera capture
+# (640x480, fx=403 px, camera height 550 mm). The previous 120 px floor silently
+# dropped it before geometric classification. Keep the small-object floor above
+# typical isolated sensor speckle while admitting that measured footprint.
+SMALL_OBJECT_MIN_AREA_PX = 80
+SMALL_OBJECT_SIZE_M = 0.022
+
+
+def min_area_for_object_size(size_m: float | None) -> int:
+    """Choose a calibrated segmentation floor for the smallest scene part."""
+    if size_m is not None and float(size_m) <= SMALL_OBJECT_SIZE_M:
+        return SMALL_OBJECT_MIN_AREA_PX
+    return MIN_AREA_PX
+
 # Radius of the morphological opening that separates two touching blobs. Two objects
 # of the same colour are always placed at least 6 cm apart in the scene spec, which
 # is 72 px at 1206 px/m, so a 3 px opening cannot break a real pair apart but does

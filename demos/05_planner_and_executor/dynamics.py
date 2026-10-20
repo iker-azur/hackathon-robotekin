@@ -63,6 +63,20 @@ DEFAULT_SPREAD_M = 0.018
 # producing a robot that confidently picks up the wrong thing.
 MIN_SAME_COLOUR_GAP_M = 0.063
 
+# A coloured object and its matching tray need extra room beyond literal mask
+# separation. In a randomized mixed scene a red triangle and red tray at 63.6 mm
+# centre distance were still visually conflated: the detector lost the triangle on
+# the next frame even though the initial frame found both. Matching object/tray pairs
+# therefore use a 75 mm safety margin; new camera/lighting configurations should remeasure it.
+MIN_OBJECT_CONTAINER_GAP_M = scene_spec.MIN_OBJECT_CONTAINER_VISUAL_GAP_M
+
+# A randomized pick must leave room for camera/localization error before it reaches the
+# tested near-base limit. A seed in the 18 mm sweep placed a cube only 0.35 mm outside that
+# limit; a 1 mm image-space localization error then made the planner correctly reject it.
+# Existing physical fixtures retain at least 10 mm of radial margin, so use that tested
+# operating clearance when sampling new layouts.
+MIN_PICK_REACH_MARGIN_M = scene_spec.PICK_REACH_MARGIN_M
+
 # Two items of any colour must not overlap at all.
 MIN_GAP_M = 0.0
 
@@ -147,29 +161,39 @@ class Disturbance:
                 f"({self.to_xy[0]:+.4f}, {self.to_xy[1]:+.4f})")
 
 
+def _footprint_half_extents(item: Item) -> tuple[float, float]:
+    """Conservative axis-aligned half extents after the item's configured yaw."""
+    angle = math.radians(float(item.yaw_deg))
+    c, s = abs(math.cos(angle)), abs(math.sin(angle))
+    return ((c * item.size[0] + s * item.size[1]) / 2.0,
+            (s * item.size[0] + c * item.size[1]) / 2.0)
+
+
 def _gap(first: Item, second: Item) -> float:
     """Clearance between two items' footprints, in metres. Negative means overlap.
 
     Axis-aligned boxes rather than discs, because a 7 cm square tray treated as a 7 cm circle
     would be reported as overlapping things it is actually clear of.
     """
-    dx = abs(first.x - second.x) - scene_spec.half_width(first) - scene_spec.half_width(second)
-    dy = abs(first.y - second.y) - scene_spec.half_depth(first) - scene_spec.half_depth(second)
+    first_x, first_y = _footprint_half_extents(first)
+    second_x, second_y = _footprint_half_extents(second)
+    dx = abs(first.x - second.x) - first_x - second_x
+    dy = abs(first.y - second.y) - first_y - second_y
     return max(dx, dy)
 
 
-def conflicts(items: list[Item]) -> list[str]:
+def conflicts(items: list[Item], *, allow_same_colour_clusters: bool = False) -> list[str]:
     """Every reason this layout would not work, in plain words.
 
     Two kinds of check, and they measure different things:
 
     * **Overlap** is a gap between footprints, checked for every pair. Interpenetration at spawn
       is a physics problem, not a perception one, and it is invisible in a picture.
-    * **Separation** is a distance between CENTRES, and only for same-coloured pairs whose blobs
-      would merge. A tray and the object that shares its colour do not have to be far apart in
-      centre terms to be told apart in the image if they are at different depths - which is why
-      the layout in ``scene_spec`` puts them in different rows - so this check is what forces a
-      layout to do that rather than leaving it to luck.
+    * **Separation** is a distance between CENTRES for same-coloured geometry. Object pairs need
+      63 mm in ordinary runs; an object and its same-colour tray need 75 mm because a tested
+      63.6 mm gap still caused a transient segmentation/identity miss. The opt-in
+      ``allow_same_colour_clusters`` mode relaxes object-to-object spacing for perception stress
+      tests, but preserves object-to-tray clearance, physical footprints and reach checks.
     """
     problems: list[str] = []
     for index, first in enumerate(items):
@@ -179,26 +203,38 @@ def conflicts(items: list[Item]) -> list[str]:
                 same = "same colour" if first.color == second.color else "different colours"
                 problems.append(f"{first.prim} and {second.prim} ({same}) overlap by "
                                 f"{(MIN_GAP_M - gap) * 1000:.1f} mm")
-            if first.color != second.color or (first.container and second.container):
+            if (first.color != second.color
+                    or (first.container and second.container)
+                    or (allow_same_colour_clusters and not first.container
+                        and not second.container)):
                 continue
-            # Two same-coloured things that are both receptacles are told apart by nothing but
-            # their position, so they need the same separation as anything else.
             centre = math.hypot(first.x - second.x, first.y - second.y)
-            if centre < MIN_SAME_COLOUR_GAP_M:
+            minimum = (MIN_OBJECT_CONTAINER_GAP_M
+                       if first.container != second.container else MIN_SAME_COLOUR_GAP_M)
+            if centre < minimum:
                 problems.append(
                     f"{first.prim} and {second.prim} (same colour) are "
-                    f"{centre * 1000:.0f} mm apart, and their colour blobs merge below "
-                    f"{MIN_SAME_COLOUR_GAP_M * 1000:.0f} mm")
+                    f"{centre * 1000:.1f} mm apart; perception needs at least "
+                    f"{minimum * 1000:.0f} mm between these footprints")
     for item in items:
-        reach = (math.hypot(item.x - scene_spec.ROBOT_XY[0], item.y - scene_spec.ROBOT_XY[1])
-                 + scene_spec.half_extent(item))
+        half_w, half_d = _footprint_half_extents(item)
+        centre_reach = math.hypot(item.x - scene_spec.ROBOT_XY[0],
+                                  item.y - scene_spec.ROBOT_XY[1])
+        reach = centre_reach + scene_spec.half_extent(item)
+        if (not item.container
+                and centre_reach < scene_spec.MIN_REACH_M + MIN_PICK_REACH_MARGIN_M):
+            margin_shortfall = (scene_spec.MIN_REACH_M + MIN_PICK_REACH_MARGIN_M
+                                - centre_reach)
+            problems.append(f"{item.prim} has {margin_shortfall * 1000:.0f} mm less than "
+                            f"the {MIN_PICK_REACH_MARGIN_M * 1000:.0f} mm clearance "
+                            "from the SO-101 near-base reach limit")
         if reach > scene_spec.MAX_REACH_M:
             problems.append(f"{item.prim} is {(reach - scene_spec.MAX_REACH_M) * 1000:.0f} mm "
-                            f"out of reach")
-        if (item.x - scene_spec.half_width(item) < scene_spec.WORK_X[0]
-                or item.x + scene_spec.half_width(item) > scene_spec.WORK_X[1]
-                or item.y - scene_spec.half_depth(item) < scene_spec.WORK_Y[0]
-                or item.y + scene_spec.half_depth(item) > scene_spec.WORK_Y[1]):
+                            "out of reach")
+        if (item.x - half_w < scene_spec.WORK_X[0]
+                or item.x + half_w > scene_spec.WORK_X[1]
+                or item.y - half_d < scene_spec.WORK_Y[0]
+                or item.y + half_d > scene_spec.WORK_Y[1]):
             problems.append(f"{item.prim} is outside the working area")
     return problems
 
@@ -207,7 +243,7 @@ def _sample(items: list[Item], rng: random.Random, spread: float) -> list[Item]:
     """One candidate layout: every item nudged by up to ``spread`` and clipped to the area."""
     out: list[Item] = []
     for item in items:
-        half_w, half_d = scene_spec.half_width(item), scene_spec.half_depth(item)
+        half_w, half_d = _footprint_half_extents(item)
         x = min(max(item.x + rng.uniform(-spread, spread), scene_spec.WORK_X[0] + half_w),
                 scene_spec.WORK_X[1] - half_w)
         y = min(max(item.y + rng.uniform(-spread, spread), scene_spec.WORK_Y[0] + half_d),
@@ -217,13 +253,15 @@ def _sample(items: list[Item], rng: random.Random, spread: float) -> list[Item]:
 
 
 def randomize(items: list[Item], seed: int, spread: float = DEFAULT_SPREAD_M,
-              attempts: int = MAX_ATTEMPTS) -> list[Item]:
+              attempts: int = MAX_ATTEMPTS,
+              allow_same_colour_clusters: bool = False) -> list[Item]:
     """A valid layout for round ``seed``.
 
-    Rejection sampling: keep drawing until nothing overlaps, nothing same-coloured is close,
-    and everything is reachable and inside the working area. Deterministic in ``seed``, so the
-    same round number is the same layout on every machine and every run - a failure report is
-    only worth reading if someone else can reproduce it.
+    Rejection sampling: keep drawing until nothing overlaps, same-coloured items are separated
+    unless explicitly allowed for a perception stress test, and everything is reachable and
+    inside the working area. Deterministic in ``seed``, so the same round number is the same
+    layout on every machine and every run - a failure report is only worth reading if someone
+    else can reproduce it.
 
     Returns the input unchanged if no valid layout is found in ``attempts`` tries, rather than
     raising: a demo that dies because the 401st random draw was unlucky is worse than one that
@@ -232,7 +270,7 @@ def randomize(items: list[Item], seed: int, spread: float = DEFAULT_SPREAD_M,
     rng = random.Random(seed)
     for _ in range(attempts):
         candidate = _sample(items, rng, spread)
-        if not conflicts(candidate):
+        if not conflicts(candidate, allow_same_colour_clusters=allow_same_colour_clusters):
             return candidate
     return list(items)
 
