@@ -93,8 +93,9 @@ python 10_command_to_motion.py --save-every 1           # write every frame to o
 `--save-every 1` writes the same annotated frames to `out/` and works with `--headless`, so a
 run can be inspected afterwards. In the window, `s` saves the current frame.
 
-To check which camera is being used, `--camera side` or `--camera front` are also wired up;
-`front` is the deliberate worst case, looking through the arm.
+`--camera side` and `--camera front` use calibrated alternate views. The front view moves around
+the shoulder to keep the object visible; the side view is elevated and placed on the opposite
+side of the table so the arm and receptacle do not hide it.
 
 ## Saying it instead of typing it
 
@@ -183,9 +184,7 @@ above  green: above #5  [aimed at (+0.509, -0.444), re-aimed 3x (largest 4 mm)]
 down   green: down onto #5  [aimed at (+0.507, -0.445), re-aimed 2x (largest 5 mm)]
 ```
 
-**Every grasp is kinematic, and says so.** Nothing is held by friction in this simulation — demo
-05 says so of the cube it inherited — so the fallback carries the object and the report prints
-`kinematic` rather than claiming a grip.
+**Grasp honesty.** The executor verifies whether an object follows the gripper during lift and carry. In the presentation demo, spheres and triangular/hexagonal prisms use a simulator-only object-follow constraint because the shipped jaw contacts have not proved reliable for them; these results are counted as assisted, not physical grasps. Cubes stay on the measured contact path by default. The strict grasp benchmark disables automatic assistance and reports friction performance separately.
 
 **The command model.** 136 hand-written sentences in three languages: **84.6%** exact whole
 command, 90.4% on items, 95.6% on the destination, 100% on intent. On demo 03's own 98 legacy
@@ -193,7 +192,7 @@ sentences this scores **85.7%**, up from 84.7% before the destination-colour fix
 level with the 85.7% demo 03's own committed report records for its model. Stop is caught
 100%, and **0%** of the 54 sentences that must not move the robot cause any motion at all.
 
-**Grounding and planning**: **1468 checks over 20 recorded scenes**, `tests/test_planner.py`.
+**Grounding and planning**: **839 checks over 20 recorded scenes**, `tests/test_planner.py`.
 
 ## How it is put together, and why
 
@@ -208,7 +207,7 @@ the demo checks the simulator's own positions and, if an object is not in the tr
 sent to, replans that one object and tries once more. The summary counts what was verified,
 what needed a retry and what never verified.
 
-**Grasp honesty.** A grasp is judged by how much of the gripper's own travel the object
+**Grasp honesty.** In strict mode, a grasp is judged by how much of the gripper's own travel the object
 followed, measured in 3-D at the end of the lift. A ball nudged by the closing jaws follows only
 46% of the lift — then drops out — and is reported as a kinematic carry rather than a grasp. An
 object that moved *further* than the gripper was knocked out of reach, and is not carried at all:
@@ -250,10 +249,7 @@ the least reliable step in perception by its own documentation. Tracking falls b
 colour alone, allowed only for a colour that is unique on the table — green has one object, red has
 three, so red keeps asking.
 
-**No grasp in this demo is held by friction.** Friction grasping is unreliable in this simulation
-for the cube demo 05 already carried, so the kinematic fallback is the mechanism that completes a
-pick, and the report prints `kinematic` rather than claiming a grip. Every number above that says
-"picked" means the jaws arrived at the object and it was carried.
+**Balls and polygon prisms are simulator-assisted.** The scene demo keeps these parts attached to the gripper through an explicit simulator constraint and tells the operator when that policy is active. This makes the visual task repeatable; it is not evidence that the SO-101 jaw can hold these shapes by friction or that a physical robot can reproduce the move. Use the strict benchmark to evaluate physical contact.
 
 **The arm's parking sweep still brushes the table.** The forearm sits in the object row at the
 retreat pose, so driving back to park passes over it. With the balls damped this is now **1.7–3.6
@@ -361,7 +357,7 @@ two-object order drops from ~72 s to ~26 s (see `results/demo11_perf.md` and
 | `--close-command` | 0.20 rad | how far the jaws close |
 | `--grip-stiffness` | 250 | gripper actuator stiffness |
 | `--release` | `clear` | `rim` reproduces demo 10's release height |
-| `--allow-kinematic` | off | permit demo 10's carry-the-part-by-hand fallback; results so obtained are **not** reproducible on hardware |
+| `--allow-kinematic` | off | permit simulator-assisted object following for every geometry; balls and polygon prisms use this automatically, and assisted grasps are counted separately from physical grasps |
 
 ## Layout of the code
 
@@ -395,15 +391,20 @@ python tools/probe_gripper.py --headless           # the 36.2 mm aperture, open 
 python tools/probe_grip_hold.py --headless         # demo 11: does friction hold, and at what close command
 python tools/run_demo11.py                         # demo 11 with relaunch-on-fault, for a flaky Isaac
 python tools/probe_grasp.py --headless             # does a pick work, and where
+python tools/benchmark_grasp_objects.py --headless --repetitions 5  # real grasp by shape, then 25 mm carry
 python tools/probe_pen.py --headless               # containment with and without the kerb
 python tools/record_fixtures.py --headless         # re-record tests/fixtures from this layout
-python tests/test_planner.py                       # 1468 grounding and planning checks
+python tools/benchmark_scene_matrix.py --repetitions 3 --headless  # 180 nominal-size camera/shape/layout cases
+python tools/benchmark_scene_matrix.py --sizes-mm 20 30 --repetitions 3 --headless  # 360 size-varied cases
+python tests/test_planner.py                       # 839 grounding and planning checks
 python tests/test_demo11.py                        # real-world model, bus and dashboard; no Isaac
 python tools/measure_kinds.py --headless           # cube/ball thresholds
 python command_model_v2/evaluate.py                # the 136-sentence evaluation
 ```
 
-The first six need the simulator and take a few minutes each; the last four do not.
+The first six need the simulator and take a few minutes each; the last four do not. The grasp
+benchmark needs Isaac Sim and reports real lifts separately from verified lateral carries; see
+``results/pruebas_agarre_objetos.md`` for the measured baseline and interpretation.
 
 Isaac Sim prints a `_generic_model_output` DLL warning and a few `omni.fabric.plugin` messages
 on every run, including successful ones. They are not the run failing.
