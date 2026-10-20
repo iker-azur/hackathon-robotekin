@@ -1,625 +1,464 @@
 # Demos 12–16 — Aprendizaje por imitación en el SO-101 simulado
 
-Este conjunto de demos entrena al brazo SO-101 **a partir de demostraciones**, no
-a fuerza de prueba y error con recompensas. Es el paso siguiente a los demos 01–11:
-allí el robot seguía un guion o un plan; aquí mira la cámara y decide solo.
+Este conjunto de demos entrena al brazo SO-101 **a partir de demostraciones**, no a
+fuerza de prueba y error con recompensas. El resultado, medido, es este:
 
-El recorrido es el de siempre en aprendizaje por imitación:
-
-```
-            ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-  demo 12 ──►│  ver qué hay │──►│ demo 13      │──►│ demo 14      │──►│ demo 15      │ ──► demo 16
- (opcional) │  en el dataset│   │ grabar demos │   │ Behavior Cl. │   │ ACT          │   │ ejecutar en
-            └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘     la simulación
-```
-
-**Demo 13 es el único paso obligatorio**: graba un dataset con un profesor
-programado. Los demás leen ese dataset.
+> Una política ACT que **recoge el cubo, lo levanta 6 cm, lo transporta sujeto por
+> fricción y lo deja 10 cm más allá**, en posiciones del cubo que no vio al entrenar:
+> **30 de 30 posiciones distintas** (40/40 contando una repetición) **dentro de la región
+> de entrenamiento y 8 de 10 fuera de ella** (reloj + cubo, ver más abajo).
+>
+> Pero **no es una política que "mira la cámara y decide sola"**, y este README dice
+> exactamente qué es y qué no es antes de dar ningún número.
 
 ---
 
 ## Tabla de contenido
 
-1. [Qué es el aprendizaje por imitación](#qué-es-el-aprendizaje-por-imitación)
-2. [Qué tecnología se ha elegido y por qué](#qué-tecnología-se-ha-elegido-y-por-qué)
-3. [La tarea](#la-tarea)
-4. [Requisitos](#requisitos)
-5. [Cómo ejecutar cada demo](#cómo-ejecutar-cada-demo)
-6. [Qué sale en pantalla](#qué-sale-en-pantalla)
-7. [Dónde están los datos y los modelos](#dónde-están-los-datos-y-los-modelos)
-8. [Resultados medidos](#resultados-medidos)
-9. [Limitaciones](#limitaciones)
-10. [Por dónde seguir](#por-dónde-seguir)
-11. [Referencias](#referencias)
-12. [Problemas habituales](#problemas-habituales)
+1. [Qué es esta política y qué no es](#qué-es-esta-política-y-qué-no-es)
+2. [Ruta rápida para el día de la demo](#ruta-rápida-para-el-día-de-la-demo)
+3. [Reproducción completa](#reproducción-completa)
+4. [Cómo se juzga el éxito](#cómo-se-juzga-el-éxito)
+5. [Resultados medidos](#resultados-medidos)
+6. [Por qué fallaron las políticas con cámara](#por-qué-fallaron-las-políticas-con-cámara)
+7. [Limitaciones](#limitaciones)
+8. [Requisitos](#requisitos)
+9. [Datos y modelos](#datos-y-modelos)
+10. [Ver la política en la ventana](#ver-la-política-en-la-ventana)
+11. [Problemas habituales](#problemas-habituales)
+12. [Por dónde seguir](#por-dónde-seguir)
+13. [Referencias](#referencias)
+14. [Estructura de la carpeta](#estructura-de-la-carpeta)
 
 ---
 
-## Qué es el aprendizaje por imitación
+## Qué es esta política y qué no es
 
-El aprendizaje por imitación (**IL**, *imitation learning*) entrena una política
-copiando lo que hace un experto, en lugar de buscarlo probando acciones y
-recibiendo recompensas.
+La política que funciona es un **ACT de LeRobot** con exactamente **dos fuentes de
+información**:
 
-Se parte de un dataset de demostraciones `(observación, acción)`, se entrena una
-red para que prediga la acción del experto a partir de la observación, y después
-se ejecuta esa red en el robot. En este proyecto:
-
-| paso | quién | qué hace |
+| entrada | qué es | ¿privilegiada? |
 |---|---|---|
-| 1 | profesor | guion cinemático que sabe dónde está el cubo |
-| 2 | script de grabación | escribe `(cámara, articulaciones) → acción` en formato LeRobot |
-| 3 | red | aprende ese mapeo con LeRobot |
-| 4 | simulación | ejecuta la red y se mide si el cubo acaba donde debía |
+| **reloj del plan** | en qué paso de los 640 del plan va el episodio, de −1 a 1 | **Sí.** Un robot real no sabe en qué punto de un plan está |
+| **posición del cubo** | el centroide en píxeles del cubo rojo, medido **una vez** al empezar el episodio con un detector de color (`cube_detect.py`) | No: sale de la imagen, no del estado del simulador |
 
-La entrada visual básica es la cámara frontal y el estado de las articulaciones.
-En las pruebas adicionales, ACT también recibió una fase o el centroide
-normalizado del cubo como `observation.environment_state`; ninguna variante
-completó la tarea (resultados abajo).
+**No entra ninguna imagen ni ninguna articulación en la red.** Eso es deliberado y es
+la lección central del demo (ver [Por qué fallaron las políticas con
+cámara](#por-qué-fallaron-las-políticas-con-cámara)): con la imagen y el estado
+articular delante, la política aprendía a copiar la pose de su propio brazo.
 
-### Behavior Cloning (demo 14)
+Lo que sí es:
 
-La versión más simple posible: una regresión supervisada.
+* imitación de verdad: la red aprende, de 48 demostraciones, **cómo cambia la
+  trayectoria del brazo según dónde está el cubo**, y la interpola a posiciones y
+  orientaciones nuevas dentro de la región de entrenamiento (a ≈ 5 mm del experto en el
+  punto de agarre, medido sin simulador); fuera de esa región empieza a fallar;
+* agarre **físico**: el cubo se sujeta por fricción, sin sujeción cinemática, y el
+  éxito exige levantarlo y transportarlo realmente.
 
-```
-red(cámara, articulaciones) → acción
-```
+Lo que no es:
 
-Nada más. Sin memoria, sin planificación a futuro. Se entrena con error cuadrático
-medio sobre las acciones del experto.
-
-### ACT (demo 15)
-
-**Action Chunking with Transformers** es la política que LeRobot recomienda para
-empezar. En vez de predecir **la siguiente** acción, predice un bloque de
-``chunk_size`` acciones de una vez y las va ejecutando.
-
-Eso importa más de lo que parece. El problema clásico del *Behavior Cloning* es
-el **error acumulado**: si la red se equivoca un poco en el paso 1, llega a un
-estado que el experto nunca visitó, donde vuelve a equivocarse un poco más, y así
-hasta desviarse del todo. Con bloques de acciones, un pequeño error queda
-absorbido dentro de una trayectoria que ya estaba planificada. ACT añade además un
-transformer que atiende a las últimas observaciones y a todo el bloque.
+* **No es lazo cerrado.** Percibe el cubo una vez y reproduce una trayectoria. Si el
+  cubo se mueve a mitad de episodio, o el agarre falla, no reacciona.
+* **No percibe con una red.** La percepción es un detector de color clásico.
+* **El reloj es una ayuda.** Conviene decirlo así en la presentación: es imitación
+  con el calendario del plan entregado, no imitación desde observación pura.
+* **Solo simulación**, un cubo, una cámara, una región de 9 × 9 cm de la mesa y ±30°
+  de giro.
 
 ---
 
-## Qué tecnología se ha elegido y por qué
+## Ruta rápida para el día de la demo
 
-| Decisión | Alternativa | Por qué esta |
-|---|---|---|
-| **LeRobot 0.4.4** como framework de IL | escribir el entrenamiento a mano | es la herramienta del proyecto (demo 01), trae ACT ya implementada, y su formato de dataset es el estándar del SO-101 |
-| **ACT** como política | Diffusion Policy, π0, SmolVLA, GR00T | es la que LeRobot documenta como "la primera que hay que probar", pesa ~80 M y cabe con holgaza en los 16 GB de la 5060 Ti |
-| **Behavior Cloning propio** (demo 14) | usar una política de LeRobot | LeRobot 0.4.4 **no tiene** política `bc` en su registro. Escribirla a mano, en ~60 líneas, enseña qué es la IL sin depender de ningún framework |
-| **`so101_state_machine`** como espacio del profesor | IK puro | es la configuración que ya usa el demo 01 (05) y que funciona en esta máquina: acción de 8 números + gravedad desactivada |
-| **la orden IK del profesor** como acción | las articulaciones que resultan de ella | el profesor manda una pose cartesiana y el brazo tarda varios pasos en llegar. Grabar el *resultado* como acción enseña "repite lo que acabo de hacer", y esa acción casi no se mueve (menos de 1 grado por paso), así que la política aprende la identidad y se queda parada. Fue el primer intento, se midió, y se cambió |
-| **grados de motor** como unidad del estado | radianes del simulador | es lo que LeIsaac exporta a LeRobot, así que el estado es intercambiable con las grabaciones de LeIsaac y con los SO-101 del Hub. **La acción no está en grados**: es la orden de 8 números del profesor, en las unidades del simulador |
-| **profesor programado** | teleoperación con mando/brazo líder | un dataset de imitación necesita ser perfecto: un fallo del operador enseaña a fallar. El guion da siempre el mismo agarre y no necesita hardware conectado |
-| **cubo colocado a mano** (×, y con barrido) | aleatorización de la tarea | la tarea original dispersa el cubo ±75 mm en x e y, una amplitud con la que a veces empieza fuera del alcance (radio medido 0.33 m). Una demostración fallida estropea un dataset pequeño |
+Todos los comandos, desde la raíz del repositorio, en PowerShell. Se supone el
+entorno de [Requisitos](#requisitos) y que el checkpoint ya está entrenado
+(`outputs/15_act_clock/`).
 
-Un detalle de código que conviene saber: **la política se ejecuta en CPU**
-(`--inference-device cpu`). Cargar un modelo de torch con CUDA antes de arrancar
-Isaac Sim deja un contexto de CUDA que después hace fallar a PhysX con
-`CUDA error: an illegal memory access` al crear el entorno. La inferencia en CPU
-cuesta unas decenas de milisegundos por bloque y a cambio el proceso termina.
+```powershell
+conda activate hackathon-robotekin
+$env:HF_HUB_OFFLINE = "1"      # sin red: evita el error SSL de Hugging Face (ver Problemas habituales)
+```
+
+**1. Que se vea el robot recogiendo el cubo** (un episodio, en la ventana, a media velocidad; ≈ 1 min):
+
+```powershell
+python .\demos\06_imitation_learning\16_evaluate_policy.py `
+    --policy .\demos\06_imitation_learning\outputs\15_act_clock\checkpoints\last\pretrained_model `
+    --episodes 1 --speed 0.5
+```
+
+**2. Los números en directo** (10 posiciones nuevas, sin ventana; ≈ 5 min). Deja un informe
+nuevo en `results/runs/` y no toca los anteriores:
+
+```powershell
+python .\demos\06_imitation_learning\16_evaluate_policy.py `
+    --policy .\demos\06_imitation_learning\outputs\15_act_clock\checkpoints\last\pretrained_model `
+    --episodes 10 --headless
+```
+
+**3. Para compararlo con el guion del profesor** (que sabe dónde está el cubo y **no es
+una política aprendida**; sale etiquetado así en su informe):
+
+```powershell
+python .\demos\06_imitation_learning\16_evaluate_policy.py --type scripted --episodes 1 --speed 0.5
+```
+
+Antes de empezar: cierra cualquier otro proceso de Isaac Sim (`Get-Process python`),
+porque dos simuladores a la vez en esta GPU provocan el fallo intermitente de la
+sección [Problemas habituales](#problemas-habituales). Si al arrancar sale
+`CUDA error: an illegal memory access`, vuelve a lanzar el mismo comando.
+
+### Si hay que llevar el modelo a otra máquina
+
+El modelo es una carpeta de **≈ 90 MB** (`pretrained_model`; 84 MB comprimido). La carpeta `outputs/` entera pesa
+GBs porque guarda el estado del optimizador de cada checkpoint; para llevarse el modelo basta esto:
+
+```powershell
+Compress-Archive -Path .\demos\06_imitation_learning\outputs\15_act_clock\checkpoints\last\pretrained_model\* `
+    -DestinationPath .\act_clock_listo.zip
+```
+
+En la otra máquina: descomprimir en cualquier carpeta y pasarla a `--policy`. Lleva dentro
+`il_inputs.json`, que dice qué significan sus entradas, y necesita el mismo entorno
+conda y la caché de activos de LeIsaac. Los checkpoints **no están en git** (`.gitignore`).
+
+### Si hay que reentrenarlo en el sitio
+
+≈ 15 min de entrenamiento con los datos ya grabados (los 48 episodios ocupan 105 MB; tampoco están en git):
+
+```powershell
+python .\demos\06_imitation_learning\tools\21_build_clock_cube_dataset.py
+python .\demos\06_imitation_learning\15_train_act.py --steps 10000 --batch 64 --no-vae --lr 1e-4
+```
 
 ---
 
-## La tarea
+## Reproducción completa
 
-El SO-101 está sobre una mesa con un cubo rojo delante. La demostración:
+Cuatro pasos, ≈ 50 min de reloj en la RTX 5060 Ti. Cada uno escribe en una carpeta
+propia y **ninguno borra nada existente**.
 
-1. se sitúa sobre el cubo,
-2. baja,
-3. cierra la pinza,
-4. sube,
-5. se desplaza 10 cm a un lado,
-6. baja,
-7. abre la pinza,
-8. sube.
+| paso | comando | tiempo | qué hace |
+|---|---|---|---|
+| 1. grabar | `13_collect_demonstrations.py --episodes 48 --headless` | ≈ 27 min | 48 demostraciones del profesor con **agarre por fricción**; solo se guardan las que pasan el criterio físico |
+| 2. preparar | `tools/21_build_clock_cube_dataset.py` | segundos | copia sin vídeo con la entrada reloj + cubo |
+| 3. entrenar | `15_train_act.py --steps 10000 --batch 64 --no-vae --lr 1e-4` | ≈ 14 min | ACT sobre esa entrada |
+| 4. evaluar | `16_evaluate_policy.py --policy ... --episodes 10 --headless` | ≈ 5 min | 10 posiciones nuevas, juicio físico |
 
-El profesor lo ejecuta con una lista de waypoints relativa a la posición **real**
-del cubo, que él lee después del `reset`. El guion está en
-[`expert.py`](expert.py) (`PLAN`).
+```powershell
+python .\demos\06_imitation_learning\13_collect_demonstrations.py --episodes 48 --headless
+python .\demos\06_imitation_learning\tools\21_build_clock_cube_dataset.py
+python .\demos\06_imitation_learning\15_train_act.py --steps 10000 --batch 64 --no-vae --lr 1e-4
+python .\demos\06_imitation_learning\16_evaluate_policy.py `
+    --policy .\demos\06_imitation_learning\outputs\15_act_clock\checkpoints\last\pretrained_model `
+    --episodes 10 --headless
+```
 
-**Por qué el cubo se sujeta cinemáticamente.** El agarre por fricción del cubo de
-3 cm no es fiable en este simulador (es una medición ya recogida en el demo 01).
-Desde que la pinza se cierra hasta que se abre, la pose del cubo se escribe
-directamente cada paso. Eso mantiene la demostración sobre "mover el cubo", no
-sobre afinar contactos.
+### Comprobar antes de gastar tiempo en el simulador
 
-**Qué se considera éxito.** El criterio es **el mismo** al grabar y al evaluar:
-el cubo acaba a menos de **3 cm** del punto donde las demostraciones lo dejaban
-(`PLACEMENT_TOLERANCE_M` en [`expert.py`](expert.py)). Se anota también la altura
-máxima que alcanza, porque un cubo lanzado lejos ya ha fallado aunque acabe en el
-sitio.
+`tools/22_validate_offline.py` reproduce, **sin simulador**, la orden que daría la política
+en episodios que no ha visto, y la compara con la del experto. Como la política no lee el
+brazo, esa reproducción coincide con lo que haría en el simulador. Para usarla, entrena
+sin los últimos 8 episodios:
 
-> **Aviso**: esto **no** es el criterio de éxito de la tarea original.
-> `LeIsaac-SO101-LiftCube-v0` declara éxito cuando el cubo queda 20 cm por encima
-> de la base del robot. El plan usado aquí solo lo sube 6 cm y lo vuelve a dejar
-> en la mesa, así que ese término nunca se cumple. Los demos juzgan la
-> demostración igual que los demos 05 y 11 de este repositorio: por dónde acaba el
-> cubo.
+```powershell
+python .\demos\06_imitation_learning\15_train_act.py --episodes 0-39 --steps 10000 --batch 64 --no-vae --lr 1e-4 --output 15_act_clock_val
+python .\demos\06_imitation_learning\tools\22_validate_offline.py `
+    --policy .\demos\06_imitation_learning\outputs\15_act_clock_val\checkpoints\last\pretrained_model --episodes 40-47
+```
+
+El número que importa es el error de posición **mientras la pinza se cierra**: el agarre
+tolera unos ±8–10 mm alrededor del punto al que apunta el experto
+([diagnóstico, apartado 6](results/diagnosis.md)). Se midió **3,4 mm de media y 5,0 mm de peor caso en xy** con la política entrenada sin esos 8 episodios.
+
+### Probar que todo encaja con 3 episodios (≈ 6 min)
+
+Todos los nombres son de prueba, así que **no toca el dataset principal ni sus modelos**:
+
+```powershell
+python .\demos\06_imitation_learning\13_collect_demonstrations.py --episodes 3 --headless --dataset so101_smoke
+python .\demos\06_imitation_learning\tools\21_build_clock_cube_dataset.py --source so101_smoke --output so101_smoke_clock
+python .\demos\06_imitation_learning\15_train_act.py --dataset so101_smoke_clock --steps 300 --batch 16 --no-vae --lr 1e-4 --output smoke
+python .\demos\06_imitation_learning\16_evaluate_policy.py `
+    --policy .\demos\06_imitation_learning\outputs\smoke\checkpoints\last\pretrained_model --episodes 1 --headless
+```
+
+Con 300 pasos y 3 demostraciones la política **no** recoge el cubo; esto solo comprueba que los
+scripts encajan. (`--overwrite` en el paso 1 renombra el dataset existente a
+`<nombre>.replaced-<fecha>` en vez de borrarlo, y cada nombre de salida de entrenamiento y de
+informe que ya existe se rechaza.)
+
+### Opciones de cada script
+
+| script | opciones útiles |
+|---|---|
+| `13_collect_demonstrations.py` | `--episodes N`, `--dataset NOMBRE`, `--first-spot K`, `--keep-failed`, `--pin` (vuelve a la sujeción cinemática de las primeras grabaciones), `--overwrite` (aparta, no borra), `--headless` |
+| `15_train_act.py` | `--dataset`, `--steps`, `--batch`, `--lr`, `--seed`, `--episodes 0-39`, `--no-vae`, `--chunk`, `--action-steps`, `--output` (si existe, se rechaza) |
+| `16_evaluate_policy.py` | `--policy`, `--type act\|bc\|scripted`, `--episodes`, `--first-episode`, `--spots heldout\|outside\|train`, `--seed`, `--report-name`, `--speed`, `--trace`, `--scripted-bias-mm X Y`, `--stall-seconds`, `--headless` |
+
+### Otros pasos del recorrido original
+
+* **Demo 12** — `12_inspect_demonstrations.py` imprime los *features*, los rangos de las
+  articulaciones y cuánto se mueve cada dimensión de la acción; sirve para ver si un dataset
+  tiene movimiento.
+* **Demo 14** — `14_train_behavior_cloning.py` es una regresión supervisada en ~60 líneas de
+  PyTorch (cámara + estado + fase). **No se ha vuelto a validar**: usa la imagen y el estado del
+  brazo, el mismo diseño que falló con ACT, y tarda horas. Queda como material didáctico.
+
+---
+
+## Cómo se juzga el éxito
+
+Se fijó **antes** de evaluar (`il_metrics.py`) y no depende de nada que el simulador pueda
+falsear. Un episodio es correcto si **las tres** cosas ocurren:
+
+1. **Levanta**: el cubo sube al menos **4 cm** sobre la mesa (el plan lo sube 6 cm).
+2. **Lo sujeta**: se mantiene a más de 3 cm de la mesa **durante al menos 1 s** de tiempo
+   simulado, y durante ese tramo se queda a menos de 3 cm del punto entre los dedos. Un cubo
+   lanzado está en el aire una fracción de segundo y lejos de la mano.
+3. **Lo deja**: acaba a menos de **3 cm** del objetivo (10 cm al lado de donde estaba), sobre la
+   mesa y quieto.
+
+El informe da la causa de cada fallo (`never_lifted`, `dropped_early`, `not_held`,
+`misplaced`, `not_at_rest`) en vez de un cero.
+
+Lo que **no** se afirma con esto:
+
+* Es agarre **simulado**: contacto por fricción de las mordazas del SO-101 de LeIsaac con la
+  fricción por defecto. No dice nada sobre un robot real.
+* El profesor graba con **la posición real del cubo**: sus 48 demostraciones son
+  correctas porque sabe dónde está. Que el profesor acierte no es que acierte la política.
+* El criterio antiguo ("el cubo acaba a 3 cm del punto") **no distingue un agarre de un
+  empujón**, y por eso ya no se usa. Tampoco es el criterio de la tarea original
+  (`LeIsaac-SO101-LiftCube-v0`: cubo 20 cm sobre la base), que este plan nunca cumple.
+
+Las evaluaciones usan **posiciones del cubo que ninguna demostración usó**
+(`il_env.sample_eval_spot`; en el informe aparece la distancia a la demostración más
+cercana). Las posiciones y la política son deterministas; la física no es bit a bit
+reproducible (el cubo se asienta con ±2 mm de diferencia entre ejecuciones), por eso se
+repitió una ejecución completa y se dan las dos.
+
+---
+
+## Resultados medidos
+
+Rama `prepare-demos`, entorno conda `hackathon-robotekin`, Windows 11, Isaac Sim 5.1,
+RTX 5060 Ti 16 GB. Cada fila es un informe completo en [`results/runs/`](results/runs/);
+[`results/SUMMARY.md`](results/SUMMARY.md) los reúne todos y se regenera con
+`tools/23_summarize_results.py`.
+
+| política | entradas | cubos | éxitos |
+|---|---|---|---|
+| **ACT reloj + cubo (la del demo)** | reloj del plan (privilegiado) + posición del cubo; sin imagen ni estado | 10 posiciones nuevas | **10/10** |
+| | | otras 20 posiciones nuevas | **20/20** |
+| | | las mismas 10, repetido | **10/10** |
+| | | **fuera de la región de entrenamiento** (anillo de 1 cm) | **8/10** |
+| ACT reloj + cubo, entrenada con 40 episodios | ídem | 10 posiciones nuevas | 10/10 |
+| ACT reloj + cubo, comprimida y descomprimida en otra carpeta | ídem | 2 posiciones nuevas | 2/2 |
+| *guion del profesor (no es una política aprendida)* | *conoce la posición real del cubo* | *10 nuevas; 10 de fuera de la región* | *10/10; 10/10* |
+| ACT imagen + estado articular | cámara y articulaciones | 5 posiciones nuevas | **0/5** (el cubo ni se toca) |
+| ACT imagen + estado + centroide del cubo | ídem + detector | 5 posiciones nuevas | **0/5** (ídem) |
+| ACT imagen + estado + fase del plan | ídem + fase (privilegiada) | 5 posiciones nuevas | **0/5** (1 levantó el cubo y lo dejó a 6,9 cm) |
+
+Todo con el criterio de la sección anterior: elevación de 5,9–6,5 cm, transporte sujeto de 156–169
+pasos y error final ≤ 1,1 cm en cada acierto de la política del demo.
+
+**Interpolar no es extrapolar.** Las 30 posiciones "nuevas" están **intercaladas** con las 48
+demostraciones: la más cercana está a 4,6–7,2 mm. Eso prueba que la política interpola la
+trayectoria entre cubos vistos, no que funcione en cualquier parte. Fuera de la caja de
+entrenamiento falló 2 de 10 y los dos fallos son las posiciones más lejanas (8–9 mm fuera de
+la caja, 20–25 mm de la demostración más cercana); el guion del profesor acierta las 10. Una
+primera versión de esa prueba (`act_clock_final_wide_10ep`, 10/10) solo sacó 2 de 10
+posiciones fuera de la caja, por menos de 3 mm, y no mide extrapolación; se conserva en
+`results/runs/` por completitud.
+
+El registro curado y comentado es [`results/16_evaluation.md`](results/16_evaluation.md).
+
+### El profesor (demo 13)
+
+| métrica | valor |
+|---|---|
+| demostraciones físicas correctas | **48 / 48** (ninguna descartada) |
+| elevación del cubo | 5,9 – 6,7 cm |
+| transporte sujeto | 161 – 164 pasos (≈ 2,7 s) |
+| error final de colocación | ≤ 0,95 cm |
+| tiempo por demostración | ≈ 33 s |
+| dataset | 48 episodios, 30 720 fotogramas, 105 MB (con vídeo) |
+
+### Entrenamiento (demo 15, reloj + cubo)
+
+| métrica | valor |
+|---|---|
+| pasos | 10 000, lote 64, `--no-vae`, tasa de aprendizaje 1e-4 |
+| tiempo | ≈ 14 min (GPU compartida con otros procesos) |
+| pérdida final | 0,022 (L1 normalizada; sigue bajando lentamente) |
+| tamaño del modelo | ≈ 90 MB |
+| tamaño de `outputs/15_act_clock/` | 2,8 GB (por el estado del optimizador de cada checkpoint) |
+
+### Sin simulador (`tools/22_validate_offline.py`)
+
+Política entrenada con los episodios 0–39, reproducida sobre los 8 que no vio:
+error de posición del comando mientras se cierra la pinza, **3,4 mm de media y 5,0 mm
+como peor caso en xy; 0,3 mm en z**. El agarre tolera ±8–10 mm.
+Informe: [`results/offline/act_clock_val_10k_heldout_40-47.json`](results/offline/act_clock_val_10k_heldout_40-47.json).
+
+---
+
+## Por qué fallaron las políticas con cámara
+
+Resumen; todo el detalle, con las mediciones, en [`results/diagnosis.md`](results/diagnosis.md).
+
+Las tres variantes con cámara + estado articular que se probaron (sin entrada extra, con la
+fase del plan y con el centroide del cubo) daban **0/5** en la evaluación original. Con las
+mediciones de esta revisión:
+
+1. **El modelo estaba bien entrenado.** Sobre las demostraciones reproduce la orden del
+   experto con 1–5 mm de error en cada fase, también al bajar (z predicha 0,141 m frente a
+   0,144 m). La pérdida 0,055 era un buen ajuste. Y en una reproducción del episodio 0 en el
+   simulador recibe lo mismo que vio al entrenar (imágenes, estados, normalización y unidades).
+2. **Copiaba su propio brazo.** Dándole la misma imagen con el estado articular de *otro*
+   episodio, la y que predice se mueve 20–45 mm cuando el experto no se movería nada. En
+   lazo cerrado, cualquier desvío del brazo se convierte en una orden igual de desviada.
+   Es *causal confusion*; no lo arregla entrenar más ni usar bloques más largos, sino
+   **quitar el estado del brazo** de la política. Por eso la política que funciona no lo tiene.
+3. **Había un fallo en el propio demo:** `il_env.set_cube_randomization` no congelaba nada
+   (LeIsaac registra la aleatorización como atributos, no como campos de dataclass) y **la
+   cámara se movía ±5 mm en cada episodio**. Con eso el cubo en píxeles predecía su posición
+   con 5 mm de error; congelada, con 0,5 mm. Todas las grabaciones anteriores llevan ese
+   temblor.
+4. **La evaluación lo ocultaba:** reutilizaba las posiciones de las demostraciones, no
+   reiniciaba la cola de acciones de ACT entre episodios, juzgaba solo la posición final del
+   cubo, el primer fotograma de cada episodio era de la escena anterior, y el informe se
+   escribía siempre en el mismo archivo.
+5. **El agarre por fricción sí funcionaba**, con el punto de agarre bien elegido. El README
+   anterior decía que no era fiable y el profesor fijaba el cubo a la pinza. La ventana de
+   agarre mide unos 25 × 15 mm y el experto original apuntaba a 5 mm de su borde (aun así acertaba con
+   posición exacta: 10/10; el desplazamiento solo da margen a una política que estima el cubo).
+
+Sobre el historial de observaciones: **ACT recibe una sola observación por predicción**
+(`n_obs_steps = 1`; LeRobot 0.4.4 rechaza cualquier valor mayor, `configuration_act.py:149`). El
+README anterior decía que el transformer "atiende a las últimas observaciones"; es falso. Atiende a
+la imagen y el estado actuales y al bloque de acciones que produce. π0 sí acepta historial, pero no
+arranca en esta máquina (falta el fork de `siglip`).
+
+---
+
+## Limitaciones
+
+* **No es una política de lazo cerrado.** Percibe una vez y reproduce una trayectoria
+  aprendida; no reacciona al brazo ni a que el cubo se mueva.
+* **El reloj del plan es privilegiado.** Sin él, la política no sabe cuándo bajar, cerrar o
+  soltar.
+* **Percepción clásica y una sola vez:** un detector de color sobre una escena de poco
+  contraste. Con otro objeto, otro color o más desorden habría que rehacerla.
+* **Una tarea fija:** un cubo, una cámara, una región de 9 × 9 cm, ±30° de giro, y el objetivo
+  siempre 10 cm en x. **Interpola, no extrapola**: dentro de la región, 30/30; en el anillo de 1 cm
+  alrededor, 8/10, y fallan las posiciones más lejanas. Más allá, sin medir.
+* **Margen de agarre estrecho** (≈ ±8–10 mm) y calibrado a mano con el punto de agarre del experto
+  (`expert.GRASP_BIAS_M`); un cambio de geometría del cubo o de la pinza lo invalida.
+* **Solo simulación**, con la fricción por defecto. No hay brazo físico conectado.
+* **Las físicas no son bit a bit reproducibles** entre ejecuciones.
+* **El arranque de Isaac Sim es intermitente** en esta máquina y los scripts no lo reintentan. Una vez, Kit
+  se bloqueó en mitad de una evaluación de 20 episodios (CPU ocupada, sin mensajes); desde entonces
+  `16_evaluate_policy.py` guarda cada episodio según termina (`.partial.jsonl`) y, si no avanza ningún paso
+  en `--stall-seconds` (300 por defecto), escribe lo terminado y sale con código 3. Esa salvaguarda **no se ha
+  llegado a disparar** y está sin probar.
+* **Las grabaciones anteriores están desactualizadas.** Los datasets `so101_lift_cube_demos`,
+  `_demos_v2`, `_phase` y `_cube_detect` se grabaron con la cámara moviéndose y el cubo fijado
+  cinemáticamente; se conservan para poder reproducir los fallos, no para entrenar.
+* **No se ha validado con datasets del Hub.** La compatibilidad se razona sobre los parámetros
+  publicados, no sobre una ejecución.
 
 ---
 
 ## Requisitos
 
-El entorno es el mismo que usan los demás demos: conda `hackathon-robotekin`,
-Python 3.11, Isaac Sim 5.1, Isaac Lab 2.3.0, LeIsaac 0.4.0, LeRobot 0.4.4,
-RTX 5060 Ti con 16 GB. La matriz de versiones está en
-[`../01_simulation_basics/README.md`](../01_simulation_basics/README.md).
+El entorno es el de los demás demos: conda `hackathon-robotekin`, Python 3.11, Isaac Sim 5.1,
+Isaac Lab 2.3.0, LeIsaac 0.4.0, LeRobot 0.4.4, RTX 5060 Ti con 16 GB. La matriz de versiones
+está en [`../01_simulation_basics/README.md`](../01_simulation_basics/README.md).
 
-Para **ejecutar** los demos (12, 13, 16) no hace falta nada nuevo.
-
-Para **entrenar** (14, 15) LeRobot necesita cuatro paquetes que ese entorno no
-tenía instalados. Se añaden **sin tocar** ninguna versión existente:
+Para **ejecutar** los demos 12, 13 y 16 no hace falta nada nuevo. Para **entrenar** (14, 15)
+LeRobot necesita cuatro paquetes que ese entorno no tenía, sin tocar ninguna versión existente:
 
 ```powershell
 conda activate hackathon-robotekin
 python -m pip install "datasets<5.0.0,>=4.0.0" "draccus==0.10.0" termcolor "deepdiff<9.0.0,>=7.0.1" "pandas<2.4.0,>=2.2.2" "pyarrow==21.0.0"
 ```
 
-Las tres últimas versiones van fijadas por un motivo concreto:
-`pyarrow` más nuevo exige NumPy 2.0 y el entorno tiene **NumPy 1.26.0** clavado
-por Isaac Sim; `datasets` 4.8 pide `pyarrow>=21` porque usa `pa.json_()`, que no
-existe en versiones anteriores. Esa combinación es la única que encaja con
-NumPy 1.26 sin romperla.
+`pyarrow` más nuevo exige NumPy 2.0 y el entorno tiene NumPy 1.26 fijado por Isaac Sim;
+`datasets` 4.8 pide `pyarrow>=21`. Esa combinación es la única que encaja con NumPy 1.26.
+
+**Sin red** (la wifi de un hackathon): los activos de LeIsaac ya están en la caché de Hugging
+Face de los demos anteriores, pero `prepare_runtime` consulta igualmente a Hugging Face y falla
+con un error SSL si la red es mala. Con la caché llena, `$env:HF_HUB_OFFLINE = "1"` lo evita. Se
+usó así en todas las medidas de este README.
+
+**La inferencia va en CPU** (`--inference-device cpu`): cargar un modelo de torch con CUDA antes
+de arrancar Isaac Sim deja un contexto que hace fallar a PhysX con `illegal memory access`. Cuesta
+unas decenas de milisegundos por bloque y a cambio el proceso termina.
 
 ---
 
-## Cómo ejecutar cada demo
+## Datos y modelos
 
-Todos los comandos se ejecutan desde la raíz del repositorio.
-
-### Paso obligatorio — demo 13: grabar demostraciones
-
-```powershell
-python .\demos\06_imitation_learning\13_collect_demonstrations.py --episodes 25 --headless
-```
-
-25 demostraciones tardan unos 15 minutos (≈35 s por episodio) y generan ~16 000
-frames, unos 400 MB entre vídeo y parquet.
-
-Opciones útiles:
-
-| opción | efecto |
-|---|---|
-| `--episodes N` | número de demostraciones a grabar |
-| `--dataset NOMBRE` | carpeta dentro de `data/` (por defecto `so101_lift_cube_demos`) |
-| `--overwrite` | borra el dataset anterior antes de empezar |
-| `--keep-failed` | guarda también las demostraciones fallidas |
-| `--headless` | sin ventana; casi obligatorio para largas grabaciones |
-
-Mientras trabaja imprime una línea por episodio. Un episodio que no cumple el
-criterio se descarta solo: un dataset de imitación con ejemplos malos sale peor que
-con menos ejemplos. Con 25 episodios lo normal es quedarse con unos 22.
-
-**Para probar que el flujo funciona antes de la grabación larga**, con 3
-demostraciones y pasos mínimos de entrenamiento:
-
-```powershell
-python .\demos\06_imitation_learning\13_collect_demonstrations.py --episodes 3 --headless --overwrite
-python .\demos\06_imitation_learning\14_train_behavior_cloning.py --steps 150
-python .\demos\06_imitation_learning\15_train_act.py --steps 500 --output 15_act_smoke
-```
-
-Con 3 episodios (1 920 frames) el entrenamiento se reduce a ~2 minutos para BC y
-~2 minutos para ACT. Es suficiente para comprobar que todo encaja; no para que la
-política aprenda nada.
-
-### Paso opcional — demo 12: mirar el dataset
-
-```powershell
-python .\demos\06_imitation_learning\12_inspect_demonstrations.py
-```
-
-Imprime los features, cuántos frames y episodios hay, y los rangos que recorren
-las articulaciones. Un rango estrecho en una articulación significa que las
-demostraciones no la han movido: el síntoma clásico de un dataset grabado con el
-robot aparcado.
-
-También acepta un repo del Hub: `--dataset oumeanin/leisaac-pick-orange`.
-
-### Paso 2 — demo 14: Behavior Cloning
-
-```powershell
-python .\demos\06_imitation_learning\14_train_behavior_cloning.py --steps 3000
-```
-
-Unas 4 horas en la 5060 Ti (el cuello de botella es decodificar vídeo, no la GPU).
-Deja `outputs/14_bc/bc_policy.pt`.
-
-> El dataset del demo 13 tiene una acción IK de 8 números, así que la red de BC
-> predice 8 valores. Es la misma regresión: cambia el tamaño de la capa de salida,
-> no la idea. La normalización ignora las dimensiones que no varían (la
-> orientación de la pinza, que el profesor siempre manda igual), porque dividir
-> por su desviación típica de cero convertiría toda la pérdida en NaN.
-
-### Paso 2′ — demo 15: ACT
-
-```powershell
-python .\demos\06_imitation_learning\15_train_act.py --steps 20000
-```
-
-Unos 57 minutos a ~6 pasos/s. Deja checkpoints cada 2000 pasos en
-`outputs/15_act/checkpoints/`; el último queda siempre en `.../last/`.
-
-Opciones: `--batch`, `--chunk`, `--action-steps`, `--device`, `--output`,
-`--no-vae` (entrena ACT sin su cuello de botella variacional; ver
-[Limitaciones](#limitaciones)).
-
-Para repetir las dos pruebas de 40 episodios:
-
-```powershell
-# fase como environment_state
-python .\demos\06_imitation_learning\15_train_act.py --dataset so101_lift_cube_phase --steps 20000 --output 15_act_phase
-
-# fallback con coordenadas de cube_detect.py
-python .\demos\06_imitation_learning\tools\20_add_cube_detect_state.py
-python .\demos\06_imitation_learning\15_train_act.py --dataset so101_lift_cube_cube_detect --steps 20000 --output 15_act_cube_detect
-```
-
-### Paso 3 — demo 16: ejecutar la política en la simulación
-
-```powershell
-# con ACT
-python .\demos\06_imitation_learning\16_evaluate_policy.py --policy .\outputs\15_act\checkpoints\last\pretrained_model --type act --episodes 5 --headless
-
-# con BC
-python .\demos\06_imitation_learning\16_evaluate_policy.py --policy .\outputs\14_bc\bc_policy.pt --type bc --episodes 5 --headless
-```
-
-Opciones: `--episodes`, `--steps` (pasos por episodio, por defecto 800),
-`--inference-device` (por defecto `cpu`, ver la nota de arriba), `--action-steps`
-(cuántas acciones del bloque ejecutar antes de volver a preguntar),
-`--headless`.
-
-### Ver la política en la ventana del simulador
-
-**Quita `--headless`.** Isaac Lab abre su ventana solo, sin ninguna opción
-adicional (`manager_based_rl_env.py:195` renderiza cuando `has_gui()` es cierto).
-
-Pero quitarla tal cual deja la ventana inservible por dos motivos, ambos medidos:
-
-* **La cámara apunta al vacío.** La tarea trae `viewer.eye=(-0.4, -0.6, 0.5)` y
-  `lookat=(0.9, 0, -0.3)`. Medido en esta escena, el brazo está en
-  `(0.35, -0.64, 0.01)`, el cubo en `x 0.30..0.37`, y la zona de dejada llega a
-  `x ≈ 0.47`. El `lookat` de la tarea apunta bastante más allá. El demo 16 usa
-  unos valores medidos: `eye=(0.05, -1.05, 0.55)`, `lookat=(0.38, -0.42, 0.12)`.
-* **Va a toda velocidad.** La simulación da unos 30 pasos/s con la GPU libre, así
-  que 800 pasos duran medio minuto. No hay nada que mirar.
-
-Por eso existe `--speed`:
-
-```powershell
-# un episodio, a velocidad real, mirando la ventana
-python .\demos\06_imitation_learning\16_evaluate_policy.py `
-    --policy .\outputs\15_act\checkpoints\last\pretrained_model `
-    --type act --episodes 1 --steps 400 --speed 1
-```
-
-| `--speed` | efecto |
-|---|---|
-| `0` (por defecto) | a máxima velocidad; para medir, no para mirar |
-| `1` | tiempo real: la tarea avanza 60 pasos por segundo |
-| `0.25` | cámara lenta, para ver el agarre paso a paso |
-| `0.5` | la mitad, un punto intermedio cómodo |
-
-A velocidad real, 400 pasos son ~7 s. A `--speed 0.25`, ~27 s.
-
-Si el ángulo no te convence, se mueve:
-
-```powershell
---viewer-eye 0.05 -1.05 0.55 --viewer-lookat 0.38 -0.42 0.12
-```
-
-Para parar antes de tiempo, `Ctrl+C` en la consola.
-
-> Con la ventana abierta la GPU va a más de la mitad. Si ves
-> `CUDA error: an illegal memory access`, cierra otras ventanas de simulación y
-> relanza; es el fallo intermitente de Kit ya documentado en el demo 01.
-
-### Recorrido completo de una vez
-
-```powershell
-python .\demos\06_imitation_learning\13_collect_demonstrations.py --episodes 25 --headless
-python .\demos\06_imitation_learning\12_inspect_demonstrations.py
-python .\demos\06_imitation_learning\15_train_act.py --steps 20000
-python .\demos\06_imitation_learning\16_evaluate_policy.py --policy .\outputs\15_act\checkpoints\last\pretrained_model --type act --episodes 5 --headless
-```
-
----
-
-## Qué sale en pantalla
-
-**Demo 13** — una línea por episodio con el resultado, los pasos, cuánto se ha
-movido el cubo y el error final, más un resumen:
-
-```
-kept 25 episode(s), discarded 0
-frames: 16000, episodes: 25
-total time: 897s
-log: demos/06_imitation_learning/data/so101_lift_cube_demos/13_collect_demonstrations_episodes.jsonl
-```
-
-Ese `.jsonl` guarda una línea por episodio con la posición del cubo al empezar, al
-acabar, el error y los segundos que tardó. Es lo que permite juzgar un dataset sin
-volver a lanzar el simulador.
-
-**Demo 12** — la ficha del dataset y una tabla de rangos:
-
-```
-dataset
-  frames: 16000, episodes: 25, fps: 60
-  robot type: so101_follower
-  camera(s): ['observation.images.front']
-  task(s): Pick the red cube up and put it down 10 cm to the side.
-
-action and state ranges, in motor degrees
-  joint             state min  state max  action min  action max
-  shoulder_pan.pos       -9.4       44.2       -10.1        58.6
-  ...
-```
-
-**Demo 14** — la pérdida cada 50 pasos y el resumen:
-
-```
-  step 1/3000 loss 19.5236
-  step 3000/3000 loss 0.0231
-
-trained on 25 episode(s), 16000 frames, 3000 steps, 14210s
-checkpoint: demos/06_imitation_learning/outputs/14_bc/bc_policy.pt
-```
-
-**Demo 15** — la barra de progreso de `lerobot-train` y el resumen:
-
-```
-dataset: demos/06_imitation_learning/data/so101_lift_cube_demos
-policy:  ACT, chunk 20, 20 actions per step, batch 8
-device:  cuda
-steps:   20000
-...
-trained in 4502s
-```
-
-**Demo 16** — una línea por episodio y el resultado final:
-
-```
-  episode 0: FAILED final_error=9.8cm max_cube_height=5.6cm steps=800 (138s)
-  ...
-success: 0/5 (0%)
-report:  demos/06_imitation_learning/results/16_evaluation.md
-```
-
-Ese informe en `results/` es el sitio donde queda registrada la tasa de éxito, con
-la fecha, la rama y el entorno como el resto de informes del repositorio.
-
----
-
-## Dónde están los datos y los modelos
-
-Todo se crea y se consume **en local**, dentro de la carpeta del demo:
+Todo se crea y se consume en local, dentro de esta carpeta. **Ningún script borra datasets ni
+checkpoints.**
 
 | ruta | qué es | ¿en git? |
 |---|---|---|
-| `data/so101_lift_cube_demos/` | dataset LeRobot v2.1 (vídeo + parquet) | **no** (`.gitignore` local) |
-| `outputs/14_bc/` | checkpoint de Behavior Cloning | **no** |
-| `outputs/15_act/` | checkpoints de ACT | **no** |
-| `results/` | informes medidos | **sí** |
+| `data/so101_lift_cube_physical/` | las 48 demostraciones con vídeo (dataset LeRobot v3), cubo sujeto por fricción | no (`.gitignore`) |
+| `data/so101_lift_cube_clock_cube/` | copia sin vídeo con la entrada reloj + cubo (1 MB) | no |
+| `data/so101_lift_cube_physical.replaced-*/` | la grabación anterior (con la cámara moviéndose), apartada, no borrada | no |
+| `data/so101_lift_cube_{demos,demos_v2,phase,cube_detect}/` | grabaciones de las pruebas anteriores | no |
+| `outputs/15_act_clock/` | **el modelo del demo** | no |
+| `outputs/15_act_clock_val/` | el mismo, entrenado sin los episodios 40–47 | no |
+| `outputs/15_act*`, `15_act_phase*`, `15_act_cube_detect`, `15_act_v2` | los checkpoints de las pruebas anteriores | no |
+| `results/runs/`, `results/offline/` | un informe por ejecución, sin sobrescribir | **sí** |
+| `results/diagnosis.md`, `results/16_evaluation.md`, `results/SUMMARY.md` | diagnóstico, registro y resumen | **sí** |
 
-Los pesos del activo de LeIsaac (los USD del SO-101) están en la caché de Hugging
-Face desde los demos anteriores, así que el demo 13 no descarga nada nuevo.
+### Datasets y políticas ya entrenadas del Hub
 
-### Datasets y políticas ya entrenadas
-
-Ninguno es compatible **tal cual** con este entorno. Están anotados aquí con lo que
-habría que comprobar antes de usarlos, y el porqué de que no se hayan enchufado
-directamente.
+Ninguno es compatible **tal cual** con este entorno; antes de reutilizar uno hay que comprobar el
+espacio de observaciones, el espacio de acciones (6 articulaciones o 8 con IK), las **unidades**
+(radianes del simulador o grados de motor), el modelo de robot y el entorno de simulación.
 
 | repo | contenido | por qué no se usa directo |
 |---|---|---|
-| [`LightwheelAI/leisaac-pick-orange`](https://huggingface.co/datasets/LightwheelAI/leisaac-pick-orange) | dataset oficial, 60 episodios, `LeIsaac-SO101-PickOrange-v0` | otra tarea (naranjas) y otra escena; aunque el estado y la acción son compatibles (6 articulaciones), la cámara `front` está en otro sitio |
-| [`oumeanin/leisaac-pick-orange-act`](https://huggingface.co/oumeanin/leisaac-pick-orange-act) | ACT entrenada sobre ese dataset (19 episodios) | la config de ACT es puramente la de por defecto y es compatible, pero las acciones aprendidas son de recoger naranjas |
-| [`LightwheelAI/leisaac-pick-orange-v0`](https://huggingface.co/LightwheelAI/leisaac-pick-orange-v0) | GR00T N1.5 | no es un checkpoint de LeRobot; necesita el servidor de inferencia de GR00T |
-| [`azazdeaz/teleop_so101_leisaac_lift_cube`](https://huggingface.co/datasets/azazdeaz/teleop_so101_leisaac_lift_cube) | LiftCube simulado, teleoperado | con cámaras a 256×256, no a 480×640 como la de esta tarea |
+| [`LightwheelAI/leisaac-pick-orange`](https://huggingface.co/datasets/LightwheelAI/leisaac-pick-orange) | dataset oficial, 60 episodios | otra tarea y otra escena; la cámara `front` está en otro sitio |
+| [`oumeanin/leisaac-pick-orange-act`](https://huggingface.co/oumeanin/leisaac-pick-orange-act) | ACT sobre ese dataset | las acciones aprendidas son de recoger naranjas |
+| [`LightwheelAI/leisaac-pick-orange-v0`](https://huggingface.co/LightwheelAI/leisaac-pick-orange-v0) | GR00T N1.5 | no es un checkpoint de LeRobot |
+| [`azazdeaz/teleop_so101_leisaac_lift_cube`](https://huggingface.co/datasets/azazdeaz/teleop_so101_leisaac_lift_cube) | LiftCube teleoperado | cámaras a 256×256, no a 480×640 |
 
-**Antes de reutilizar cualquiera hay que comprobar**: el espacio de observaciones
-(dimensiones de estado, número y resolución de cámaras), el espacio de acciones
-(6 articulaciones o 8 con IK), las **unidades** (radianes del simulador o grados
-de motor), el modelo de robot y el entorno de simulación. Cambiar la resolución de
-la cámara o las unidades invalida el checkpoint aunque el resto parezca cuadrar —
-la Red Neuronal entrenada lee píxeles en una escala concreta.
+### Decisiones técnicas
 
----
-
-## Resultados medidos
-
-Medidos en la rama `prepare-demos`, entorno conda `hackathon-robotekin`,
-Windows 11, Isaac Sim 5.1, RTX 5060 Ti 16 GB.
-
-### El profesor (demo 13)
-
-| métrica | valor |
-|---|---|
-| demostraciones correctas | **25 / 25** |
-| error final mediano (a 3 cm) | **~1 cm** |
-| desplazamiento del cubo | ~10 cm, el objetivo |
-| pasos por demostración | 640 |
-| tiempo por demostración | ~35 s |
-| dataset original | 25 episodios, 16 000 frames, ~1.6 GB |
-| dataset de fase de la prueba actual | **40 episodios, 25 600 frames, 0 fallos** |
-
-### Entrenamiento (demo 15)
-
-| métrica | valor |
-|---|---|
-| ACT base (ejecución anterior) | 20 000 pasos, ~57 min; error de entrenamiento registrado: 0,19 |
-| ACT con fase como `environment_state` | 20 000 pasos, ~44 min |
-| ACT con centroide de `cube_detect.py` | 20 000 pasos, ~39 min 30 s |
-| pérdida final de ese entrenamiento | 0,055 en los lotes de entrenamiento; no predice éxito en simulación |
-| pesos del checkpoint probado | ~206 MB |
-
-### Evaluación (demo 16)
-
-**Resultado honesto: las dos entradas adicionales probadas dan 0/5.**
-
-ACT con la fase disponible como `observation.environment_state` obtuvo 0/5. El
-centroide normalizado de `cube_detect.py` también obtuvo 0/5: la altura máxima del
-cubo fue 5,6 cm en los cinco episodios (sigue en la mesa), con errores finales de
-9,5–10,3 cm. El detector produjo una observación en los 25 600 fotogramas del
-dataset; eso no bastó para que ACT aprendiera la recogida. Por tanto, no es
-correcto afirmar que la fase hace que esta política funcione: ACT recibió la fase,
-pero no completó la tarea. La evidencia está en
-[`results/16_evaluation.md`](results/16_evaluation.md).
-
-La primera prueba con fase guardada bajo el nombre `observation.phase` no llegaba
-al codificador de ACT, que sólo usa su entrada reservada `observation.environment_state`.
-Se corrigió ese mapeo y se volvió a entrenar; el resultado siguió siendo 0/5.
-Después se midió el fallback con coordenadas del detector, también sin éxito. Las
-dos pruebas muestran que añadir una señal no corrige por sí sola el control en
-bucle cerrado.
-
-Esto **no** es un fallo de los demos, es el resultado de intentarlo. Es el error
-de imitación clásico (*compounding error*, en inglés), y es la lección más útil
-del conjunto:
-
-* **El error se acumula.** La demostración son 640 pasos encadenados. Un error
-  temprano puede llevar la política a un estado que el profesor nunca visitó.
-* **La política no ve el futuro.** El profesor sabe que va a bajar el brazo en
-  el paso 130; la política solo ve la foto y las articulaciones del paso en el
-  que está.
-* **Hay un atractor estático.** Incluso con 40 demostraciones y un brazo
-  que se mueve milímetros por paso, "quédate donde estás" es una solución con
-  pérdida muy baja. La política la encontró.
-
-Intentos documentados que **no** lo resolvieron, y por qué:
-
-1. **Grabar las articulaciones resultantes** en vez de la orden del profesor:
-   la acción quedaba casi igual al estado (el brazo avanza <1 % de grado por
-   paso), así que la política aprendía la identidad y se quedaba parada.
-2. **Quitar las pausas del plan** (el profesor era constante durante el último
-   quinto de cada fase): reduce los bucles propios, pero el atractor sigue ahí.
-3. **Entrenar ACT sin VAE** (`--no-vae`) y con 30 000 pasos: la política
-   predice mejor sobre el dataset, pero el bucle cerrado sigue igual.
-
-Vías que quedan por estudiar:
-
-| cambio | por qué |
-|---|---|
-| **más variedad en las demostraciones** | cubre estados que la política no ha visto; el dataset actual tiene 40 episodios, pero un plan casi fijo |
-| **más variedad en la tarea** (otros puntos de dejada, más altura) | cubre estados que la política no ha visto |
-| **chunk más largo** (`--chunk 40`) | una planificación más larga absorbe mejor un error pequeño |
-
-Las pruebas de esta carpeta ejecutan los scripts de principio a fin, pero la
-política ACT todavía no completa la tarea. Ambas evaluaciones están medidas y
-documentadas en [`results/16_evaluation.md`](results/16_evaluation.md).
-
+| decisión | alternativa | por qué esta |
+|---|---|---|
+| **LeRobot 0.4.4** | entrenar a mano | es la herramienta del proyecto; trae ACT y el formato estándar del SO-101 |
+| **ACT** | Diffusion Policy, π0, SmolVLA | la que LeRobot recomienda primero; cabe en los 16 GB |
+| **la orden IK del profesor** como acción | las articulaciones que resultan | grabar el *resultado* enseña "repite lo que acabo de hacer" y la política se queda quieta |
+| **grados de motor** para el estado | radianes | es lo que LeIsaac exporta a LeRobot |
+| **profesor programado** | teleoperación | no necesita hardware y da siempre el mismo agarre |
+| **cubo colocado a mano en una región de 9 × 9 cm** | la aleatorización original (±75 mm) | la original deja a veces el cubo fuera del alcance (0,33 m) |
 
 ---
 
-## Limitaciones
+## Ver la política en la ventana
 
-Esto es un campo de juego, no un sistema listo para producción.
+**Quita `--headless`.** Isaac Lab abre su ventana solo. Dos cosas que ya están resueltas, ambas medidas:
 
-**La política no completa la tarea todavía.** Tanto la fase como el centroide de
-`cube_detect.py` se probaron como entrada de ACT y ambos dieron 0/5. Consulta
-[Resultados medidos](#resultados-medidos) y
-[`results/16_evaluation.md`](results/16_evaluation.md). La fase se conectó al
-campo reservado que ACT procesa, pero eso tampoco hizo que la política funcionara.
+* **La cámara de la tarea apunta al vacío** (`lookat=(0.9, 0, -0.3)`); el demo usa unos valores
+  medidos: `eye=(0.05, -1.05, 0.55)`, `lookat=(0.38, -0.42, 0.12)`. Si no te convence el ángulo:
+  `--viewer-eye 0.05 -1.05 0.55 --viewer-lookat 0.38 -0.42 0.12`.
+* **Va a toda velocidad** (≈ 30 pasos/s): 700 pasos pasan en medio minuto. Por eso existe `--speed`:
 
-**Las demostraciones son casi idénticas.** El profesor ejecuta el mismo plan
-siempre; solo cambian la posición del cubo (±3.5 cm), su orientación (±30°) y
-nada más. El tiempo de viaje, la altura y el orden son fijos. Una política
-entrenada sobre eso solo sabe hacer ese movimiento, y cualquier desviación la
-saca de lo que ha visto.
-
-**Solo un objeto y una configuración.** Un cubo rojo, una posición de partida, una
-cámara. Si el cubo aparece en otro sitio del que el profesor alcanzaba, no hay
-demostración que lo cubra.
-
-**El profesor es tramposo, y conviene saberlo.** Sabe dónde está el cubo y sujeta
-el cubo cinemáticamente mientras la pinza está cerrada. Las pruebas adicionales
-de ACT con fase y con el detector se documentan abajo; ambas fallaron, así que no
-se debe presentar ninguna como una solución del problema.
-
-**El criterio de éxito no es el de la tarea original.** Ver
-[La tarea](#la-tarea).
-
-**Solo verificado en simulación.** No hay brazo físico conectado. La
-transferencia al hardware real exige adecuaciones que aquí no se han hecho
-(calibración, control a la frecuencia del bus de motores, manejo del fallo de
-comunicación).
-
-**No se ha contrastado con datasets del Hub.** La compatibilidad se razona sobre
-los parámetros publicados, no sobre una ejecución real.
-
-**Behavior Cloning no es una política completa.** Es una red de ~60 líneas escrita
-a mano para enseñar qué es la IL. No tiene memoria entre pasos ni planificación.
-
-**El arranque de Isaac Sim es intermitente.** En esta máquina, una de cada varias
-ejecuciones falla al crear el entorno con el fallo de DLL que
-[`env_loader.py`](il_env.py) ya documenta. Los demos no lo reintienen ellos
-mismos: si al ejecutar el 13 o el 16 aparece un acceso a memoria ilegal al
-levantar Kit, hay que volver a lanzarlo.
-
----
-
-## Por dónde seguir
-
-1. **Más demostraciones, con más variedad.** El dataset ya tiene 40 episodios;
-   cubrir más estados y variar el plan puede ayudar más que repetirlo en más
-   posiciones cercanas.
-2. **Más variedad en la tarea.** Variar la altura de la recogida, el punto de
-   dejada, el número de objetos. La variedad de las demostraciones es el techo de
-   la variedad de la política.
-3. **Bloques más largos** (`--chunk 40`). Una planificación más larga absorbe
-   mejor un error pequeño, y es un cambio de una línea.
-4. **Probar Diffusion Policy.** LeRobot 0.4.4 la incluye
-   (`lerobot.policies.diffusion`); el registro de políticas acepta `diffusion`.
-5. **Teleoperación real.** El demo 13 se puede adaptar a un brazo líder o a un
-   mando (`--teleop-device` de `teleop_se3_agent` en LeIsaac) para grabar
-   demostraciones humanas en vez del guion. Más variadas, más caras de obtener.
-6. **Transferencia al SO-101 físico.** El estado ya está en grados de motor y la
-   geometría es la del brazo real. Falta el puerto serie, la calibración y la
-   monitorización; lo que no está resuelto es que la política aún no completa la
-   tarea en simulación.
-
----
-
-## Referencias
-
-### Documentación
-
-- LeRobot — https://github.com/huggingface/lerobot
-- LeRobot, política ACT — https://github.com/huggingface/lerobot/blob/main/docs/source/act.mdx
-- LeIsaac — https://github.com/LightwheelAI/leisaac
-- LeIsaac, grabar datasets de LeRobot — https://github.com/LightwheelAI/leisaac/blob/main/docs/docs/docs/features/lerobot_recorder.md
-- Isaac Lab 2.x — https://isaac-sim.github.io/IsaacLab/
-- LeRobot Demo SO-101 — https://github.com/huggingface/lerobot/blob/main/examples/10_using_so101.md
-
-### Papers
-
-- **ACT** — Zhao et al., *Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware* — https://arxiv.org/abs/2304.13705
-- **Diffusion Policy** — Chi et al., *Diffusion Policy: Visuomotor Policy Learning via Action Diffusion* — https://arxiv.org/abs/2303.04137
-- **Behavior Cloning** — Bain & Sammut — https://link.springer.com/chapter/10.1007/978-3-642-17407-8_5
-
-### Datasets y modelos
-
-- https://huggingface.co/datasets/LightwheelAI/leisaac-pick-orange
-- https://huggingface.co/oumeanin/leisaac-pick-orange-act
-- https://huggingface.co/datasets/azazdeaz/teleop_so101_leisaac_lift_cube
-
-### Código del que salen los números de este README
-
-| qué | dónde |
+| `--speed` | efecto |
 |---|---|
-| versiones y por qué | [`../01_simulation_basics/README.md`](../01_simulation_basics/README.md) |
-| geometría del agarre, medida | [`../01_simulation_basics/05_cube_pick_and_place.py`](../01_simulation_basics/05_cube_pick_and_place.py) |
-| alcance del SO-101 (0.33 m) | [`../04_perception/`](../04_perception/) |
-| criterio de "colocar el cubo" | [`../05_planner_and_executor/`](../05_planner_and_executor/) |
-| el profesor | [`expert.py`](expert.py) |
-| las unidades y los features | [`il_dataset.py`](il_dataset.py) |
-| los dos espacios de control | [`il_env.py`](il_env.py) |
+| `0` (por defecto) | a máxima velocidad; para medir |
+| `1` | tiempo real (60 pasos por segundo) |
+| `0.5` | la mitad: cómodo para presentar |
+| `0.25` | cámara lenta, para ver el agarre paso a paso |
+
+Para parar antes de tiempo, `Ctrl+C` en la consola.
 
 ---
 
@@ -627,13 +466,53 @@ levantar Kit, hay que volver a lanzarlo.
 
 | síntoma | causa y solución |
 |---|---|
-| `CUDA error: an illegal memory access` al crear el entorno | hay un proceso de Isaac Sim zombie ocupando la GPU. Ciérralo con el Administrador de tareas, o revisa con `Get-CimInstance Win32_Process` si quedó algún `python.exe` colgado. También lo provoca cargar una política de torch en CUDA antes de arrancar el simulador — ejecuta con `--inference-device cpu` (que es el valor por defecto) |
-| `value cannot be converted to type uint8 without overflow` | la imagen se está pasando como `uint8` y el normalizador adopta ese tipo para sus estadísticas. El preprocesador quiere `float32` en [0, 1]; eso ya lo hace `il_dataset.image_to_policy_input` |
-| `pyarrow requires NumPy 2.0 or newer` | se ha instalado `pyarrow` demasiado nuevo. Fija `pyarrow==21.0.0`, la última que funciona con NumPy 1.26 |
-| `module 'pyarrow' has no attribute 'json_'` | `datasets` 4.8 lo pide. Se resuelve con `pyarrow>=21` |
-| `A prominent term order...` (el dataset no carga) | el dataset se quedó sin `finalize()` porque el script se interrumpió. Vuelve a grabar con `--overwrite` |
-| demo 16: `RESULT: FAILED` con `steps=640` | la política se ha quedado parada. Es la limitación de entrenar con pocas demostraciones: graba más y vuelve a entrenar |
-| demo 15: `Output directory ... already exists` | LeRobot no permite reutilizar una carpeta de salida. Usa `--output OTRO_NOMBRE` |
+| `SSLError ... huggingface.co` al arrancar | `prepare_runtime` consulta a Hugging Face. Con la caché de activos llena: `$env:HF_HUB_OFFLINE = "1"` |
+| `CUDA error: an illegal memory access` al crear el entorno | fallo intermitente de Kit, mucho más frecuente con otro Isaac Sim en la GPU (durante estas medidas hubo veces con 2–3 intentos seguidos). Cierra los demás (`Get-Process python`) y **vuelve a lanzar el mismo comando** |
+| decenas de líneas `[Error] ... DLL load failed ... demasiado largo` al arrancar | ruido de extensiones de Kit que no se usan; es inofensivo |
+| `ERROR: ... already exists` al evaluar o entrenar | por diseño: los informes y las carpetas de salida no se sobrescriben. Usa `--report-name` / `--output` con otro nombre |
+| `ERROR: ... already exists` al grabar | pasa `--dataset OTRO` o `--overwrite` (el anterior se renombra a `.replaced-<fecha>`, no se borra) |
+| `KeyError: 'observation.state'` entrenando ACT sin estado | error de LeRobot 0.4.4 (lee `.device` de esa clave aunque no haya estado). El demo lo evita conservando la columna en el dataset y declarando solo la entrada de entorno; si montas otro dataset, copia ese patrón (`tools/21`) |
+| `value cannot be converted to type uint8 without overflow` | la imagen se pasa como `uint8`; el preprocesador quiere `float32` en [0, 1] (`il_dataset.image_to_policy_input`) |
+| `pyarrow requires NumPy 2.0 or newer` | `pyarrow` demasiado nuevo; fija `pyarrow==21.0.0` |
+| `Output directory ... already exists` al entrenar | LeRobot no reutiliza una carpeta de salida. Usa `--output OTRO` |
+| el informe dice `(con cambios sin confirmar)` | el árbol de git tenía cambios al evaluar; el informe lo declara a propósito |
+| `close()` del simulador se cuelga | los scripts salen con `os._exit` tras escribir todo en disco, justo para esto |
+
+---
+
+## Por dónde seguir
+
+1. **Cerrar el lazo sobre el cubo**: volver a percibirlo cada pocos pasos y reaccionar. Exige demostraciones con
+   perturbaciones y un profesor reactivo, no un plan por tiempo.
+2. **Quitar el reloj**: un profesor cuyas transiciones dependan de lo observado (brazo llegado, pinza
+   cerrada) hace que la acción sea función de la observación y no del calendario.
+3. **Percepción aprendida**: con la cámara quieta el detector clásico da 0,5 mm de error, así que una red
+   tiene un listón claro que igualar.
+4. **Más variedad en la tarea** (objetivo, altura, número de objetos): la variedad de las demostraciones es el techo de la de la política.
+5. **Otra política con historial** (π0 con `n_obs_steps=2`) si se consigue el fork de `siglip`.
+6. **Teleoperación real** para grabar demostraciones humanas, más variadas y más caras.
+7. **Transferencia al SO-101 físico**: puerto serie, calibración y monitorización.
+
+---
+
+## Referencias
+
+- LeRobot — https://github.com/huggingface/lerobot · política ACT — https://github.com/huggingface/lerobot/blob/main/docs/source/act.mdx
+- LeIsaac — https://github.com/LightwheelAI/leisaac
+- Isaac Lab 2.x — https://isaac-sim.github.io/IsaacLab/
+- **ACT** — Zhao et al., *Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware* — https://arxiv.org/abs/2304.13705
+- **Causal confusion** — de Haan, Jayaraman, Levine, *Causal Confusion in Imitation Learning* — https://arxiv.org/abs/1905.11979
+- **Diffusion Policy** — Chi et al. — https://arxiv.org/abs/2303.04137
+
+| qué | dónde |
+|---|---|
+| versiones y por qué | [`../01_simulation_basics/README.md`](../01_simulation_basics/README.md) |
+| geometría del agarre, medida | [`../01_simulation_basics/05_cube_pick_and_place.py`](../01_simulation_basics/05_cube_pick_and_place.py) |
+| el profesor y su punto de agarre | [`expert.py`](expert.py) |
+| el criterio de éxito | [`il_metrics.py`](il_metrics.py) |
+| unidades y features | [`il_dataset.py`](il_dataset.py) |
+| entornos, posiciones, percepción | [`il_env.py`](il_env.py) |
+| diagnóstico completo | [`results/diagnosis.md`](results/diagnosis.md) |
 
 ---
 
@@ -642,17 +521,33 @@ levantar Kit, hay que volver a lanzarlo.
 ```
 06_imitation_learning/
 ├── README.md                            ← este archivo
-├── .gitignore                           ← data/, outputs/ y out/ fuera de git
-├── il_env.py                            ← entornos LeIsaac y conversión de acciones
-├── il_dataset.py                        ← features, unidades y I/O del dataset
-├── expert.py                            ← el profesor programado (waypoints)
+├── .gitignore                           ← data/, outputs/ y out/ fuera de git; results/ dentro
+├── il_env.py                            ← entorno, posiciones de entrenamiento y de evaluación, percepción
+├── il_dataset.py                        ← features, unidades, reloj del plan, I/O del dataset
+├── il_metrics.py                        ← el criterio de éxito (sin simulador)
+├── expert.py                            ← el profesor programado y su punto de agarre
+├── cube_detect.py                       ← detector de color del cubo
 ├── 12_inspect_demonstrations.py         ← demo 12: ver qué hay dentro de un dataset
-├── 13_collect_demonstrations.py         ← demo 13: grabar demostraciones (obligatorio)
-├── 14_train_behavior_cloning.py         ← demo 14: Behavior Cloning en PyTorch puro
+├── 13_collect_demonstrations.py         ← demo 13: grabar demostraciones (agarre por fricción)
+├── 14_train_behavior_cloning.py         ← demo 14: Behavior Cloning en PyTorch puro (no revalidado)
 ├── 15_train_act.py                      ← demo 15: ACT con el pipeline de LeRobot
-├── 16_evaluate_policy.py                ← demo 16: ejecutar y medir en simulación
-├── tools/20_add_cube_detect_state.py    ← prepara dataset con estado del detector
+├── 16_evaluate_policy.py                ← demo 16: ejecutar y juzgar en simulación
+├── tools/
+│   ├── 17_validate_detector.py          ← mide el detector sobre un dataset
+│   ├── 18_measure_ambiguity.py          ← mide cuántos fotogramas comparten pose y piden órdenes distintas
+│   ├── 20_add_cube_detect_state.py      ← variante antigua: detector por fotograma como estado
+│   ├── 21_build_clock_cube_dataset.py   ← dataset reloj + cubo (el que entrena el demo)
+│   ├── 22_validate_offline.py           ← reproduce la política sin simulador sobre episodios no vistos
+│   └── 23_summarize_results.py          ← results/SUMMARY.md a partir de results/runs/
+├── tests/                               ← pruebas sin simulador (pytest)
 ├── data/                                ← datasets (git-ignored)
 ├── outputs/                             ← checkpoints (git-ignored)
-└── results/                             ← informes medidos (sí en git)
+└── results/
+    ├── 16_evaluation.md                 ← el registro curado de evaluaciones
+    ├── SUMMARY.md                       ← todas las ejecuciones en una tabla (generado)
+    ├── diagnosis.md                     ← por qué fallaron las políticas con cámara
+    ├── runs/                            ← un informe .md y .json por ejecución del demo 16
+    └── offline/                         ← informes de tools/22
 ```
+
+Pruebas sin simulador: `python -m pytest demos/06_imitation_learning/tests -q` (24 pruebas, < 1 s).

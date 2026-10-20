@@ -1,0 +1,65 @@
+{
+  "run": {
+    "name": "15_act_clock-last_heldout_1ep_20261020-171649",
+    "utc": "2026-10-20T17:18:07Z",
+    "git": {
+      "commit": "a3db19f",
+      "branch": "prepare-demos",
+      "dirty": true
+    },
+    "policy": "C:\\Users\\Usuario\\Documents\\Workspace\\LeRobot_\\demos\\06_imitation_learning\\outputs\\15_act_clock\\checkpoints\\last\\pretrained_model",
+    "type": "act",
+    "inputs": "PRIVILEGED plan clock + cube pixel position seen once at the start by the colour detector; no camera image and no joint state go into the network, so it cannot react to the arm",
+    "spots": "heldout",
+    "spots_description": "fuera del entrenamiento (índices Halton 1000 a 1000; ninguna posición de las demostraciones)",
+    "seed": 0,
+    "steps": 720,
+    "action_steps": null,
+    "scripted_grasp_bias_mm": null,
+    "interrupted": false,
+    "status": "complete",
+    "episodes_requested": 1,
+    "criteria": {
+      "lift_min_m": 0.04,
+      "carry_z_m": 0.03,
+      "carry_min_steps": 60,
+      "held_max_dist_m": 0.03,
+      "place_tol_m": 0.03
+    }
+  },
+  "episodes": [
+    {
+      "episode": 0,
+      "spot": [
+        0.3433,
+        -0.3937
+      ],
+      "yaw_deg": -17.7,
+      "nearest_train_cm": 0.46,
+      "cube_uv": [
+        0.383,
+        0.44
+      ],
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.11,
+        "longest_carry_steps": 158,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.35,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 49.9
+    }
+  ],
+  "summary": {
+    "episodes": 1,
+    "successes": 1,
+    "rate": 1.0,
+    "failures": {}
+  }
+}

@@ -1,0 +1,306 @@
+{
+  "run": {
+    "name": "act_clock_final_heldout_10ep",
+    "utc": "2026-10-19T17:59:04Z",
+    "git": {
+      "commit": "a3db19f",
+      "branch": "prepare-demos",
+      "dirty": true
+    },
+    "policy": "C:\\Users\\Usuario\\Documents\\Workspace\\LeRobot_\\demos\\06_imitation_learning\\outputs\\15_act_clock\\checkpoints\\last\\pretrained_model",
+    "type": "act",
+    "inputs": "PRIVILEGED plan clock + cube pixel position seen once at the start by the colour detector; no camera image and no joint state go into the network, so it cannot react to the arm",
+    "spots": "heldout",
+    "spots_description": "fuera del entrenamiento (índices Halton 1000 a 1009; ninguna posición de las demostraciones)",
+    "seed": 0,
+    "steps": 720,
+    "action_steps": null,
+    "scripted_grasp_bias_mm": null,
+    "interrupted": false,
+    "criteria": {
+      "lift_min_m": 0.04,
+      "carry_z_m": 0.03,
+      "carry_min_steps": 60,
+      "held_max_dist_m": 0.03,
+      "place_tol_m": 0.03
+    }
+  },
+  "episodes": [
+    {
+      "episode": 0,
+      "spot": [
+        0.3433,
+        -0.3937
+      ],
+      "yaw_deg": -17.7,
+      "nearest_train_cm": 0.46,
+      "cube_uv": [
+        0.383,
+        0.44
+      ],
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.09,
+        "longest_carry_steps": 158,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.32,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 28.3
+    },
+    {
+      "episode": 1,
+      "spot": [
+        0.3208,
+        -0.4437
+      ],
+      "yaw_deg": -5.7,
+      "nearest_train_cm": 0.72,
+      "cube_uv": [
+        0.3334,
+        0.3611
+      ],
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 5.97,
+        "longest_carry_steps": 165,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.6,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 31.5
+    },
+    {
+      "episode": 2,
+      "spot": [
+        0.3658,
+        -0.4137
+      ],
+      "yaw_deg": 6.3,
+      "nearest_train_cm": 0.72,
+      "cube_uv": [
+        0.3078,
+        0.4217
+      ],
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.06,
+        "longest_carry_steps": 161,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.74,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 31.8
+    },
+    {
+      "episode": 3,
+      "spot": [
+        0.3096,
+        -0.3837
+      ],
+      "yaw_deg": 18.3,
+      "nearest_train_cm": 0.72,
+      "cube_uv": [
+        0.4564,
+        0.4372
+      ],
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.14,
+        "longest_carry_steps": 158,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.72,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 31.3
+    },
+    {
+      "episode": 4,
+      "spot": [
+        0.3546,
+        -0.4337
+      ],
+      "yaw_deg": -27.3,
+      "nearest_train_cm": 0.72,
+      "cube_uv": [
+        0.2929,
+        0.3886
+      ],
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 5.91,
+        "longest_carry_steps": 162,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.18,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 31.4
+    },
+    {
+      "episode": 5,
+      "spot": [
+        0.3321,
+        -0.4037
+      ],
+      "yaw_deg": -15.3,
+      "nearest_train_cm": 0.72,
+      "cube_uv": [
+        0.3835,
+        0.4202
+      ],
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.1,
+        "longest_carry_steps": 159,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.36,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 26.5
+    },
+    {
+      "episode": 6,
+      "spot": [
+        0.3771,
+        -0.3737
+      ],
+      "yaw_deg": -3.3,
+      "nearest_train_cm": 0.72,
+      "cube_uv": [
+        0.3593,
+        0.4845
+      ],
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.09,
+        "longest_carry_steps": 158,
+        "held_fraction": 1.0,
+        "final_error_cm": 1.09,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 27.2
+    },
+    {
+      "episode": 7,
+      "spot": [
+        0.2955,
+        -0.4504
+      ],
+      "yaw_deg": 8.7,
+      "nearest_train_cm": 0.71,
+      "cube_uv": [
+        0.3642,
+        0.3417
+      ],
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.02,
+        "longest_carry_steps": 167,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.85,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 26.2
+    },
+    {
+      "episode": 8,
+      "spot": [
+        0.3405,
+        -0.4204
+      ],
+      "yaw_deg": 20.7,
+      "nearest_train_cm": 0.71,
+      "cube_uv": [
+        0.34,
+        0.4007
+      ],
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.0,
+        "longest_carry_steps": 161,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.92,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 25.6
+    },
+    {
+      "episode": 9,
+      "spot": [
+        0.318,
+        -0.3904
+      ],
+      "yaw_deg": -24.9,
+      "nearest_train_cm": 0.71,
+      "cube_uv": [
+        0.4293,
+        0.4318
+      ],
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.04,
+        "longest_carry_steps": 158,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.5,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 25.6
+    }
+  ],
+  "summary": {
+    "episodes": 10,
+    "successes": 10,
+    "rate": 1.0,
+    "failures": {}
+  }
+}

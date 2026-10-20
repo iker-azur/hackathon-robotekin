@@ -1,0 +1,72 @@
+{
+  "utc": "2026-10-19T17:33:18Z",
+  "policy": "C:\\Users\\Usuario\\Documents\\Workspace\\LeRobot_\\demos\\06_imitation_learning\\outputs\\15_act_clock_val\\checkpoints\\last\\pretrained_model",
+  "dataset": "so101_lift_cube_clock_cube",
+  "episodes": "40-47",
+  "grasp_xy_error_mm": {
+    "mean": 3.4032814502716064,
+    "worst": 5.004406929016113
+  },
+  "grasp_z_error_mm": {
+    "mean": 0.26270002126693726,
+    "worst": 0.35794079303741455
+  },
+  "per_episode": [
+    {
+      "episode": 40,
+      "grasp_xy_error_mm": 3.03,
+      "grasp_z_error_mm": 0.26,
+      "jaw_command_agreement": 0.9891,
+      "whole_plan_xyz_rms_mm": 5.01
+    },
+    {
+      "episode": 41,
+      "grasp_xy_error_mm": 2.47,
+      "grasp_z_error_mm": 0.22,
+      "jaw_command_agreement": 1.0,
+      "whole_plan_xyz_rms_mm": 5.2
+    },
+    {
+      "episode": 42,
+      "grasp_xy_error_mm": 2.45,
+      "grasp_z_error_mm": 0.32,
+      "jaw_command_agreement": 0.9938,
+      "whole_plan_xyz_rms_mm": 4.03
+    },
+    {
+      "episode": 43,
+      "grasp_xy_error_mm": 4.95,
+      "grasp_z_error_mm": 0.08,
+      "jaw_command_agreement": 0.9953,
+      "whole_plan_xyz_rms_mm": 6.8
+    },
+    {
+      "episode": 44,
+      "grasp_xy_error_mm": 3.41,
+      "grasp_z_error_mm": 0.28,
+      "jaw_command_agreement": 1.0,
+      "whole_plan_xyz_rms_mm": 5.54
+    },
+    {
+      "episode": 45,
+      "grasp_xy_error_mm": 3.09,
+      "grasp_z_error_mm": 0.27,
+      "jaw_command_agreement": 1.0,
+      "whole_plan_xyz_rms_mm": 4.84
+    },
+    {
+      "episode": 46,
+      "grasp_xy_error_mm": 2.82,
+      "grasp_z_error_mm": 0.31,
+      "jaw_command_agreement": 0.9859,
+      "whole_plan_xyz_rms_mm": 4.66
+    },
+    {
+      "episode": 47,
+      "grasp_xy_error_mm": 5.0,
+      "grasp_z_error_mm": 0.36,
+      "jaw_command_agreement": 1.0,
+      "whole_plan_xyz_rms_mm": 6.62
+    }
+  ]
+}

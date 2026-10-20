@@ -1,405 +1,216 @@
-# Diagnóstico: por qué la política no completa la tarea
+# Diagnóstico: por qué las políticas ACT con cámara no completaban la tarea
 
-Fecha: 2026-10-18. Entorno `hackathon-robotekin`, Windows, Isaac Sim 5.1, RTX 5060 Ti.
+Fecha: 2026-10-19. Entorno `hackathon-robotekin`, Windows 11, Isaac Sim 5.1, RTX 5060 Ti.
+Parte del commit `a3db19f` ("add phase and detector inputs to imitation demo").
 
-Este documento recoge lo que se ha **medido** sobre el dataset y sobre la política
-entrenada. Cada número sale de los artefactos que hay en el disco (el parquet, el
-vídeo y las estadísticas que el propio checkpoint guardó), no de los comentarios
-del código. Varias de las hipótesis que parecía razonables se han descartado por
-medición, y están aquí para que no se vuelvan a perder tiempo con ellas.
+Todo lo de este documento sale de una medición hecha sobre los artefactos que hay en
+disco (parquet, vídeo, checkpoints) o en el simulador, y cada apartado dice cómo se
+volvió a medir. La versión anterior de este archivo contenía conclusiones que estas
+mediciones contradicen; están marcadas como superadas al final.
 
 ## Resumen
 
-El dataset es correcto, el objetivo está bien medido y la señal visual existe. La
-política nonetheless **no hace nada**: se queda clavada emitiendo el mismo comando
-durante los 800 pasos del episodio. La causa no es que la imagen no tenga
-información, ni que falten demostraciones, ni que la inferencia sea de lazo
-abierto. Es que la configuración de entrenamiento no consigue aprender un mapa que
-un modelo **lineal** resuelve de forma casi perfecta.
+1. **El modelo no está roto ni mal entrenado.** Sobre las demostraciones de entrenamiento
+   reproduce la acción del experto con errores de 1–5 mm en `go above`, `go down` y
+   `close`, también en `go down` (z predicha 0,141 m frente a 0,144 m del experto).
+   La pérdida de entrenamiento era una buena medida *de eso*.
+2. **La entrada llega bien al modelo.** Reproduciendo el experto en el simulador, las
+   imágenes y estados que ve el modelo coinciden con los del dataset y sus predicciones
+   difieren milímetros.
+3. **El fallo está en el lazo cerrado y es un atajo de estado.** La política copia la pose
+   del propio brazo: dando a la misma imagen el estado articular de *otro* episodio, la
+   y predicha se mueve 20–45 mm cuando el experto no se movería nada. Si el brazo se
+   desvía, la política lo sigue y no hay nada que lo devuelva al cubo.
+4. **Medir mal lo ocultaba.** La evaluación reutilizaba las posiciones de las
+   demostraciones, no reiniciaba la cola de acciones de ACT, juzgaba solo la posición
+   final del cubo y el primer fotograma de cada episodio mostraba la escena del
+   episodio anterior.
+5. **El agarre físico funciona**, pero con una ventana estrecha y descentrada: el
+   experto original apuntaba a unos 5 mm del borde. El guion levanta y coloca el cubo **por
+   fricción, sin sujeción cinemática**, en 10/10 posiciones fuera del entrenamiento, tanto con
+   el punto de agarre original como con el desplazado; el desplazamiento solo da margen frente
+   al error de percepción.
+6. **La cámara se movía en cada episodio, y el demo creía tenerla congelada.**
+   `il_env.set_cube_randomization` recorría `dataclasses.fields(cfg.events)`, pero LeIsaac
+   cuelga sus términos de aleatorización como atributos normales: el bucle no encontraba
+   ninguno y no congelaba nada. La pose de la cámara (±5 mm, ±0,05°) se redibujaba en cada
+   `env.reset()`, así que la misma posición del cubo caía en píxeles distintos según el
+   episodio. Con la cámara moviéndose, el centroide del cubo predice su posición en la mesa
+   con 5 mm de error medio (14 mm de peor caso); congelada, con **0,5 mm (2,3 mm)**. Todos
+   los datasets anteriores llevan ese temblor en sus imágenes.
 
-## 1. Lo que el dataset sí hace bien
+## 1. El modelo reproduce lo que vio (`15_act_phase`, fase como entrada)
 
-El profesor (`expert.py`) graba la orden de cinemática inversa, y esa orden es una
-función **afín exacta** de la posición del cubo:
+Predicción de la primera acción de cada bloque sobre 4 episodios de entrenamiento
+(0, 7, 19, 33), un fotograma de cada 10, con los preprocesadores del propio checkpoint;
+error medio absoluto en centímetros:
 
-| fotograma | rango de `action_x` | rango de `action_y` | correlación con el cubo |
-|---|---|---|---|
-| 0 | 0.0007 m | 0.0006 m | −1.000 |
-| 90 | **0.0700 m** | **0.0600 m** | −1.000 |
-| 350 | 0.0700 m | 0.0600 m | −1.000 |
-| 450 | 0.0700 m | 0.0600 m | −1.000 |
+| fase | muestras | dx | dy | dz | z experto / z predicha (m) | signo de la pinza |
+|---|---|---|---|---|---|---|
+| go above cube | 40 | 0,44 | 0,18 | 0,29 | 0,207 / 0,205 | 100 % |
+| go down | 40 | 0,40 | 0,21 | 0,34 | 0,144 / 0,141 | 100 % |
+| close | 24 | 0,56 | 0,20 | 0,21 | 0,138 / 0,136 | 100 % |
+| lift | 16 | 0,85 | 0,16 | 1,16 | 0,187 / 0,199 | 100 % |
+| carry | 48 | 0,48 | 0,14 | 0,09 | 0,198 / 0,199 | 100 % |
+| put down | 32 | 0,29 | 0,17 | 0,55 | 0,145 / 0,139 | 100 % |
+| open | 16 | 0,18 | 0,16 | 0,20 | 0,138 / 0,136 | 100 % |
+| retract | 40 | 0,33 | 0,20 | 0,22 | 0,192 / 0,194 | 100 % |
 
-El rango del cubo es exactamente 0.0700 m en x y 0.0600 m en y. La relación es
-`action_x = 0.357 − cube_x`. Es decir: **la acción graba perfectamente dónde está el
-cubo**. No hay ruido ni ambigüedad en la etiqueta.
+(La pérdida final 0,055 de los entrenamientos anteriores es esto: un buen ajuste. Lo que
+no predice es el lazo cerrado.)
 
-Además, el dataset **sí esMarkov** respecto a lo que se grabó. Dentro de cada
-episodio hay 351 923 pares de fotogramas con `|Δestado| < 1°`; de ellos, solo el
-**0.4 %** discrepa en más de 1 cm del objetivo en z, y el **0 %** cambia de signo
-la velocidad en z. La hipótesis de "el profesor guionizado depende de estado
-oculto y por eso ninguna política reactiva puede aprenderlo" queda **descartada**.
+## 2. Lo que recibe el modelo en el simulador es lo que vio al entrenar
 
-## 2. La señal visual existe y es fuerte
+Se reprodujo el episodio 0 del experto en Isaac Sim y se compararon, fotograma a
+fotograma (0, 1, 5, 50, 99, 110, 150), imagen y estado del simulador con los del dataset:
 
-Regresión ridge (lineal) desde una imagen reducida a 24×32 en escala de grises,
-sobre 275 fotogramas de la ventana "go above cube":
+* diferencia media de imagen 3,4–4,5 sobre 255 (compresión AV1);
+* diferencia de estado articular 0,000 (0,073° en el paso 110);
+* predicción con entrada del simulador y con entrada del dataset: iguales a unos 3 mm.
+  Por ejemplo, paso 110: experto (0,022; −0,215; 0,145) m, predicción con el dataset
+  (0,024; −0,214; 0,142), con el simulador (0,027; −0,213; 0,142).
 
-| λ | R² `action_x` | R² `action_y` | R² `cube_x` |
-|---|---|---|---|
-| 1 | **0.995** | **0.999** | **0.998** |
-| 10 | 0.947 | 0.993 | 0.978 |
-| 100 | 0.627 | 0.921 | 0.823 |
+Quedan descartados: normalización, orden de canales, unidades de la acción, escala de la
+imagen, preprocesado y postprocesado.
 
-Un modelo **lineal** recupera la posición del cubo desde los píxeles casi
-perfectamente. La información está ahí y es sencilla. Por lo tanto **no** tiene
-sentido decir que "la imagen es la entrada equivocada": lo que falla es que ACT no
-la aprovecha.
-
-## 3. Lo que hace la política
-
-Evaluando el checkpoint con el lazo cerrado (`--action-steps 4`, observando cada 4
-pasos) el comando **no cambia** a lo largo de 800 pasos:
-
-```
-step  40 [go above cube] xyz=(+0.052,-0.262,+0.199)  cube=(0.302,-0.380,0.056)
-step 800 [past plan]      xyz=(+0.052,-0.262,+0.198)  cube=(0.302,-0.380,0.056)
-```
-
-Y lo que es determinante: el cubo se coloca en tres x distintos y el comando
-**casi no se mueve**:
-
-| `cube_x` | comando `x` emitido |
-|---|---|
-| 0.302 | +0.052 |
-| 0.335 | +0.048 |
-| 0.369 | +0.056 |
-
-Un recorrido de 6.7 cm del cubo produce 8 mm de variación del comando, y no con el
-signo correcto. **La política no está leyendo dónde está el cubo.**
-
-## 4. Hipótesis descartadas
-
-Se enunciaron y se midieron; ninguna se sostiene.
-
-* **"Las imágenes están rotas"** — falso. Decodificando el AV1, la diferencia
-  media absoluta entre fotogramas de fases distintas es **11.3**, y **11.3** entre
-  episodios en la misma fase. El vídeo tiene movimiento de sobra.
-* **"La normalización visual está rota (`std ≈ 0.001`)"** — falso, y era un error
-  de lectura. Las estadísticas reales por canal son media 0.449 y **std 0.226**.
-  El `≈0.001` era la dispersión entre los tres canales, no la desviación del
-  píxel. La normalización visual es correcta.
-* **"Cuatro de las ocho dimensiones están constante y el desnormalizador divide
-  entre cero"** — las cuatro lo están (`action.std = 0` para las dims 3-6), pero la
-  red las aprende **exactamente**: la traza da `quat=(0,0,0)` y `g6=-1.000` en
-  todos los pasos. El multiplicador 1e8 nunca llega a dispararse. El riesgo era
-  real en el papel y falso en la práctica.
-* **"El fallo es la inferencia de lazo abierto"** — real como defecto
-  (`n_action_steps = 20 = chunk_size`, 32 trozos encadenados por episodio) pero
-  **no la causa**: cerrar el lazo a 4 pasos da el mismo 0 %.
-
-## 4 bis. La causa raíz, medida (2026-10-18, segunda ronda)
-
-La ronda anterior arregló el dataset (bucle fijo, reinicio del brazo, espacio de
-trabajo) y **el freeze se fue**, pero la tasa siguió en 0 %. Lo que queda es más
-interesante, y es un problema del plan, no del entrenamiento.
-
-**La tarea grabada no es función de la observación.** El brazo vuelve a pasar por
-la *misma* configuración en fases distintas:
-
-| fotogramas | separación | fases | objetivos que exigen |
-|---|---|---|---|
-| 299 vs 300 | 8e-6° | `lift` → `carry` | 11.2 mm distintos |
-| 391 vs 420 | 0.0° | `carry` → `put down` | 9.6 mm distintos |
-
-Contando todos los pares de fotogramas de un episodio que comparten pose dentro
-de 1° pero piden objetivos separados más de 1 cm, salen **449 pares ambiguos por
-episodio** (6220 en las 40 demostraciones).
-
-Con una sola observación el modelo ve 6 números y debe devolver 8, y para esos 449
-pares la mejor respuesta posible es la **media** de las dos opciones: un objetivo
-que no va a ningún sitio. Eso es exactamente el rollout medido — el comando se
-congelaba en un punto medio.
-
-Añadir la velocidad del brazo **no** lo resuelve del todo (6220 → 4625 pares):
-el plan repite poses en puntos distintos donde incluso la velocidad coincide.
-
-### Por qué LeRobot no lo puede arreglar tal cual
-
-`ACTConfig.n_obs_steps` existe pero **LeRobot 0.4.4 lo prohíbe**:
+## 3. Traza del lazo cerrado (`15_act_phase`, episodio 0 de entrenamiento)
 
 ```
-configuration_act.py:149
-if self.n_obs_steps != 1:
-    raise ValueError(f"Multiple observation steps not handled yet. ...")
+paso  10 [go above] xyz=(+0,053; −0,253; +0,208)    experto en el fotograma 10: (+0,022; −0,222; +0,208)
+paso 100 [go above] xyz=(+0,048; −0,230; +0,199)    experto: (+0,022; −0,215; +0,198)
+paso 110 [go down ] xyz=(+0,049; −0,229; +0,142)    experto: (+0,022; −0,215; +0,145)
+paso 200 [go down ] xyz=(+0,060; −0,231; +0,136)    experto: (+0,022; −0,215; +0,138)
+paso 260 [close   ] xyz=(+0,071; −0,234; +0,136)    cubo (0,319; −0,431), empujado 1,8 cm; error final 11,6 cm
 ```
 
-El campo queda expuesto como `--obs-steps` en el demo 15, documentado y con
-default 1, para que quede claro que es una limitación de la pila y no un descuido.
+La z **sí baja** al entrar en `go down` con la fase como entrada, así que "la z se queda
+en la altura de aproximación" describe al checkpoint *sin* fase (`15_act_cube_detect`),
+que no tiene forma de saber cuándo bajar. Con fase, el fallo es otro: x lleva 3–5 cm de
+desvío y la pinza baja sobre el borde del cubo y lo empuja.
 
-### Las dos formas de arreglarlo
+## 4. El atajo de estado
 
-1. **Que el plan no repita poses** — se probó y **no funciona**. Dos intentos,
-   ambos medidos sobre 10 episodios grabados con `tools/18_measure_ambiguity.py`:
+Sobre `15_act_phase`, fotograma 70 (el brazo ha llegado sobre el cubo) de los episodios
+0, 7, 19 y 33. Se cambia una sola entrada y se mira cuánto se mueve la posición
+predicha (mm) frente a cuánto debería moverse según el experto:
 
-   | intento | pares ambiguos/episodio | resultado |
-   |---|---|---|
-   | plan original | **153** | referencia |
-   | altura propia para cada fase | 283 | peor |
-   | desviar el `carry` en y | 214 | peor |
+| entrada cambiada (dx; dy en mm) | ep 0 | ep 7 | ep 19 | ep 33 | el experto movería |
+|---|---|---|---|---|---|
+| estado articular de otro episodio, misma imagen | 8,9; **−43,3** | −8,2; **+45,5** | −13,2; **+35,7** | −12,9; **+20,5** | 0; 0 (el cubo es el mismo) |
+| imagen de otro episodio, mismo estado | 34,8; −8,8 | −34,1; 10,9 | −20,8; 6,1 | −9,8; 2,6 | 39; −50 · −39; 50 · −31; 37 · −21; 21 |
+| una articulación +3° (la mayor de las cinco) | ≤ 5 | ≤ 3 | ≤ 4 | ≤ 5 | — |
 
-   Los dos empeoran el resultado, y por razones concretas:
+La y predicha sale sobre todo del estado articular y la x de las dos cosas. En las
+demostraciones el brazo está siempre donde acaba de mandarlo el experto, así que
+"repite la pose que ya tienes" ajusta la pérdida igual de bien que "ve dónde está el cubo"
+y es más fácil de aprender. En el lazo cerrado, cualquier desvío del brazo se convierte en
+una orden desviada igual, y de ahí en un desvío mayor.
 
-   - *alturas distintas*: dejó a `lift` y `carry` compartiendo **altura y
-     dirección**, así que coincidían más.
-   - *desvío en y*: hizo que `carry` y `put down` recorrieran la **misma
-     diagonal**; ese par pasó de 37 a 113 por episodio.
+Es el fenómeno que la literatura llama *causal confusion* (de Haan et al., 2019). No lo
+arregla un bloque de acciones más largo ni más pasos de entrenamiento: lo arregla quitar
+la pose del brazo de lo que la política puede leer.
 
-   La atribución muestra por qué ninguna de las dos puede funcionar: **todos** los
-   pares que quedan son entre fases que comparten el **mismo estado de mordaza**,
-   así que la mordaza tampoco los separa.
+## 5. Lo que ocultaba la evaluación
 
-   | fases | pares/ep | mordaza |
-   |---|---|---|
-   | `carry` vs `put down` | 37 | shut / shut |
-   | `close` vs `lift` | 51 | shut / shut |
-   | `lift` vs `carry` | 44 | shut / shut |
-
-   Separarlos exigiría que el brazo no pase nunca dos veces por la misma pose,
-   lo que para un plan que tiene que acercarse, agarrar, transporting y soltar
-   significa renunciar a la forma natural de la tarea.
-
-2. **Usar una pila que acepte historial** — verificado en la versión instalada:
-   `PI0Config`, `PI05Config`, `PI0FastConfig`, `GrootConfig`, `WallXConfig` y
-   `XVLAConfig` **aceptan `n_obs_steps=2`**. ACT no.
-
-2 bis. **La información que sí los distingue** es hacia dónde se mueve el brazo,
-   y eso no está en una observación sino en la diferencia entre este fotograma y
-   el anterior. Es exactamente lo que aporta un historial.
-
-### Conclusión
-
-El bloqueo restante **no es de datos ni de entrenamiento**: es que el plan del
-profesor, tal y como está, no es una función de una observación. La vía dentro de
-LeRobot sería `PI0Config(n_obs_steps=2)`.
-
-## 9. pi0 se probó y no se puede usar en esta máquina
-
-La opción natural era pi0, que sí acepta historial. Se intentó y falla por el
-entorno, no por la idea.
-
-### Lo que funciona
-
-`PI0Config(n_obs_steps=2, chunk_size=20, n_action_steps=4)` se construye sin
-problemas. Ojo con un detalle: `n_action_steps` vale 50 por defecto, y con
-`chunk_size=20` pi0 lo rechaza (`configuration_pi0.py:104`), así que hay que
-pasarlo siempre.
-
-### El bloqueo
-
-`PI0Pytorch.__init__` (`modeling_pi0.py:579-587`) exige que exista
-`transformers.models.siglip.check`:
-
-```python
-try:
-    from transformers.models.siglip import check
-    if not check.check_whether_transformers_replace_is_installed_correctly():
-        raise ValueError(msg)
-except ImportError:
-    raise ValueError(msg) from None
-```
-
-En esta máquina:
-
-| | |
-|---|---|
-| `transformers` instalado | 4.57.6 (stock, de PyPI) |
-| `transformers.models.siglip.check` | **no existe** |
-| resultado | `ValueError: An incorrect transformer version is used` |
-
-Ese `check` sólo viene en el **fork oficial de siglip**, que se instala desde un
-repositorio git y **no está en PyPI**. No es un problema de versión: no hay forma
-de obtenerlo con `pip install transformers==<algo>`.
-
-### Por qué no se ha instalado el fork
-
-- `transformers` es una dependencia central del stack que ya funciona: Isaac Sim,
-  Isaac Lab, LeRobot, LeIsaac y los demos 01-05. Sustituirlo por un fork, en la
-  semana del hackathon, arriesga romper todo lo demás para arreglar un demo.
-- El fork se comprobó y **no es alcanzable** desde esta máquina (la URL del
-  repositorio devuelve 404), así que ni siquiera es una instalación de un clic.
-- El `requirements.txt` de este repo fija `transformers` con el extra
-  `transformers-dep` (`>=4.57.1,<5.0.0`), que es la ruta sin fork.
-
-### Qué queda
-
-| política | ¿acepta historial? | ¿arranca aquí? |
+| hallazgo | cómo se midió | efecto |
 |---|---|---|
-| ACT | **no** (`configuration_act.py:149`) | sí |
-| pi0 | sí | **no** — falta el fork de siglip |
-| pi0fast, wallx, diffusion | — | no instalados |
-| smolvla, groot | no tienen `n_obs_steps` | — |
+| Las posiciones evaluadas eran las de entrenamiento | `sample_cube_spot(i)` en demo 13 y en demo 16 | "episodio 0" era la demostración 0, con cubo y yaw idénticos |
+| `policy.reset()` no se llamaba entre episodios | lectura de `select_action` de LeRobot: la cola de acciones sobrevive | el episodio siguiente empezaba repitiendo el final del anterior (invisible con 800 pasos porque 800 es múltiplo de 20; visible con `--steps 260`) |
+| El criterio era la posición final del cubo | un cubo empujado 10 cm acaba "en el sitio" | un empuje contaba como éxito |
+| El informe se escribía siempre en `results/16_evaluation.md` | una ejecución de diagnóstico de esta sesión lo sobrescribió (restaurado con `git checkout`) | se perdía el registro completo; ahora hay un archivo por ejecución y no se sobrescribe |
+| El primer fotograma de cada episodio es de la escena anterior | diferencia entre fotogramas 1 y 2: 5,5 en los episodios ≥ 1 frente a 3,2 en el 0; el detector sobre el fotograma 0 da un error de ajuste lineal de 19 mm de media (peor caso 91 mm) y sobre los fotogramas 2–30 de 6,2 mm (13 mm) | el simulador avanza la física con `render=False` en el reinicio, y la cámara entrega además el render *anterior* al pedido: hacen falta dos renders |
+| La cámara va a 30 Hz con física a 60 Hz | diferencia exactamente 0 entre los fotogramas 0 y 1, 2 y 3, 4 y 5 | cada imagen del dataset está duplicada |
 
-Ninguna política instalada combina las dos cosas. Así que la vía dentro de
-LeRobot está cerrada **en esta máquina y en esta versión**.
+## 6. El agarre físico: sin sujeción cinemática, con una ventana estrecha
 
-### La salida que queda dentro de LeRobot
+El experto fijaba el cubo a la pinza mientras estaba cerrada, y el README decía que el
+agarre por fricción "no es fiable". Se probó sin la sujeción.
 
-Una hipótesis fue dar a la política un estado adicional. `cube_detect.py` mide el
-centroide con alrededor de 10 mm de error en la muestra de validación, así que se
-probó como `observation.environment_state`. La evaluación completa posterior,
-descrita en la sección 10, mostró que esta observación por sí sola no basta para
-que ACT complete la tarea.
+**Guion original, sin sujeción, 6 posiciones:** las 6 levantan ≈ 6 cm y colocan el cubo a
+0,3–0,6 cm del objetivo.
 
-## 10. La posición del cubo tampoco sirve (medido)
+**Ventana de agarre**, desplazando el punto al que apunta el experto respecto al centro del
+cubo (mm, x e y del mundo). ✔ = el cubo se levanta, ✘ = no (se queda en la mesa, error final
+≈ 10 cm). Dos cubos, episodio 3 (yaw +18°) y episodio 4 (yaw −28°), mordaza abierta a 1,0 rad:
 
-La propuesta anterior se probó y **falla**. Medido sobre las 1280 detecciones del
-mismo dataset (8 episodios, 1 de cada 4 fotogramas; detección 1280/1280):
+| desplazamiento (x, y) | yaw +18° | yaw −28° |
+|---|---|---|
+| (−18, −12) | ✘ | ✘ |
+| (−18, 0) | ✔ | ✔ |
+| (−18, +8) | ✔ | ✔ |
+| (−6, −12) | ✔ | ✘ |
+| (−6, 0) | ✔ | ✔ |
+| (−6, +8) | ✔ | ✔ |
+| (+6, −12) | ✔ | ✘ |
+| (+6, 0) | ✘ | ✔ |
+| (+6, +8) | ✘ | ✘ |
+| (+14, −12) · (+14, 0) · (+14, +8) | ✘ ✘ ✘ | ✘ ✘ ✘ |
 
-| observación | pares ambiguos |
-|---|---|
-| solo la pose del brazo | 17056 |
-| + centroide del cubo, separado >5 px | 14419 |
-| + centroide del cubo, separado >8 px | 13169 |
-| + centroide del cubo, separado >20 px | 12544 |
+Con el cubo de yaw +18° se midieron además estos puntos: ✔ en (0, 0), (−10, 0), (0, −10),
+(−20, 0) y (−15, +15); ✘ en (+10, 0), (0, +10), (+15, +15), (−15, −15), (+15, −15), (+20, 0),
+(0, +20) y (0, −20).
 
-La posición del cubo quita como mucho un **15 %**, y el número **se estanca**: incluso
-con un umbral de 20 px, muy por encima de lo que da el detector, quedan 12544 pares.
-No es una calibración que se pueda afinar.
+Lectura: la ventana mide unos 25 mm en x y 15 mm en y, **no está centrada en el cubo** y el
+experto original (0, 0) estaba a unos 5 mm de su borde +x. Los cuatro puntos
+x ∈ {−18, −6}, y ∈ {0, +8} levantan con los dos yaw. Abrir más la mordaza (1,6 rad en lugar
+de 1,0) dio el mismo resultado en los nueve primeros puntos y se descartó.
 
-### Qué mostraba la muestra inicial
+Por eso `expert.GRASP_BIAS_M = (−10, +2) mm`: deja unos ±8–10 mm de margen alrededor del
+punto al que apunta el guion. **El desplazamiento no era necesario para el profesor**: con el
+punto original (0, 0) el guion también dio 10/10 en las mismas posiciones nuevas
+(`results/runs/scripted_original_grasp_point_heldout_10ep.md`), porque el profesor conoce la
+posición exacta. Sirve para tolerar el error de una política que la estima. Con el
+desplazamiento, el guion por fricción dio **10/10** (`results/runs/scripted_bias_heldout_10ep_try1.md`), con elevación de
+6,0–6,2 cm, transporte sujeto de 161–162 pasos y error final de 0,5–0,9 cm.
 
-Medido sobre el episodio 0:
+## 7. Cuánta precisión da el detector, y por qué parecía poca
 
-| fase | ¿se ve el cubo? |
-|---|---|
-| `go above` | sí (61 px de recorrido) |
-| `go down` | sí (47 px) |
-| `close` … `retract` | **no, en las seis** |
+Con una ventana de ±8–10 mm, la precisión de la percepción decide si una política que se
+apoya en ella puede funcionar. Medida con un ajuste afín de (u, v) del detector a la
+posición del cubo, validación cruzada de uno fuera:
 
-En esa muestra, desde `close` el cubo estaba agarrado y la mordaza lo tapaba.
-El dataset ampliado usado en la prueba final dio una medida distinta: el detector
-encontró una mancha en los **25 600/25 600** fotogramas. La visibilidad de la
-mancha, por sí sola, no demuestra que su centroide separe las fases ni que ACT
-pueda aprender a recoger.
+| situación | error medio x / y (mm) | peor caso (mm) |
+|---|---|---|
+| 40 episodios grabados, fotograma fresco, **cámara moviéndose** en cada reinicio | 6,2 / 5,4 | 13 |
+| 48 episodios grabados, ídem | 5,5 / 4,5 | 14 |
+| 30 posiciones en un mismo episodio, sin `env.reset()` entre ellas | 0,55 / 0,54 | 1,7 |
+| 30 episodios con reinicio entre ellas, **cámara congelada** | 0,4 / 0,6 | 2,3 |
 
-### El muro, con números
+El temblor no era del detector: renderizar de nuevo la misma escena mueve el centroide
+0,1 px, y ninguna otra medida de la mancha (bounding box, cara superior, puntos extremos,
+yaw real, ajuste cuadrático) bajaba de 5 mm. Se descubrió porque entre reinicios sale
+distinta *toda* la imagen (el borde de la mesa se mueve 3–6 px) mientras que entre
+colocaciones del cubo sin reinicio no. La causa es el apartado 6 del resumen.
 
-Para los tres pares que más colisionan, cuánto se separan las distribuciones de
-cada articulación:
+Con la cámara congelada la percepción deja de ser el factor limitante: 2 mm de peor caso
+frente a una ventana de ±8–10 mm.
 
-| par | articulaciones que se solapan >90 % |
-|---|---|
-| `close` vs `lift` | `pan` 99 %, `wrist_roll` 98 % |
-| `lift` vs `carry` | `jaw` 94 % |
-| `carry` vs `put down` | `jaw` 75 %, `wrist_roll` 80 %, `pan` 80 % |
-
-Para esas articulaciones, la fase **no deja ninguna señal en una sola
-observación**. Dos o tres de las seis_NO las separan, así que ni siquiera una
-observación mejor las arregla.
-
-### Conclusión honesta
-
-Con ACT (`n_obs_steps=1`) y este plan, la observación aislada sigue siendo
-ambigua. Se probaron dos señales adicionales y ninguna completó la tarea: la fase
-codificada en `observation.environment_state` obtuvo 0/5, y el centroide del cubo
-con el bit de visibilidad también obtuvo 0/5. Por tanto, no hay evidencia medida
-para afirmar que dar la fase vuelva aprendible esta tarea con el ACT de esta
-versión. Los resultados finales están en
-[`16_evaluation.md`](16_evaluation.md).
-
-Las tres salidas reales, en orden de coste:
-
-1. **Un plan sin retrocesos** — que el brazo no vuelva a pasar por la misma pose.
-   Ya se probó en dos formas y **empeoró** el resultado (sección 4 bis). Habría que
-   replantear la tarea, no retocar el plan.
-2. **Una política con historial** — `PI0Config(n_obs_steps=2)`. Bloqueada por el
-   fork de siglip (sección 9).
-3. **Dar la fase como entrada** — un `phase_index` en `observation` es fácil de
-   implementar y ayuda a distinguir el tiempo del plan, pero en la prueba medida
-   no hizo que ACT completara el movimiento.
-
-La opción 3 se implementó y entrenó; su limitación quedó medida en la evaluación.
-
-### Verificación de la opción 3
-
-Medido, sobre las 8 primeras demostraciones, separando las colisiones:
-
-| tipo | pares por episodio |
-|---|---|
-| **entre** fases (lo que importa) | ~2675 |
-| **dentro** de una misma fase | **1** |
-
-Es decir: los 2675 son casi todos entre fases distintas, y conocer la fase los
-elimina. Lo que queda dentro de una fase es **1 par por episodio**, en `carry`, y
-es el propio interpolado: el brazo se queda quieto arriba mientras el comando
-sigue avanzando. Ninguna etiqueta lo arregla, y a 1 par por episodio tampoco
-hace falta.
-
-Conclusión: la fase se puede cablear al campo reservado que ACT procesa, pero la
-prueba de 20 000 pasos obtuvo 0/5. La implementación funciona técnicamente; la
-hipótesis de que bastaba para que ACT aprendiera la tarea no quedó confirmada.
-
-Matiz honesto: esto no es imitación en estado puro. Se le está diciendo a la
-política en qué punto del plan está, y eso **no** lo puede resolver de verdad. Es
-una ayuda artificial — la diferencia entre "la política lo consigue" y "se le ha
-dibujado el camino". Para un hackathon es defendible y medible; para una demo
-científica habría que decirlo así de claro.
-
-## 5. Causa raíz provisional (ronda anterior)
-
-La política tiene un ResNet-18, 4 capas de transformer y un cuello de botella VAE.
-No consigue aprender un mapa que un modelo lineal resuelve con R² = 0.995. El
-sospechoso principal es el **VAE**: con 25 demostraciones casi idénticas, el
-término KL empuja hacia la demostración media, que es exactamente la única cosa
-que varía. El flag `--no-vae` ya existía en `15_train_act.py` y su documentación
-ya describía este riesgo, pero **el checkpoint que se evaluaba se entrenó con
-`use_vae=True`**.
-
-Pendiente de confirmar con el entrenamiento comparativo en curso.
-
-## 6. El espacio de trabajo está empobrecido (independiente de lo anterior)
-
-`sample_cube_spot` recorre x en línea de 0.30 a 0.37 y alterna y entre **solo dos
-valores** (−0.38 y −0.44). El índice de episodio, x y el yaw van todos 1:1.
-
-Consecuencias medidas:
-
-* 25 "demostraciones variadas" son 25 puntos sobre una recta, no una malla.
-* Una homografía plano→imagen (8 grados de libertad) **no se puede ajustar** con
-  dos filas paralelas: sale con 21 px de error de partida y 427 px fuera de
-  muestra. `cube_detect.Calibration.fit` lo **detecta y se niega** en vez de
-  devolver una respuesta falsa.
-* El brazo medido llega a 0.33 m y la caja usa 7 × 6 cm de eso.
-
-## 7. Lo que sí funciona: el detector
-
-`cube_detect.py` localiza el cubo por HSV y devuelve el **centroide en píxeles**,
-sin calibración. Medido sobre las 100 fotogramas de demostración (`tools/17_validate_detector.py`):
-
-| medida | valor |
-|---|---|
-| tasa de detección | 100 / 100 |
-| forma de cubo | 100 / 100 |
-| área de la mancha | 938 px de media (814–1030) |
-| repetibilidad, mismo cubo | 0.9 px mediana, 6.8 px peor caso |
-| linealidad en x | R² = 0.95–0.97 |
-| residuo | ≤ 5.3 px  (**≤ 10 mm**) |
-
-La escena es clara y poco saturada (saturación media 0.11) y **la mesa está en
-tono 40–60°**, así que un test ingenuo de "¿es rojizo?" se dispara en el 61 % del
-fotograma. Lo que lo hace funcionar es el filtro de saturación: el cubo son ~900
-píxelesstrongly saturados frente a los ~13 600 de la mesa.
-
-Con 10 mm de error y una tolerancia de colocación de 30 mm, hay margen de sobra
-para alimentar la política con el centroide.
-
-## 8. Qué se ha cambiado en el código
+## 8. Qué se cambió
 
 | cambio | por qué |
 |---|---|
-| `il_env.reset_arm()` | `env.reset()` no restaura las articulaciones: el episodio N empezaba donde acabó el N−1, y la pose derivaba de forma monótona (codo −39.4° → −64.5° a lo largo de 25 episodios). |
-| yaw restaurado en `place_cube` | la evaluación siempre escribía el cubo alineado, así que solo probaba yaw = 0°, el caso más fácil del barrido de entrenamiento. |
-| `set_cube_randomization` duplicado eliminado | estaba definido dos veces en `il_env.py`; la segunda ocultaba a la primera. |
-| `--trace` / `--trace-every` en demo 16 | permite atribuir la fase en la que el brazo deja de avanzar, en vez de inferirlo. |
-| Aviso de lazo abierto en demo 16 | avisa cuando `n_action_steps >= chunk_size`, que es como se entrenó el checkpoint. |
-| `cube_detect.py` + `tools/17_validate_detector.py` | percepción analítica medida, sin necesidad de reentrenar nada para tenerla. |
+| `il_metrics.py` | éxito = elevación ≥ 4 cm, transporte sujeto ≥ 1 s a < 3 cm de los dedos, y colocación a < 3 cm, en reposo |
+| `13_collect_demonstrations.py` | sin sujeción cinemática por defecto; solo se guardan demostraciones que pasan el criterio físico; cámara fresca; guarda el reloj del plan y la posición del cubo; `--overwrite` aparta el dataset en vez de borrarlo |
+| `il_env.set_cube_randomization` | congelar de verdad la aleatorización (cámara incluida); falla en voz alta si no encuentra ningún término; test de regresión en `tests/test_il_logic.py` |
+| `il_env.refresh_camera`, `il_env.perceive_cube` | cámara fresca (dos renders) y detector medio de 4 renders |
+| `16_evaluate_policy.py` | posiciones fuera del entrenamiento, `policy.reset()`, juicio físico, guion como referencia etiquetado, informe nuevo por ejecución sin sobrescritura |
+| `tools/21_build_clock_cube_dataset.py` | dataset solo con reloj + posición del cubo y la acción: sin imagen ni estado del brazo |
+| `tools/22_validate_offline.py` | reproduce sin simulador lo que mandaría la política en episodios que no vio |
+| `expert.GRASP_BIAS_M` | punto de agarre en el centro de la ventana medida |
+
+## 9. Hipótesis anteriores que esta medición supera
+
+* **"La acción del experto no es función de una observación (449 pares ambiguos por
+  episodio), así que ninguna política de una sola observación puede aprenderla."** Con la
+  fase como entrada esos pares dejan de ser ambiguos (apartado 1: ajuste de 1–5 mm) y la
+  política seguía fallando 0/5. La ambigüedad era real pero no era la causa del fallo en
+  lazo cerrado. Las cifras de `tools/18_measure_ambiguity.py` siguen siendo correctas
+  como medida del dataset.
+* **"El VAE empuja hacia la demostración media."** No se midió ningún efecto del VAE: el
+  ajuste sobre el entrenamiento es bueno.
+* **"El cubo no se ve a partir de `close`, así que el detector no ayuda."** Se mantiene
+  como medida (el detector hallaba una mancha en 25 600/25 600 fotogramas), pero no es el
+  motivo del 0/5 del detector: ese checkpoint carecía de reloj y de fase, y por eso no sabía
+  cuándo bajar.
+* **"π0 aceptaría historial."** Cierto sobre el papel (`n_obs_steps=2`), pero no arranca
+  en esta máquina (falta el fork de `siglip`) y no hizo falta probarlo.
