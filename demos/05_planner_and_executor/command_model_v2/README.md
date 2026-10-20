@@ -10,12 +10,23 @@ execute:
 
 Demo 03's schema cannot express any of those, and its `sort` cannot either.
 
+The supported geometry labels include balls, cubes, cylinders, triangular prisms and
+hexagonal prisms. Explicit geometry words and the words in each object-to-destination span
+are resolved against the vocabulary before accepting the learned classifier's answer. The
+classifier still handles phrasing and open vocabulary; it cannot change an explicitly named
+"caja roja" into a blue destination or collapse "cilindro" into the old generic `other` label.
+
 `demos/03_command_model/` is untouched. Every path here is relative to this file, so the
 copy is self-contained, and the training starts from demo 03's checkpoint read-only:
 
-    python generate_dataset.py                 # 2 s, fixed seed
-    python train.py --base ..\..\03_command_model\models\command-model\best --epochs 2
-    python evaluate.py test_real.jsonl         # ~6 min
+    python generate_dataset.py --output-dir data_shapes
+    python train.py `
+        --base models\command-model\best --data-dir data_shapes --epochs 3 `
+        --batch-size 2 --gradient-accumulation-steps 4 --eval-batch-size 4 --use-lora `
+        --output models\command-model-shapes-lora-candidate
+    python evaluate.py test_real.jsonl test_unseen.jsonl `
+        --model models\command-model-shapes-lora-candidate\best_merged --data-dir data_shapes `
+        --results-dir results\shapes_candidate
 
 ## What changed, and why
 
@@ -45,7 +56,35 @@ labelled word occurs verbatim, and a composed phrase is not a literal substring.
 
 ## Measured results
 
-Three numbers, because one number over all 136 sentences would hide both effects:
+### Shape and color candidate trained for Demo 11
+
+The RTX 5060 Ti was shared with the running simulator, so this candidate was
+stopped after its first completed validation epoch (step 4,226). It is a
+rank-8 LoRA adapter merged into `best_merged`; the original checkpoint remains
+available as a fallback. The short run is not a replacement for a full training
+study, but it was promoted locally because it improved both held-out command
+sets without weakening stop handling:
+
+| held-out set | model | object fields | full command | stop caught | false action rate |
+|---|---|---:|---:|---:|---:|
+| 136 hand-written real commands | base | 90.4% | 76.5% | 100% | 0.0% |
+|  | one-epoch candidate | 91.9% | 79.4% | 100% | 0.0% |
+| 1,500 generated unseen commands | base | 55.9% | 51.6% | — | 0.7% |
+|  | one-epoch candidate | 56.3% | 53.1% | — | 0.7% |
+
+The gains are modest. The reliable interpretation of an explicitly named
+`cilindro verde` and `caja roja` still depends on the lexical safeguards in
+`command_model.py`; the trained classifier adds generalization but does not
+replace those checks. The four direct probes for green cylinder/red box,
+triangular prism, hexagonal prism, and two differently colored destinations all
+parsed with the expected geometry and colors.
+
+`command_model.py` prefers the local merged candidate when it exists and falls
+back to the original checkpoint when model weights are absent. Trained weights
+are gitignored, so a clean checkout must run the commands below before it can
+use this candidate.
+
+The earlier v2 comparison against Demo 03 is separate from the shape candidate above:
 
 | test set | | intent | items | place | sort_by | **command** |
 |---|---|---|---|---|---|---|

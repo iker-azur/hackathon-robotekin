@@ -9,14 +9,18 @@ from command_model_v2.command_model import COLOR_WORDS, NUMBER_WORDS, POSITION_W
 KINDS = {
     "cube": "cubo cubos dado dados bloque bloques cube cubes block blocks kubo kuboak bloke blokeak".split(),
     "ball": "bola bolas pelota pelotas esfera esferas ball balls sphere spheres orb orbs bolak pilota pilotak baloi baloiak".split(),
+    "cylinder": "cilindro cilindros cylinder cylinders zilindro zilindroa zilindroak".split(),
+    "triangular_prism": "triangular triangulares triangular_prism triangular_prisms triangle triangeluar triangeluarra triangeluarrak".split(),
+    "hexagonal_prism": "hexagonal hexagonales hexagonal_prism hexagonal_prisms".split(),
     "any": "pieza piezas objeto objetos thing things piece pieces object objects element elements pieza piezak objektu objektuak".split(),
 }
 KIND_WORDS = {word: kind for kind, words in KINDS.items() for word in words}
-PICK = set("coge coger coje agarra agarrar toma recoge take grab fetch pick hartu jaso".split())
+PICK = set("coge coger coje agarra agarrar toma recoge mueve mover move traslada trasladar "
+           "transporta transportar take grab fetch pick hartu jaso".split())
 PUT = set("pon poner coloca colocar mete meter introduce put place insert sartu jarri".split())
 SORT = set("separa separad ordena ordenar clasifica clasificar sort separate arrange sailkatu bereizi".split())
 CLEAR = set("limpia despeja quita retira clear clean remove garbitu kendu".split())
-FILLER = set("el la los las un una unos unas de del a al en y o por para con lo le laslos primero luego despues todos todas the a an of to in into and it them on by please first then all eta bat mesedez ezazu itzazu mahai mahaia mesa table color colors colour colours colores kolore koloreak kolorearen kolorez".split())
+FILLER = set("el la los las un una unos unas de del a al en y o por para con lo le laslos primero luego despues todos todas the a an of to in into and it them on by please first then all eta bat mesedez ezazu itzazu mahai mahaia mesa table color colors colour colours colores kolore koloreak kolorearen kolorez prisma prismas prism prisms".split())
 VERBS = PICK | PUT | SORT | CLEAR
 
 
@@ -51,7 +55,7 @@ def item_group(text, inherited=None):
         return None
     kind = next(iter(kinds), inherited or "any")
     noun = next((t for t in tokens if value(t, KIND_WORDS)), None)
-    plural = noun in {"bolas", "pelotas", "esferas", "cubos", "dados", "bloques", "balls", "spheres", "cubes", "blocks", "bolak", "kuboak", "pilotak", "piezas", "pieces"}
+    plural = noun in {"bolas", "pelotas", "esferas", "cubos", "dados", "bloques", "balls", "spheres", "cubes", "blocks", "cilindros", "cylinders", "prismas", "prisms", "triangulares", "hexagonales", "bolak", "kuboak", "pilotak", "piezas", "pieces"}
     quantity = quantities[0] if quantities else "all" if plural else 1
     return {"kind": kind, "name": noun, "color": next(iter(shades), None),
             "quantity": quantity, "position": next(iter(positions), None), "place": None}
@@ -165,7 +169,7 @@ class HybridParser:
             # references. The rule fast path requires one fully named physical object.
             items = command.get("items", [])
             if (command["intent"] not in {"pick", "pick_and_place"} or len(items) != 1
-                    or items[0]["kind"] not in {"ball", "cube"} or not items[0]["color"]):
+                    or items[0]["kind"] not in {"ball", "cube", "cylinder", "triangular_prism", "hexagonal_prism"} or not items[0]["color"]):
                 command = None
         if command is None:
             if self.fallback is None:
@@ -191,7 +195,7 @@ class HybridParser:
                 quantity = item.get("quantity")
                 if quantity != "all" and (type(quantity) is not int or quantity < 1):
                     errors.append("La cantidad solicitada no es válida.")
-                if item.get("kind") not in {"ball", "cube", "any"}:
+                if item.get("kind") not in {"ball", "cube", "cylinder", "triangular_prism", "hexagonal_prism", "any"}:
                     errors.append("La escena solo admite cubos y bolas.")
             known = FILLER | VERBS | set(KIND_WORDS) | set(COLOR_WORDS) | set(POSITION_WORDS) | set(PLACE_WORDS) | set(NUMBER_WORDS)
             known |= set("could would can you me quiero necesito favor please dame move mueve lleva itzazu ezazu".split())

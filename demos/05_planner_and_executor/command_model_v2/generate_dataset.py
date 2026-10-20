@@ -70,9 +70,10 @@ MIX = {
 COLORS = list(VOCAB["colors"])
 PLACE_KINDS = ["basket", "box", "tray", "table", "left", "right", "other", "none"]
 SORT_BY = ["color", "kind", "none"]
-ITEM_KINDS = ["ball", "cube", "any", "other"]
+ITEM_KINDS = ["ball", "cube", "cylinder", "triangular_prism", "hexagonal_prism", "any", "other"]
 ITEM_COUNTS = ["one", "several"]
-ITEM_FIELDS = ["mention", "name", "color_word", "quantity_word", "position_word"]
+ITEM_FIELDS = ["mention", "name", "color_word", "quantity_word", "position_word",
+               "destination_kind_word", "destination_color_word"]
 
 # ADDED IN THIS COPY. The colours a multi-destination sort is allowed to talk about.
 #
@@ -88,7 +89,7 @@ SORTABLE_COLORS = ["red", "green", "blue"]
 
 @dataclass
 class Item:
-    kind: str                     # ball / cube / any / other
+    kind: str                     # supported geometry / any / other
     noun: list | None             # vocabulary entry, None for "la roja" (colour only)
     color: str | None             # canonical colour
     quantity: int | str | None    # None = "the" (one), 1 = "a/una/bat", 2..5, "all", "plural" (the X-s)
@@ -160,7 +161,13 @@ def pick_color(rng, chance=0.8):
 
 
 def sample_item(rng, words, lang, *, allow_color_only=True, singular=False, need_color=False):
-    kinds = ["ball"] * 25 + ["cube"] * 20 + ["any"] * 20 + ["other"] * 35
+    # Give every geometry the robot can manipulate enough examples to learn its own class.
+    # Previously cylinders and prisms were sampled as ``other`` (or omitted), making the
+    # trained classifier structurally unable to name them even though the executor supports
+    # them.
+    kinds = (["ball"] * 18 + ["cube"] * 18 + ["cylinder"] * 14
+             + ["triangular_prism"] * 14 + ["hexagonal_prism"] * 14
+             + ["any"] * 12 + ["other"] * 10)
     kind = rng.choice(kinds)
     entries = words["objects"][kind].get(lang) or words["objects"]["train"][kind][lang]
     color_only = kind == "any" and allow_color_only and rng.random() < 0.4
@@ -1104,6 +1111,8 @@ def main() -> int:
     parser.add_argument("--per-language", type=int, default=10000, help="Training sentences per language")
     parser.add_argument("--show", type=int, default=0, help="Print this many samples and write nothing")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--output-dir", type=Path, default=DATA,
+                        help="where to write the generated train/eval sets")
     args = parser.parse_args()
 
     if args.show:
@@ -1114,20 +1123,21 @@ def main() -> int:
             print(f"[{record['meta']['lang']}] {record['input']!r}\n      {labels}\n      items={items}")
         return 0
 
-    DATA.mkdir(exist_ok=True)
+    output_dir = args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
     commands, kinds = generate(args.per_language, args.seed)
     eval_commands, eval_kinds = generate(max(100, args.per_language // 20), args.seed + 1)
     # unseen words, only for intents that name objects or places
     unseen, _ = generate(max(60, args.per_language // 20), args.seed + 2, split="test",
                          intents={"pick", "pick_and_place", "give", "sequence", "answer_value", "question"})
-    write_jsonl(DATA / "train_commands.jsonl", commands)
-    write_jsonl(DATA / "train_item_kinds.jsonl", kinds)
-    write_jsonl(DATA / "eval_commands.jsonl", eval_commands)
-    write_jsonl(DATA / "eval_item_kinds.jsonl", eval_kinds)
-    write_jsonl(DATA / "test_unseen.jsonl", unseen)
-    write_stats(DATA / "stats.md", commands, kinds, unseen)
+    write_jsonl(output_dir / "train_commands.jsonl", commands)
+    write_jsonl(output_dir / "train_item_kinds.jsonl", kinds)
+    write_jsonl(output_dir / "eval_commands.jsonl", eval_commands)
+    write_jsonl(output_dir / "eval_item_kinds.jsonl", eval_kinds)
+    write_jsonl(output_dir / "test_unseen.jsonl", unseen)
+    write_stats(output_dir / "stats.md", commands, kinds, unseen)
     print(f"wrote {len(commands)} sentences, {len(kinds)} item phrases, {len(eval_commands)} eval sentences, "
-          f"{len(unseen)} unseen-word sentences to {DATA}")
+          f"{len(unseen)} unseen-word sentences to {output_dir}")
     return 0
 
 

@@ -37,7 +37,11 @@ from pathlib import Path
 import yaml
 
 HERE = Path(__file__).resolve().parent
-MODEL = HERE / "models" / "command-model" / "best"
+BASE_MODEL = HERE / "models" / "command-model" / "best"
+SHAPES_MODEL = HERE / "models" / "command-model-shapes-lora-candidate" / "best_merged"
+# Prefer the locally trained, merged checkpoint when present. Model weights are
+# gitignored, so a clean checkout without this artifact falls back to the original.
+MODEL = SHAPES_MODEL if (SHAPES_MODEL / "config.json").is_file() else BASE_MODEL
 VOCAB = yaml.safe_load((HERE / "vocabulary.yaml").read_text(encoding="utf-8"))
 
 sys.path.insert(0, str(HERE))
@@ -93,6 +97,40 @@ def _place_word_table() -> dict[str, str]:
 
 
 PLACE_WORDS = _place_word_table()
+
+
+def _object_kind_word_table() -> dict[str, str]:
+    """Map supported object names from the dataset vocabulary to robot geometry classes."""
+    supported = {"ball", "cube", "cylinder", "triangular_prism", "hexagonal_prism"}
+    table: dict[str, str] = {}
+    for kind in supported:
+        for language, forms in VOCAB["objects"]["train"].get(kind, {}).items():
+            for entry in forms:
+                # Spanish noun entries append grammatical gender as their third value;
+                # Basque entries use all three values as inflected forms.
+                words = entry[:2] if language == "es" and len(entry) >= 3 and entry[-1] in {"m", "f"} else entry
+                for form in words:
+                    normalized = plain(str(form))
+                    if normalized:
+                        table[normalized] = kind
+    return table
+
+
+OBJECT_KIND_WORDS = _object_kind_word_table()
+
+
+def kind_in_phrase(phrase: str) -> str | None:
+    """Resolve an explicitly named supported geometry before consulting the classifier.
+
+    The learned kind classifier is useful for open vocabulary, but an explicitly spoken
+    ``cilindro`` or ``prisma triangular`` must not collapse to its old ``other`` class.
+    Longest phrase matching keeps ``prisma triangular`` ahead of the individual token.
+    """
+    normalized = plain(phrase)
+    for surface in sorted(OBJECT_KIND_WORDS, key=len, reverse=True):
+        if re.search(r"(?<!\w)" + re.escape(surface) + r"(?!\w)", normalized):
+            return OBJECT_KIND_WORDS[surface]
+    return None
 
 
 # Intents whose command does not use items: the robot ignores them, so they are dropped
@@ -156,14 +194,14 @@ def _destination_in(text: str, segment: str, kind_required: bool = True) -> dict
     plain_segment = plain(segment)
     kind = None
     for word in sorted(PLACE_WORDS, key=len, reverse=True):
-        if word and word in plain_segment:
+        if word and re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", plain_segment):
             kind = PLACE_WORDS[word]
             break
     if kind is None and kind_required:
         return None
     color = None
     for word in sorted(COLOR_WORDS, key=len, reverse=True):
-        if word and word in plain_segment:
+        if word and re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", plain_segment):
             color = COLOR_WORDS[word]
             break
     if kind is None and color is None:
@@ -248,7 +286,7 @@ class CommandModel:
                 dest_color = lookup(text_of(record.get("destination_color_word")), COLOR_WORDS)
                 dest = {"kind": dest_kind, "color": dest_color} if dest_kind else None
                 items.append({
-                    "kind": kind["item_kind"]["label"],
+                    "kind": kind_in_phrase(mention) or kind["item_kind"]["label"],
                     "name": name,
                     "color": color,
                     "quantity": count if count is not None else ("all" if several else 1),
@@ -306,12 +344,13 @@ class CommandModel:
                 start = text.lower().find(mention.lower()) if mention else -1
                 spans.append((start, start + len(mention) if mention else -1))
             for index, record in enumerate(records):
-                if items[index].get("place") is not None:
-                    continue
                 begin = spans[index][1]
                 end = spans[index + 1][0] if index + 1 < len(spans) and spans[index + 1][0] >= 0 else len(text)
                 found = _destination_in(text, text[begin:end] if begin >= 0 else "")
-                if found is not None:
+                # The sentence's local destination words are authoritative. The trained
+                # repeated-record fields can bleed across items just like a command-level
+                # classifier can choose one of two destination colours for the whole utterance.
+                if found is not None and found.get("kind"):
                     items[index]["place"] = found
 
             # A command whose items each have their own destination has no single
@@ -348,19 +387,23 @@ class CommandModel:
         # that had been named unambiguously. "pon la bola verde en la bandeja azul" was fine,
         # because there the two colours differ and the head has one to hold.
         #
-        # The text is the authority here, not the head: the colour is a word sitting right
-        # next to the receptacle word, and reading it out of the sentence is the same lookup
-        # the rest of this file already uses. Only fills a blank, so a head that does answer
-        # keeps its answer.
-        if label["place_kind"] != "none" and label["place_color"] == "none":
+        # The text is the authority for an explicitly named destination, not the global
+        # classification heads. Those heads are single-label and can confuse a container's
+        # colour with the object's colour or choose the wrong member of a multi-destination
+        # command. Read the final item-to-destination span and use its actual words even when
+        # a head already returned a confident (but conflicting) colour.
+        has_per_item_places = len(items) >= 2 and all(item.get("place") for item in items)
+        if records and not has_per_item_places:
             tail = ""
-            if records:
-                mention = text_of(records[-1]["mention"]) or ""
-                begin = text.lower().rfind(mention.lower())
-                tail = text[begin + len(mention):] if mention and begin >= 0 else ""
+            mention = text_of(records[-1]["mention"]) or ""
+            begin = text.lower().rfind(mention.lower())
+            tail = text[begin + len(mention):] if mention and begin >= 0 else ""
             named = _destination_in(text, tail, kind_required=False)
-            if named is not None and named["color"]:
-                label["place_color"] = named["color"]
+            if named is not None:
+                if named.get("kind"):
+                    label["place_kind"] = named["kind"]
+                if named.get("color"):
+                    label["place_color"] = named["color"]
 
         place = None
         if label["place_kind"] != "none":

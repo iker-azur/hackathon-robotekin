@@ -86,6 +86,18 @@ objects:
       es: [[cubo, cubos, m], [dado, dados, m]]
       en: [[cube, cubes], [block, blocks]]
       eu: [[kubo, kuboa, kuboak], [dado, dadoa, dadoak]]
+    cylinder:
+      es: [[cilindro, cilindros, m]]
+      en: [[cylinder, cylinders]]
+      eu: [[zilindro, zilindroa, zilindroak]]
+    triangular_prism:
+      es: [[prisma triangular, prismas triangulares, m]]
+      en: [[triangular prism, triangular prisms]]
+      eu: [[prisma triangeluar, prisma triangeluarra, prisma triangeluarrak]]
+    hexagonal_prism:
+      es: [[prisma hexagonal, prismas hexagonales, m]]
+      en: [[hexagonal prism, hexagonal prisms]]
+      eu: [[prisma hexagonal, prisma hexagonala, prisma hexagonalak]]
     any:
       es: [[objeto, objetos, m], [pieza, piezas, f], [cosa, cosas, f], [elemento, elementos, m], [figura, figuras, f]]
       en: [[object, objects], [thing, things], [item, items], [piece, pieces], [one, ones]]
@@ -120,6 +132,18 @@ objects:
       es: [[bloque, bloques, m], [ladrillo, ladrillos, m]]
       en: [[brick, bricks]]
       eu: [[bloke, blokea, blokeak], [adreilu, adreilua, adreiluak]]
+    cylinder:
+      es: [[cilindro macizo, cilindros macizos, m]]
+      en: [[solid cylinder, solid cylinders]]
+      eu: [[zilindro trinko, zilindro trinkoa, zilindro trinkoak]]
+    triangular_prism:
+      es: [[prisma de base triangular, prismas de base triangular, m]]
+      en: [[triangular-based prism, triangular-based prisms]]
+      eu: [[oinarri triangeluarreko prisma, oinarri triangeluarreko prismak, oinarri triangeluarreko prismak]]
+    hexagonal_prism:
+      es: [[prisma de base hexagonal, prismas de base hexagonal, m]]
+      en: [[hexagonal-based prism, hexagonal-based prisms]]
+      eu: [[oinarri hexagonaleko prisma, oinarri hexagonaleko prismak, oinarri hexagonaleko prismak]]
     any:
       es: [[trozo, trozos, m]]
       en: [[bit, bits]]

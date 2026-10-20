@@ -85,8 +85,9 @@ def compare(expected: dict, got: dict) -> dict:
     return result
 
 
-def evaluate(model: CommandModel, name: str, limit: int | None) -> dict:
-    lines = [json.loads(line) for line in (DATA / name).open(encoding="utf-8")]
+def evaluate(model: CommandModel, name: str, limit: int | None,
+             data_dir: Path = DATA, results_dir: Path = RESULTS) -> dict:
+    lines = [json.loads(line) for line in (data_dir / name).open(encoding="utf-8")]
     lines = lines[:limit] if limit else lines
     scores = collections.defaultdict(list)
     per_lang = collections.defaultdict(lambda: collections.defaultdict(list))
@@ -133,10 +134,10 @@ def evaluate(model: CommandModel, name: str, limit: int | None) -> dict:
                       f"  expected `{json.dumps(error['expected'], ensure_ascii=False)}`  \n"
                       f"  got `{json.dumps({k: v for k, v in error['got'].items() if k != 'confidence'}, ensure_ascii=False)}`")
 
-    RESULTS.mkdir(exist_ok=True)
+    results_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(name).stem
-    (RESULTS / f"{stem}_report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
-    with (RESULTS / f"{stem}_errors.jsonl").open("w", encoding="utf-8") as sink:
+    (results_dir / f"{stem}_report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
+    with (results_dir / f"{stem}_errors.jsonl").open("w", encoding="utf-8") as sink:
         for error in errors:
             sink.write(json.dumps(error, ensure_ascii=False) + "\n")
     print("\n".join(report[:12 + len(per_lang)]))
@@ -148,12 +149,14 @@ def main() -> int:
     parser.add_argument("files", nargs="*", default=["test_real.jsonl", "test_unseen.jsonl"])
     parser.add_argument("--limit", type=int, help="Only the first N sentences of each file")
     parser.add_argument("--model", help="Model folder (default: models/command-model/best)")
+    parser.add_argument("--data-dir", type=Path, default=DATA, help="directory with evaluation JSONL files")
+    parser.add_argument("--results-dir", type=Path, default=RESULTS, help="where evaluation reports are written")
     args = parser.parse_args()
 
     model = CommandModel(args.model) if args.model else CommandModel()
     for name in args.files:
-        evaluate(model, name, args.limit)
-        print(f"  -> results/{Path(name).stem}_report.md\n")
+        evaluate(model, name, args.limit, args.data_dir, args.results_dir)
+        print(f"  -> {args.results_dir / (Path(name).stem + '_report.md')}\n")
     return 0
 
 
