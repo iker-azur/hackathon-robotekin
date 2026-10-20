@@ -16,9 +16,18 @@ that is slightly wrong at step one drifts, sees a state it never saw in the
 demonstrations, and is then wrong by more. With a chunk, a small mistake is
 absorbed into a trajectory that was planned ahead.
 
-The transformer also attends to the last few observations and the whole action
-chunk, so the gripper's open/close decision is made in the context of the arm's
-motion rather than by a single frame.
+What ACT does *not* do, stated because it is easy to assume otherwise: it sees
+**one** observation per prediction. ``n_obs_steps`` is 1 and LeRobot 0.4.4 refuses
+any larger value (``configuration_act.py:149``); the transformer attends over the
+current image's feature map, the current joint state, the optional environment
+state and the action chunk it is producing - never over past frames. Anything that
+depends on "where the arm has been" has to be inside that one observation.
+
+Which inputs the policy gets is decided by the dataset it is trained on, not by a
+flag: whatever features the dataset declares (camera, joint state, environment
+state) become the network's inputs. ``tools/21_build_clock_cube_dataset.py`` builds
+a dataset with only an environment state, which is what the demo's working policy
+uses.
 
 Run:
 
@@ -52,17 +61,13 @@ DEFAULT_ACTION_STEPS = 20
 # ``ACTConfig.__post_init__`` raises ``ValueError("Multiple observation steps not
 # handled yet")`` for any ``n_obs_steps > 1`` (configuration_act.py:149).
 #
-# It matters, because the task as recorded is not a function of a single
-# observation. The arm revisits the *same* configuration in different phases:
-# frames 299 and 300 match to 8e-6 degrees while the plan switches from ``lift``
-# to ``carry``, and frames 391 and 420 match to 0 degrees while it switches from
-# ``carry`` to ``put down``. Counting every pair of frames in an episode sharing
-# a pose within 1 degree but demanding targets up to 22 mm apart gives **449
-# ambiguous pairs per episode**. Given six joint angles and asked for a target,
-# the best any single-observation policy can do on those pairs is their average -
-# a target that goes nowhere. That is the remaining known blocker, and the fix
-# is either a stack that does accept a history, or removing the revisits from the
-# expert's plan. See ``results/diagnosis.md``.
+# What it costs: the arm revisits the same pose in different phases of the plan
+# (frames 299 and 300 match to 8e-6 degrees while the plan switches from ``lift``
+# to ``carry``), so from joint angles alone those frames cannot be told apart. The
+# demo's working policy sidesteps that by being given the plan clock instead of a
+# history. It was *not* the cause of the camera + joint-state policies' failure:
+# with the phase as input the ambiguity is gone and they still drifted, because
+# they copy the arm's own pose (``results/diagnosis.md``, section 4).
 DEFAULT_OBS_STEPS = 1
 
 # With a 480x640 camera and a 16 GB card shared with the simulator, batch 8 is
@@ -231,25 +236,67 @@ def patch_frame_data_loader() -> None:
     lerobot_dataset.load_nested_dataset = load_nested_dataset
 
 
+def parse_episodes(text: str | None) -> list[int] | None:
+    """``"0-31"`` or ``"0,1,5"`` -> a list of episode indices; ``None`` means all."""
+    if not text:
+        return None
+    episodes: list[int] = []
+    for part in text.split(","):
+        if "-" in part:
+            first, last = part.split("-")
+            episodes.extend(range(int(first), int(last) + 1))
+        else:
+            episodes.append(int(part))
+    return episodes
+
+
+def write_inputs_file(dataset_root: Path, output_dir: Path, dataset_name: str) -> None:
+    """Record what the policy's environment-state input holds, next to the checkpoints.
+
+    ACT gives that input a width and no name, so demo 16 would otherwise have to
+    guess. The dataset's own ``meta/il_inputs.json`` is the source when it has one
+    (tools/21 writes it); older datasets fall back on the width, which demo 16
+    already understands.
+    """
+    import json
+
+    import il_dataset as data
+
+    source = dataset_root / "meta" / data.INPUTS_FILE
+    if not source.is_file() or not output_dir.is_dir():
+        return
+    record = json.loads(source.read_text(encoding="utf-8"))
+    record["trained_on"] = dataset_name
+    text = json.dumps(record, indent=2) + "\n"
+    (output_dir / data.INPUTS_FILE).write_text(text, encoding="utf-8")
+    # And inside every checkpoint, so a ``pretrained_model`` folder that is copied or
+    # zipped for another machine still says what its input means.
+    for checkpoint in (output_dir / "checkpoints").glob("*/pretrained_model"):
+        (checkpoint / data.INPUTS_FILE).write_text(text, encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--dataset", default="so101_lift_cube_demos")
+    parser.add_argument("--dataset", default="so101_lift_cube_clock_cube",
+                        help="dataset under data/ (default: the clock + cube set built by "
+                             "tools/21_build_clock_cube_dataset.py)")
     parser.add_argument("--steps", type=int, default=DEFAULT_STEPS)
     parser.add_argument("--batch", type=int, default=DEFAULT_BATCH)
     parser.add_argument("--chunk", type=int, default=DEFAULT_CHUNK)
     parser.add_argument("--action-steps", type=int, default=DEFAULT_ACTION_STEPS)
     parser.add_argument(
         "--obs-steps", type=int, default=DEFAULT_OBS_STEPS,
-        help="how many past observations the policy is shown. Only 1 is "
+        help="how many observations the policy is shown per prediction. Only 1 is "
              "supported: LeRobot 0.4.4's ACTConfig raises for any larger value. "
-             "Left here because the recorded task needs a history to be "
-             "well-posed - see the comment on DEFAULT_OBS_STEPS.",
+             "Left here so the limit is visible - see the comment on DEFAULT_OBS_STEPS.",
     )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--job-name", default="act_so101_lift_cube")
-    parser.add_argument("--output", default="15_act", help="checkpoint directory under outputs/")
+    parser.add_argument("--output", default="15_act_clock",
+                        help="checkpoint directory under outputs/ (an existing one is refused, "
+                             "so a finished run is never overwritten)")
     parser.add_argument(
         "--no-vae",
         action="store_true",
@@ -257,6 +304,17 @@ def main() -> int:
              "small the VAE pulls the prediction towards the average "
              "demonstration, and the arm ends up parked in a valid pose that "
              "is nobody's trajectory.",
+    )
+    parser.add_argument(
+        "--lr", type=float, default=None,
+        help="learning rate (default: ACT's own 1e-5, tuned for a pretrained ResNet; a policy "
+             "with no camera has nothing pretrained to protect and learns far faster at 1e-4)",
+    )
+    parser.add_argument("--seed", type=int, default=1000, help="training seed (default 1000)")
+    parser.add_argument(
+        "--episodes", default=None,
+        help="train on these episodes only, e.g. 0-31 or 0,1,5; the rest stay unseen for "
+             "tools/22_validate_offline.py (default: all)",
     )
     args = parser.parse_args()
 
@@ -283,6 +341,7 @@ def main() -> int:
     # where only the dataset tools are wanted.
     from lerobot.configs.default import DatasetConfig
     from lerobot.configs.train import TrainPipelineConfig
+    from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
     from lerobot.policies.act.configuration_act import ACTConfig
 
     # LeRobot creates this itself, and refuses to run into a directory that
@@ -291,22 +350,58 @@ def main() -> int:
     # instead would trip that check on the first run.
     output_dir = Path(__file__).resolve().parent / "outputs" / args.output
 
+    # A dataset that says it holds a clock + cube environment state (tools/21) trains
+    # a policy whose *only* input is that state. The dataset still carries the joint
+    # state - LeRobot's ACT reads ``batch["observation.state"].device`` and crashes
+    # without the key - but declaring the input features explicitly keeps it out of
+    # the network, which is the point: with it the policy copies the arm's own pose.
+    input_features = {}
+    inputs_file = root / "meta" / data.INPUTS_FILE
+    if inputs_file.is_file():
+        import json
+
+        kind = json.loads(inputs_file.read_text(encoding="utf-8")).get("env_state")
+        if kind == "clock_cube":
+            input_features = {
+                data.ACT_ENV_STATE_KEY: PolicyFeature(
+                    type=FeatureType.ENV, shape=(len(data.ENV_KINDS[kind]),)
+                )
+            }
+            print(f"inputs:  environment state only ({', '.join(data.ENV_KINDS[kind])})")
+
     policy = ACTConfig(
+        input_features=input_features,
         device=args.device,
         chunk_size=args.chunk,
         n_action_steps=args.action_steps,
         n_obs_steps=args.obs_steps,
         use_vae=not args.no_vae,
+        # ACT's default mapping leaves the environment state out, so it reaches the
+        # network unscaled. The cube's pixel position spans only ~0.24 x 0.13 of
+        # the [-1, 1] range it is stored in, which makes a millimetre ~0.002 of
+        # input - too small a signal to learn from at ACT's learning rate. Mean/std
+        # scaling with the dataset's own statistics fixes that, and the saved
+        # pre-processor applies the same scaling at evaluation time.
+        normalization_mapping={
+            "VISUAL": NormalizationMode.MEAN_STD,
+            "STATE": NormalizationMode.MEAN_STD,
+            "ENV": NormalizationMode.MEAN_STD,
+            "ACTION": NormalizationMode.MEAN_STD,
+        },
         # Dropout is what acts as regularisation on a dataset this small; 0.1 is
         # ACT's default and is left alone.
         push_to_hub=False,
+        **({"optimizer_lr": args.lr} if args.lr is not None else {}),
     )
 
     cfg = TrainPipelineConfig(
-        dataset=DatasetConfig(repo_id=args.dataset, root=str(root)),
+        dataset=DatasetConfig(
+            repo_id=args.dataset, root=str(root), episodes=parse_episodes(args.episodes)
+        ),
         policy=policy,
         output_dir=output_dir,
         job_name=args.job_name,
+        seed=args.seed,
         batch_size=args.batch,
         steps=args.steps,
         # Checkpoints are LARGE: an ACT policy with a ResNet-18 backbone is about
@@ -330,6 +425,7 @@ def main() -> int:
     patch_episode_metadata_loader()
     patch_frame_data_loader()
     train(cfg)
+    write_inputs_file(root, output_dir, args.dataset)
 
     print("")
     print(f"trained in {time.time() - started:.0f}s")
