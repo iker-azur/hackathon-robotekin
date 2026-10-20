@@ -16,6 +16,7 @@ before Kit starts, accept the Omniverse EULA) and a second copy would only drift
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 from pathlib import Path
 
@@ -45,6 +46,15 @@ SETTLE_STEPS = 40
 # has no reason to move, so stopping it dead is not cheating.
 SETTLE_MAX_STEPS = 600
 SETTLE_STILL_M = 0.002
+
+# The RTX camera can publish a black or flat-grey render target for several renders after Kit
+# starts, after the scene is reset, and occasionally after changing the active camera. The
+# dashboard used to interpret that buffer as an empty table and abort a valid task. Re-render a
+# small bounded number of times before perception is allowed to consume the frame.
+CAMERA_CAPTURE_MAX_ATTEMPTS = 8
+CAMERA_CAPTURE_RECOVERY_STEPS = 30
+CAMERA_CAPTURE_REINITIALIZE_STEPS = 60
+CAMERA_FRAME_MIN_LUMA_RANGE = 12.0
 
 # Physics steps given to the arm to reach its parked pose. The SO-101 servos are
 # position-controlled with stiffness 17.8, so 60 steps of 16.7 ms is a second, which is
@@ -326,13 +336,45 @@ def park_arm(env) -> None:
         return
     positions = torch.tensor([[folded[name] for name in names]], device=env.device)
     with torch.inference_mode():
+        robot.write_joint_position_to_sim(positions)
+        robot.write_joint_velocity_to_sim(torch.zeros_like(positions))
         for _ in range(ARM_PARK_STEPS):
-            robot.write_joint_position_to_sim(positions)
-            robot.write_joint_velocity_to_sim(torch.zeros_like(positions))
             env.sim.step(render=False)
         robot.write_joint_position_to_sim(positions)
     env.scene.update(dt=env.physics_dt)
     print(f"  arm parked: {', '.join(f'{k}={v}' for k, v in folded.items())}", flush=True)
+
+
+def hold_arm_pose(env, steps: int = 30, positions=None):
+    """Freeze the arm at its measured pose while a scene is rewritten and settled.
+
+    By default this does not choose a new arm configuration. It captures the current articulation
+    state, clears residual velocity, and reasserts that state during raw physics ticks so an old
+    IK target cannot sweep through freshly spawned objects. The next normal action owns the arm.
+
+    ``positions`` is the exception: hold the arm at that joint configuration instead, which is
+    how a later park is put back into the exact posture the first one produced.
+    """
+    import torch
+
+    robot = env.scene["robot"]
+    positions = robot.data.joint_pos.clone() if positions is None else positions.clone()
+    zeros = torch.zeros_like(positions)
+    with torch.inference_mode():
+        # Updating qpos alone does not cancel the previous articulation controller target.
+        # Once raw simulation ticks resume, that stale target can move the arm away from the
+        # captured pose and sweep through objects placed during the hold.
+        robot.set_joint_position_target(positions)
+        for _ in range(steps):
+            robot.set_joint_position_target(positions)
+            robot.write_joint_position_to_sim(positions)
+            robot.write_joint_velocity_to_sim(zeros)
+            env.sim.step(render=False)
+            robot.set_joint_position_target(positions)
+            robot.write_joint_position_to_sim(positions)
+            robot.write_joint_velocity_to_sim(zeros)
+            env.scene.update(dt=env.physics_dt)
+    return robot.data.joint_pos.clone()
 
 
 def robot_frame(env) -> Frame:
@@ -353,12 +395,26 @@ def robot_frame(env) -> Frame:
     return Frame.from_robot((float(position[0]), float(position[1])), left, forward)
 
 
-def _rest(env, items: list[scene_spec.Item]) -> int:
+def _rest(env, items: list[scene_spec.Item], held_joint_pos=None) -> int:
     """Step physics until nothing on the table is moving. Returns the steps taken."""
     import torch
 
     for count in range(1, SETTLE_MAX_STEPS + 1):
+        if held_joint_pos is not None:
+            robot = env.scene["robot"]
+            with torch.inference_mode():
+                robot.set_joint_position_target(held_joint_pos)
+                robot.write_joint_position_to_sim(held_joint_pos)
+                robot.write_joint_velocity_to_sim(torch.zeros_like(held_joint_pos))
         env.sim.step(render=False)
+        if held_joint_pos is not None:
+            # Keep the arm out of the newly populated objects while the old articulation action
+            # target is explicitly replaced by the held scene-reset pose. The next deliberate
+            # arm action takes ownership when settling returns.
+            with torch.inference_mode():
+                robot.set_joint_position_target(held_joint_pos)
+                robot.write_joint_position_to_sim(held_joint_pos)
+                robot.write_joint_velocity_to_sim(torch.zeros_like(held_joint_pos))
         worst = 0.0
         for item in items:
             speed = env.scene[item.prim].data.root_lin_vel_w[0]
@@ -370,24 +426,177 @@ def _rest(env, items: list[scene_spec.Item]) -> int:
     return SETTLE_MAX_STEPS
 
 
+def root_is_kinematic(actor) -> bool | None:
+    """Read the root body's USD kinematic flag; None means it could not be verified."""
+    try:
+        import omni.usd
+        from pxr import UsdPhysics
+
+        paths = actor.root_physx_view.prim_paths
+        if not paths:
+            return None
+        stage = omni.usd.get_context().get_stage()
+        prim = stage.GetPrimAtPath(str(paths[0]))
+        if not prim or not prim.IsValid():
+            return None
+        body = UsdPhysics.RigidBodyAPI(prim)
+        if not body:
+            return None
+        attr = body.GetKinematicEnabledAttr()
+        if not attr:
+            return False
+        value = attr.Get()
+        return bool(value) if value is not None else False
+    except Exception:
+        return None
+
+
+def set_root_kinematic(actor, enabled: bool) -> bool:
+    """Explicitly author the root body's kinematic flag before an environment reset."""
+    import omni.usd
+    from pxr import UsdPhysics
+
+    paths = actor.root_physx_view.prim_paths
+    if not paths:
+        raise RuntimeError("the rigid actor has no root PhysX prim path")
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(str(paths[0]))
+    body = UsdPhysics.RigidBodyAPI(prim)
+    if not prim or not prim.IsValid() or not body:
+        raise RuntimeError(f"the actor root {paths[0]} has no UsdPhysics.RigidBodyAPI")
+    attr = body.GetKinematicEnabledAttr()
+    if not attr:
+        attr = body.CreateKinematicEnabledAttr()
+    return bool(attr.Set(bool(enabled)))
+
+
+def zero_dynamic_root_velocity(actor, velocities) -> bool:
+    """Clear residual motion only when USD confirms the body is dynamic.
+
+    PhysX rejects velocity writes to kinematic bodies and emits native errors without
+    raising Python exceptions. Unknown bodies are therefore left untouched.
+    """
+    if root_is_kinematic(actor) is not False:
+        return False
+    actor.write_root_velocity_to_sim(velocities)
+    return True
+
+
+def reset_scene_to_default_without_kinematic_velocity_writes(env, env_ids) -> None:
+    """IsaacLab reset event that leaves fixed receptacles free of invalid velocity writes.
+
+    IsaacLab's stock ``reset_scene_to_default`` writes root velocities to every rigid
+    object, including the kinematic hollow trays used as Demo 11 destinations. PhysX
+    rejects that write. Keep its pose reset and articulation/deformable behavior, while
+    writing rigid velocities only when USD confirms the root is dynamic.
+    """
+    for rigid_object in env.scene.rigid_objects.values():
+        default_state = rigid_object.data.default_root_state[env_ids].clone()
+        default_state[:, 0:3] += env.scene.env_origins[env_ids]
+        rigid_object.write_root_pose_to_sim(default_state[:, :7], env_ids=env_ids)
+        if root_is_kinematic(rigid_object) is False:
+            rigid_object.write_root_velocity_to_sim(default_state[:, 7:], env_ids=env_ids)
+
+    for articulation in env.scene.articulations.values():
+        default_state = articulation.data.default_root_state[env_ids].clone()
+        default_state[:, 0:3] += env.scene.env_origins[env_ids]
+        articulation.write_root_pose_to_sim(default_state[:, :7], env_ids=env_ids)
+        articulation.write_root_velocity_to_sim(default_state[:, 7:], env_ids=env_ids)
+        default_pos = articulation.data.default_joint_pos[env_ids].clone()
+        default_vel = articulation.data.default_joint_vel[env_ids].clone()
+        articulation.write_joint_state_to_sim(default_pos, default_vel, env_ids=env_ids)
+
+    for deformable in env.scene.deformable_objects.values():
+        state = deformable.data.default_nodal_state_w[env_ids].clone()
+        deformable.write_nodal_state_to_sim(state, env_ids=env_ids)
+
+
 def place_items(env, items: list[scene_spec.Item]) -> None:
     """Write every object's pose and let it settle, the way demo 05 places the cube."""
     import torch
 
     device = env.device
-    upright = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device)
     zeros = torch.zeros(1, 6, device=device)
+    arm_hold = env.scene["robot"].data.joint_pos.clone()
     for item in items:
         obj = env.scene[item.prim]
         position = torch.tensor([[item.x, item.y, item.z]], device=device)
-        obj.write_root_pose_to_sim(torch.cat([position, upright], dim=-1))
-        obj.write_root_velocity_to_sim(zeros)
-    _rest(env, items)
+        half = math.radians(item.yaw_deg) / 2
+        rotation = torch.tensor([[math.cos(half), 0.0, 0.0, math.sin(half)]], device=device)
+        obj.write_root_pose_to_sim(torch.cat([position, rotation], dim=-1))
+        zero_dynamic_root_velocity(obj, zeros)
+    _rest(env, items, held_joint_pos=arm_hold)
     # Zero once more: the first contact leaves a residual roll that a level table will not
     # stop on its own. See SETTLE_STILL_M.
     for item in items:
-        env.scene[item.prim].write_root_velocity_to_sim(zeros)
-    _rest(env, items)
+        zero_dynamic_root_velocity(env.scene[item.prim], zeros)
+    _rest(env, items, held_joint_pos=arm_hold)
+
+
+def _camera_frame_is_ready(rgb: np.ndarray) -> bool:
+    """Return false for the uniform black/grey buffers RTX emits while a camera warms up.
+
+    Every supported Demo 11 environment includes a textured tabletop or other visible scene
+    geometry, so a useful capture has measurable luminance variation. RTX can briefly return a
+    softly shaded near-blank target (5th-95th percentile range 4-8) after the uniform warm-up
+    buffer; the 12-level floor rejects those frames while ignoring a small number of outlier
+    pixels. A real synchronized side-camera table frame in the seed-14000 regression had a range
+    above 70.
+    """
+    if rgb.ndim != 3 or rgb.shape[-1] < 3 or rgb.size == 0:
+        return False
+    pixels = np.asarray(rgb[..., :3], dtype=np.float32)
+    if not np.isfinite(pixels).all():
+        return False
+    luminance = (0.2126 * pixels[..., 0] + 0.7152 * pixels[..., 1]
+                 + 0.0722 * pixels[..., 2])
+    low, high = np.percentile(luminance, (5.0, 95.0))
+    return bool(high - low >= CAMERA_FRAME_MIN_LUMA_RANGE)
+
+
+def _render_camera_rgb(env, sensor, *, advance_physics_on_recovery: bool = False) -> tuple[np.ndarray, int]:
+    """Render until the camera returns scene content, or fail explicitly after a short bound."""
+    rgb = None
+    for attempt in range(1, CAMERA_CAPTURE_MAX_ATTEMPTS + 1):
+        env.sim.render()
+        sensor.update(env.physics_dt, force_recompute=True)
+        rgb = sensor.data.output["rgb"][0, ..., :3].detach().cpu().numpy()
+        if _camera_frame_is_ready(rgb):
+            return rgb, attempt
+    # RTX render products can remain blank for render-only frames immediately after
+    # scene population. Advance a few physics frames to synchronize Fabric and sensors.
+    for recovery in range(1, CAMERA_CAPTURE_RECOVERY_STEPS + 1):
+        if advance_physics_on_recovery:
+            env.sim.step(render=True)
+        else:
+            env.sim.render()
+        sensor.update(env.physics_dt, force_recompute=True)
+        rgb = sensor.data.output["rgb"][0, ..., :3].detach().cpu().numpy()
+        if _camera_frame_is_ready(rgb):
+            return rgb, CAMERA_CAPTURE_MAX_ATTEMPTS + recovery
+    # Replicator can leave an initialized render product attached but returning an all-zero
+    # buffer. Resetting the Isaac Lab sensor clears its frame counter and reapplies its camera
+    # pose; then give the render pipeline a longer synchronized warm-up before declaring the
+    # camera unavailable. This is deliberately a camera reset, not a simulator reset, so the
+    # active scene and robot state are preserved.
+    reset = getattr(sensor, "reset", None)
+    if callable(reset):
+        reset()
+    for recovery in range(1, CAMERA_CAPTURE_REINITIALIZE_STEPS + 1):
+        if advance_physics_on_recovery:
+            env.sim.step(render=True)
+        else:
+            env.sim.render()
+        sensor.update(env.physics_dt, force_recompute=True)
+        rgb = sensor.data.output["rgb"][0, ..., :3].detach().cpu().numpy()
+        if _camera_frame_is_ready(rgb):
+            return rgb, (CAMERA_CAPTURE_MAX_ATTEMPTS + CAMERA_CAPTURE_RECOVERY_STEPS
+                         + recovery)
+    low, high = np.percentile(
+        0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2], (5.0, 95.0))
+    raise RuntimeError(
+        f"La c?mara sigui? vac?a tras {CAMERA_CAPTURE_MAX_ATTEMPTS + CAMERA_CAPTURE_RECOVERY_STEPS + CAMERA_CAPTURE_REINITIALIZE_STEPS} intentos "
+        f"renders (rango de luminancia {high - low:.2f}); no se interpreta como mesa vacía.")
 
 
 def capture_rgb(env, name: str) -> tuple[np.ndarray, CameraModel]:
@@ -405,10 +614,7 @@ def capture_rgb(env, name: str) -> tuple[np.ndarray, CameraModel]:
     actually measures with, because it calls ``capture``.
     """
     sensor = env.scene[name]
-    env.sim.render()
-    sensor.update(env.physics_dt, force_recompute=True)
-
-    rgb = sensor.data.output["rgb"][0, ..., :3].detach().cpu().numpy()
+    rgb, _attempts = _render_camera_rgb(env, sensor)
     bgr = rgb[..., ::-1].copy()  # the annotator gives RGB, OpenCV wants BGR
     height, width = sensor.data.image_shape
     camera = CameraModel(
@@ -433,10 +639,10 @@ def capture(env, name: str) -> tuple[np.ndarray, np.ndarray | None, CameraModel]
     the render mode to PARTIAL_RENDERING rather than NO_RENDERING.
     """
     sensor = env.scene[name]
-    env.sim.render()
-    sensor.update(env.physics_dt, force_recompute=True)
-
-    rgb = sensor.data.output["rgb"][0, ..., :3].detach().cpu().numpy()
+    rgb, attempts = _render_camera_rgb(env, sensor, advance_physics_on_recovery=True)
+    if attempts > 1:
+        print(f"  cámara lista tras {attempts} renders; se descartaron {attempts - 1} frames vacíos",
+              flush=True)
     bgr = rgb[..., ::-1].copy()  # the annotator gives RGB, OpenCV wants BGR
 
     depth = None

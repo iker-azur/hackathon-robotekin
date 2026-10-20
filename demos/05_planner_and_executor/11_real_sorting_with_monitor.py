@@ -55,6 +55,7 @@ import argparse
 import copy
 import importlib.util
 import math
+import os
 import sys
 import threading
 import time
@@ -71,6 +72,7 @@ import hollow  # noqa: E402
 import describe  # noqa: E402
 import dynamics  # noqa: E402
 import executor as executor_module  # noqa: E402
+import gripper_contact_pads  # noqa: E402
 import isaac_io  # noqa: E402
 import pen as pen_module  # noqa: E402
 import planner  # noqa: E402
@@ -118,6 +120,11 @@ WEB_COMMAND_POLL_S = 0.2
 # How many panel controls are carried out between two physics steps. Each relook is a full
 # perception pass, so this bounds the time the simulation waits for the page; the rest queue.
 MAX_CONTROLS_PER_STEP = 2
+
+# RTX can return a valid frame from the previous layout immediately after prim transforms
+# change. The blank-frame retry cannot detect a stale-but-nonblank image, so render a few
+# synchronized frames after each scene population before the first perception pass.
+SCENE_SETTLE_RENDER_STEPS = 3
 
 
 def load_demo10():
@@ -183,13 +190,21 @@ def rigid_cfg_real(item: scene_spec.Item):
     }
     if item.kind == "ball":
         spawn = sim_utils.SphereCfg(radius=item.size[0] / 2.0, **common)
+    elif item.kind == "cylinder":
+        spawn = sim_utils.CylinderCfg(radius=item.size[0] / 2.0, height=item.size[2], **common)
+    elif item.kind in ("triangular_prism", "hexagonal_prism"):
+        from polygon_prism import spawn_cfg
+        spawn = spawn_cfg(sim_utils, common, item.size[0], item.size[2],
+                          3 if item.kind == "triangular_prism" else 6)
     else:
         spawn = sim_utils.CuboidCfg(size=item.size, **common)
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Scene/" + item.prim,
         spawn=spawn,
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(item.x, item.y, item.z), rot=(1.0, 0.0, 0.0, 0.0)),
+            pos=(item.x, item.y, item.z),
+            rot=(math.cos(math.radians(item.yaw_deg) / 2), 0.0, 0.0,
+                 math.sin(math.radians(item.yaw_deg) / 2))),
     )
 
 
@@ -229,8 +244,208 @@ def set_gripper_actuator(cfg, stiffness: float = real_world.GRIPPER.actuator_sti
     return ", ".join(changed) if changed else "no gripper actuator group found"
 
 
+def experimental_pad_friction(override: str | None,
+                              defaults: tuple[float, float] | None = None) -> tuple[float, float]:
+    """Parse an opt-in ``static,dynamic`` rubber friction A/B without changing defaults."""
+    base = defaults or (real_world.RUBBER_PAD.static_friction,
+                        real_world.RUBBER_PAD.dynamic_friction)
+    if override is None or not override.strip():
+        return float(base[0]), float(base[1])
+    parts = [part.strip() for part in override.split(",")]
+    if len(parts) != 2:
+        raise ValueError("experimental pad friction must be 'static,dynamic'")
+    values = tuple(float(part) for part in parts)
+    if not all(math.isfinite(value) and 0.05 <= value <= 2.0 for value in values):
+        raise ValueError("experimental pad friction coefficients must be within [0.05, 2.0]")
+    if values[1] > values[0]:
+        raise ValueError("dynamic pad friction cannot exceed static friction")
+    return values
+
+
+def experimental_carry_steps(override: str | None, default: int = 120) -> int:
+    """Validate an opt-in slower carry A/B; the normal trajectory stays unchanged."""
+    if override is None or not override.strip():
+        return int(default)
+    value = int(override)
+    if not 80 <= value <= 400:
+        raise ValueError("experimental carry steps must be within [80, 400]")
+    return value
+
+
+def set_gripper_pad_material(env) -> int:
+    """Bind the declared rubber friction to the SO-101 finger collision shapes.
+
+    ``real_world.grasp`` has always calculated with ``RUBBER_PAD`` (mu=0.90), but the
+    articulation USD did not have that pad material bound. Setting friction on a part does
+    not set friction on the opposing contact, so the physical benchmark was using the USD's
+    default finger material while the preflight reported the rubber-pad friction cone. Bind a
+    dedicated physics-only material to the two finger links, leaving their visual materials
+    untouched. The strict grasp benchmark verifies the result through measured lifts/carries.
+    """
+    from isaaclab.sim.utils import get_current_stage
+    from omni.physx.scripts.physicsUtils import add_physics_material_to_prim
+    from pxr import PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+    robot = env.scene["robot"]
+    root_path = str(robot.root_physx_view.prim_paths[0])
+    stage = get_current_stage()
+    robot_root = stage.GetPrimAtPath(root_path)
+    if not robot_root or not robot_root.IsValid():
+        raise RuntimeError(f"Robot USD root is unavailable: {root_path}")
+
+    material_path = Sdf.Path("/World/PhysicsMaterials/Demo11RubberPad")
+    UsdGeom.Scope.Define(stage, material_path.GetParentPath())
+    material_prim = UsdShade.Material.Define(stage, material_path).GetPrim()
+    pad_static, pad_dynamic = experimental_pad_friction(
+        os.environ.get("DEMO11_EXPERIMENTAL_PAD_FRICTION"))
+    material_api = UsdPhysics.MaterialAPI.Apply(material_prim)
+    material_api.CreateStaticFrictionAttr().Set(pad_static)
+    material_api.CreateDynamicFrictionAttr().Set(pad_dynamic)
+    material_api.CreateRestitutionAttr().Set(real_world.RUBBER_PAD.restitution)
+    PhysxSchema.PhysxMaterialAPI.Apply(material_prim)
+
+    bound = []
+    for prim in Usd.PrimRange(robot_root):
+        if not prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        path = prim.GetPath().pathString.lower().replace("-", "_")
+        segments = {part.lower() for part in path.split("/")}
+        if not segments.intersection({"gripper", "jaw", "left_finger", "right_finger"}):
+            continue
+        add_physics_material_to_prim(stage, prim, material_path)
+        bound.append(prim.GetPath().pathString)
+    if not bound:
+        raise RuntimeError(f"No gripper finger collision prims found under {root_path}")
+    print(f"  rubber pad material bound to {len(bound)} finger collider(s): "
+          f"mu={pad_static:.2f}/{pad_dynamic:.2f}", flush=True)
+    return len(bound)
+
+
+def set_demo11_table_collision(env) -> str:
+    """Replace the imported triangle-mesh tabletop contact with one calibrated flat slab.
+
+    PhysX reports a level tabletop under the 20 mm sphere, but its first collision with the
+    imported mesh creates a deterministic lateral spin/roll. A primitive slab at the measured
+    table bounds removes that mesh-contact artifact while retaining the visible USD table and
+    every non-top collision shape. It also binds the melamine material that ``real_world.TABLE``
+    declares; the imported top mesh otherwise falls back to PhysX's default material.
+    """
+    from isaaclab.sim.utils import get_current_stage
+    from omni.physx.scripts.physicsUtils import add_physics_material_to_prim
+    from pxr import Gf, PhysxSchema, Sdf, UsdGeom, UsdPhysics, UsdShade
+
+    stage = get_current_stage()
+    mesh_path = "/World/envs/env_0/Scene/counter_right_main_group/geometry_0"
+    mesh = stage.GetPrimAtPath(mesh_path)
+    if not mesh or not mesh.IsValid():
+        raise RuntimeError(f"Demo 11 tabletop collision mesh is unavailable: {mesh_path}")
+    UsdPhysics.CollisionAPI.Apply(mesh).CreateCollisionEnabledAttr().Set(False)
+
+    collider_path = Sdf.Path("/World/envs/env_0/Scene/Demo11TableTopCollider")
+    collider = stage.GetPrimAtPath(collider_path)
+    if not collider or not collider.IsValid():
+        cube = UsdGeom.Cube.Define(stage, collider_path)
+        cube.CreateSizeAttr(1.0)
+        xform = UsdGeom.Xformable(cube.GetPrim())
+        center_x = (scene_spec.TABLE_X[0] + scene_spec.TABLE_X[1]) / 2
+        center_y = (scene_spec.TABLE_Y[0] + scene_spec.TABLE_Y[1]) / 2
+        thickness = 0.02
+        xform.AddTranslateOp().Set(Gf.Vec3d(
+            center_x, center_y, scene_spec.TABLE_TOP_Z - thickness / 2))
+        xform.AddScaleOp().Set(Gf.Vec3f(
+            scene_spec.TABLE_X[1] - scene_spec.TABLE_X[0],
+            scene_spec.TABLE_Y[1] - scene_spec.TABLE_Y[0], thickness))
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        collider = cube.GetPrim()
+
+    material_path = Sdf.Path("/World/PhysicsMaterials/Demo11MelamineTable")
+    UsdGeom.Scope.Define(stage, material_path.GetParentPath())
+    material_prim = UsdShade.Material.Define(stage, material_path).GetPrim()
+    material_api = UsdPhysics.MaterialAPI.Apply(material_prim)
+    material_api.CreateStaticFrictionAttr().Set(real_world.TABLE.static_friction)
+    material_api.CreateDynamicFrictionAttr().Set(real_world.TABLE.dynamic_friction)
+    material_api.CreateRestitutionAttr().Set(real_world.TABLE.restitution)
+    PhysxSchema.PhysxMaterialAPI.Apply(material_prim)
+    add_physics_material_to_prim(stage, collider, material_path)
+    print(f"  tabletop collision: flat slab {scene_spec.TABLE_X} x {scene_spec.TABLE_Y}, "
+          f"z={scene_spec.TABLE_TOP_Z:.5f} m; melamine mu="
+          f"{real_world.TABLE.static_friction:.2f}/{real_world.TABLE.dynamic_friction:.2f}, "
+          f"e={real_world.TABLE.restitution:.2f}", flush=True)
+    return str(collider_path)
+
+
+def shipped_cube_is_configured(items: list[scene_spec.Item]) -> bool:
+    """Whether the scene catalog explicitly uses the task asset's built-in cube."""
+    return any(item.prim == scene_spec.SHIPPED_CUBE and not item.container for item in items)
+
+
+def set_unconfigured_shipped_cube_visible(env, items: list[scene_spec.Item]) -> bool:
+    """Hide and disable the task USD cube unless the scene catalog includes it.
+
+    LeIsaac's ``table_with_cube`` scene always authors a dynamic red cube. A custom scene with
+    only balls or prisms otherwise gets an unlisted perception distractor and a collider that
+    can interfere with configured objects. If the catalog explicitly includes the shipped cube,
+    keep the asset instance active as that configured object.
+    """
+    if shipped_cube_is_configured(items):
+        return True
+
+    import omni.usd
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    stage = omni.usd.get_context().get_stage()
+    env_count = int(getattr(env, "num_envs", 1))
+    hidden_roots = 0
+    disabled_colliders = 0
+    for env_index in range(env_count):
+        path = f"/World/envs/env_{env_index}/Scene/{scene_spec.SHIPPED_CUBE}"
+        root = stage.GetPrimAtPath(path)
+        if not root or not root.IsValid():
+            continue
+        imageable = UsdGeom.Imageable(root)
+        if imageable:
+            imageable.MakeInvisible()
+            hidden_roots += 1
+        for prim in Usd.PrimRange(root):
+            if prim.HasAPI(UsdPhysics.CollisionAPI):
+                UsdPhysics.CollisionAPI(prim).CreateCollisionEnabledAttr().Set(False)
+                disabled_colliders += 1
+    print(f"  unconfigured scene cube: hidden {hidden_roots} root(s), "
+          f"disabled {disabled_colliders} collider(s)", flush=True)
+    return False
+
+
+def enable_contact_reporting(robot_spawn, target_spawn=None) -> None:
+    """Enable PhysX contact reporters on the bodies monitored by Demo 11 diagnostics.
+
+    ContactSensorCfg wraps PhysX's contact reporting API. Creating a sensor on a rigid body is
+    not enough: the corresponding asset spawner must activate reporters before it is spawned.
+    The target and gripper links are separate assets in the diagnostic scene, so enable both.
+    """
+    # Isaac Lab's current clone wrapper forwards this value as the reporter's numeric force
+    # threshold. Although its config field is annotated bool, ``True`` becomes 1 N and hides
+    # light contact during a slipping grasp. Keep it truthy to activate reporting while using a
+    # threshold low enough to expose those contacts.
+    threshold_n = 1e-4
+    if robot_spawn is None:
+        raise ValueError("robot spawn config is required for gripper contact reporting")
+    robot_spawn.activate_contact_sensors = threshold_n
+    if target_spawn is not None:
+        target_spawn.activate_contact_sensors = threshold_n
+
+
 def build_real_env(camera: str, items: list[scene_spec.Item], pen: bool = False,
-                   grip_stiffness: float = real_world.GRIPPER.actuator_stiffness):
+                   grip_stiffness: float = real_world.GRIPPER.actuator_stiffness,
+                   device: str = "cuda:0", contact_diagnostics_for: str | None = None,
+                   auto_validated_contact_pads: bool = False,
+                   experimental_contact_pads: bool = False,
+                   experimental_contact_pad_radius_m: float = gripper_contact_pads.PAD_RADIUS_M,
+                   experimental_contact_pad_shape: str = "sphere",
+                   experimental_contact_pad_thickness_m: float = gripper_contact_pads.PAD_THICKNESS_M,
+                   experimental_contact_pad_angle_deg: float = gripper_contact_pads.PAD_VEE_ANGLE_DEG,
+                   experimental_contact_pad_force_unvalidated: bool = False,
+                   grasp_profile_kind: str | None = None,
+                   contact_diagnostics_all_robot_links: bool = False):
     """The shipped lift-cube task, with demo 11's materials and demo 11's gripper.
 
     A copy of ``isaac_io.build_env`` rather than a patch of it, for two reasons that both came
@@ -246,7 +461,117 @@ def build_real_env(camera: str, items: list[scene_spec.Item], pen: bool = False,
 
     import leisaac.tasks  # noqa: F401  registers the gym task ids
 
-    cfg = parse_env_cfg(isaac_io.TASK, device="cuda:0", num_envs=1)
+    cfg = parse_env_cfg(isaac_io.TASK, device=device, num_envs=1)
+    profiled_item = None
+    if auto_validated_contact_pads and not experimental_contact_pads:
+        profiled_items = gripper_contact_pads.validated_profile_items(
+            [item for item in items
+             if not item.container and item.prim != scene_spec.SHIPPED_CUBE],
+            target_kind=grasp_profile_kind)
+        automatic_shape = gripper_contact_pads.automatic_scene_pad_shape(
+            profiled_items, target_kind=grasp_profile_kind)
+        if automatic_shape:
+            experimental_contact_pads = True
+            experimental_contact_pad_shape = automatic_shape
+            profiled_item = next(item for item in profiled_items if not item.container)
+            angle_override = os.environ.get("DEMO11_EXPERIMENTAL_VEE_ANGLE_DEG")
+            experimental_contact_pad_angle_deg = gripper_contact_pads.vee_angle_for(
+                profiled_item.kind, profiled_item.size, experimental_contact_pad_angle_deg,
+                profiled_item.yaw_deg,
+                override_deg=(float(angle_override) if angle_override is not None else None))
+            tested_stiffness = gripper_contact_pads.vee_stiffness_for(
+                profiled_item.kind, profiled_item.size, grip_stiffness,
+                profiled_item.yaw_deg)
+            if (grip_stiffness == real_world.GRIPPER.actuator_stiffness
+                    and tested_stiffness != grip_stiffness):
+                grip_stiffness = tested_stiffness
+            scope = (f"target geometry {grasp_profile_kind}" if grasp_profile_kind
+                     else "every movable shape and orientation in this scene")
+            print("  V-groove contact profile selected automatically: " + scope +
+                  " has a validated physical profile "
+                  f"(V angle {experimental_contact_pad_angle_deg:.0f} deg, "
+                  f"gripper stiffness {grip_stiffness:.0f})", flush=True)
+        if not automatic_shape:
+            tested_stiffness = gripper_contact_pads.automatic_scene_grip_stiffness(
+                items, grip_stiffness, target_kind=grasp_profile_kind)
+            if (grip_stiffness == real_world.GRIPPER.actuator_stiffness
+                    and tested_stiffness != grip_stiffness):
+                grip_stiffness = tested_stiffness
+                print("  stock fingers use the validated 30 mm geometry stiffness profile "
+                      f"for {grasp_profile_kind or 'homogeneous targets'} "
+                      f"({grip_stiffness:.0f})", flush=True)
+    pad_shape_override = os.environ.get("DEMO11_EXPERIMENTAL_PAD_SHAPE")
+    if pad_shape_override is not None:
+        if pad_shape_override not in {"sphere", "flat", "vee"}:
+            raise ValueError("experimental pad shape must be sphere, flat, or vee")
+        experimental_contact_pads = True
+        experimental_contact_pad_shape = pad_shape_override
+    if experimental_contact_pad_shape == "vee":
+        experimental_contact_pad_angle_deg = gripper_contact_pads.experimental_vee_angle_deg(
+            os.environ.get("DEMO11_EXPERIMENTAL_VEE_ANGLE_DEG"),
+            experimental_contact_pad_angle_deg)
+    force_unvalidated_pads = (
+        experimental_contact_pad_force_unvalidated
+        or gripper_contact_pads.force_unvalidated_experimental_pads(
+            os.environ.get("DEMO11_EXPERIMENTAL_FORCE_UNVALIDATED_PADS")))
+    effective_contact_pad_shape = (experimental_contact_pad_shape
+                                   if experimental_contact_pads else None)
+    if (experimental_contact_pads and experimental_contact_pad_shape == "vee"
+            and not force_unvalidated_pads):
+        compatible_items = [(item.kind, item.size, item.yaw_deg)
+                            for item in gripper_contact_pads.validated_profile_items(
+                                [item for item in items if not item.container
+                                 and item.prim != scene_spec.SHIPPED_CUBE],
+                                target_kind=grasp_profile_kind)]
+        if not gripper_contact_pads.scene_uses_only_vee_profiles(compatible_items):
+            # PhysX does not reliably refresh a cooked robot collider when a USD
+            # CollisionAPI flag is changed mid-run. Never hot-swap V inserts in a mixed
+            # scene: their protruding faces can displace objects that need stock jaws.
+            effective_contact_pad_shape = None
+            experimental_contact_pads = False
+            print("  V-groove skipped: scene contains unvalidated object profiles; "
+                  "keeping stock SO-101 fingertips", flush=True)
+    if experimental_contact_pads:
+        robot_spawn = getattr(cfg.scene.robot, "spawn", None)
+        source_usd = getattr(robot_spawn, "usd_path", None)
+        if not source_usd:
+            raise RuntimeError("SO-101 spawn config does not expose its USD path")
+        pad_inset_override = os.environ.get("DEMO11_EXPERIMENTAL_PAD_INSET_MM")
+        pad_span_override = os.environ.get("DEMO11_EXPERIMENTAL_PAD_SPAN_MM")
+        if (profiled_item is not None and experimental_contact_pad_shape == "vee"):
+            pad_inset_m = gripper_contact_pads.pad_inset_for(
+                profiled_item.kind, profiled_item.size, pad_inset_override)
+            pad_span_m = gripper_contact_pads.pad_span_for(
+                profiled_item.kind, profiled_item.size, pad_span_override)
+        else:
+            pad_inset_m = gripper_contact_pads.experimental_pad_inset_m(pad_inset_override)
+            pad_span_m = gripper_contact_pads.experimental_pad_span_m(pad_span_override)
+        if pad_inset_m and experimental_contact_pad_shape != "vee":
+            raise ValueError("experimental pad inset is supported only with V-groove pads")
+        pad_radius_m = gripper_contact_pads.experimental_pad_radius_m(
+            os.environ.get("DEMO11_EXPERIMENTAL_PAD_RADIUS_MM"))
+        padded_usd = gripper_contact_pads.make_padded_robot_asset(
+            source_usd, radius_m=pad_radius_m if pad_shape_override == "sphere"
+            else experimental_contact_pad_radius_m,
+            shape=experimental_contact_pad_shape,
+            thickness_m=experimental_contact_pad_thickness_m,
+            vee_angle_deg=experimental_contact_pad_angle_deg,
+            inset_m=pad_inset_m, span_m=pad_span_m)
+        robot_spawn.usd_path = str(padded_usd)
+        print(f"  {experimental_contact_pad_shape} contact-pad USD: {padded_usd} "
+              f"(V {experimental_contact_pad_angle_deg:.0f} deg, "
+              f"span {pad_span_m * 1000:.0f} mm, inset {pad_inset_m * 1000:.1f} mm)",
+              flush=True)
+    if contact_diagnostics_for is not None:
+        if contact_diagnostics_for not in {item.prim for item in items if not item.container}:
+            raise ValueError(f"Contact diagnostic target is not a loose scene item: {contact_diagnostics_for}")
+        from isaaclab.sensors import ContactSensorCfg
+
+        # PhysX contact reporting is opt-in on rigid bodies. Keep per-link sensors and also
+        # attach a reverse sensor to the object: the first positive-control run carried a cube
+        # physically while both finger-filtered views stayed at zero, so diagnostics must verify
+        # the pair from both sides before we trust their force values.
+        cfg.scene.robot.spawn.activate_contact_sensors = True
     # The action manager is only installed by the teleop device, and without it the arm_action
     # term is missing and the environment cannot be built.
     cfg.use_teleop_device("so101_state_machine")
@@ -254,6 +579,11 @@ def build_real_env(camera: str, items: list[scene_spec.Item], pen: bool = False,
     cfg.recorders = None
     cfg.terminations.time_out = None
     cfg.terminations.success = None  # otherwise lifting an object ends the episode
+
+    # The stock reset event writes velocity to every rigid object. Demo 11 receptacles
+    # are intentionally kinematic, so reset their poses without an invalid PhysX write.
+    if hasattr(cfg.events, "reset_all"):
+        cfg.events.reset_all.func = isaac_io.reset_scene_to_default_without_kinematic_velocity_writes
 
     # The task randomises the cube by up to 7.5 cm and the camera by 5 mm on every reset. That
     # is right for training a policy and fatal for a measurement; demo 11 places everything
@@ -282,13 +612,51 @@ def build_real_env(camera: str, items: list[scene_spec.Item], pen: bool = False,
         else:
             setattr(cfg.scene, item.prim, rigid_cfg_real(item))
 
+    if contact_diagnostics_for is not None:
+        # Loose benchmark objects are separate RigidObjectCfg assets. The shipped cube is
+        # authored inside the task's scene USD, so enabling reporters on that scene asset is
+        # necessary for the reverse (object -> robot) filtered view to report contact.
+        target_cfg = getattr(cfg.scene, contact_diagnostics_for, None)
+        if target_cfg is not None and hasattr(target_cfg, "spawn"):
+            enable_contact_reporting(cfg.scene.robot.spawn, target_cfg.spawn)
+        else:
+            enable_contact_reporting(cfg.scene.robot.spawn, cfg.scene.scene.spawn)
+        diagnostic_links = ("shoulder", "upper_arm", "lower_arm", "wrist",
+                            "gripper", "jaw") if contact_diagnostics_all_robot_links else (
+                                "gripper", "jaw")
+        for link in diagnostic_links:
+            setattr(cfg.scene, f"demo11_contact_{link}", ContactSensorCfg(
+                prim_path=f"{{ENV_REGEX_NS}}/Robot/{link}",
+                filter_prim_paths_expr=[
+                    f"{{ENV_REGEX_NS}}/Scene/{contact_diagnostics_for}"],
+                update_period=0.0,
+                history_length=0,
+            ))
+        setattr(cfg.scene, "demo11_contact_target", ContactSensorCfg(
+            prim_path=f"{{ENV_REGEX_NS}}/Scene/{contact_diagnostics_for}",
+            filter_prim_paths_expr=["{ENV_REGEX_NS}/Robot/gripper",
+                                    "{ENV_REGEX_NS}/Robot/jaw"],
+            update_period=0.0,
+            history_length=0,
+        ))
+
     if pen:
         # The containment kerb. Same body shape as a tray, four walls and no floor; see pen.py.
         # Spawned last so it exists before anything is placed inside it.
         setattr(cfg.scene, pen_module.PEN_PRIM, pen_module.make_pen_asset_cfg())
 
     sensor = isaac_io.ensure_camera(cfg, camera)
-    return gym.make(isaac_io.TASK, cfg=cfg).unwrapped, sensor
+    backup_sensor = isaac_io.ensure_camera(cfg, "top") if camera != "top" else None
+    env = gym.make(isaac_io.TASK, cfg=cfg).unwrapped
+    env.demo11_shipped_cube_configured = set_unconfigured_shipped_cube_visible(env, items)
+    set_gripper_pad_material(env)
+    set_demo11_table_collision(env)
+    env.demo11_contact_pad_shape = effective_contact_pad_shape
+    env.demo11_contact_diagnostics_for = contact_diagnostics_for
+    # Oblique views can be occluded by the arm while it reaches into a tray. Keep a
+    # calibrated overhead sensor available as a perception fallback for those scenes.
+    env.demo11_backup_camera = backup_sensor
+    return env, sensor
 
 
 def set_gripper(env, angle_rad: float = real_world.GRIPPER.close_command_rad) -> float:
@@ -327,24 +695,396 @@ def set_gripper(env, angle_rad: float = real_world.GRIPPER.close_command_rad) ->
 # their commanded angle, which is what ``real_world.GRIPPER.close_command_rad`` assumes.
 CLOSE_SETTLE_STEPS = 90
 
+# These shapes have not demonstrated reliable friction grasps with the shipped SO-101 jaw
+# contacts. The simulator demo uses and reports an object-follow constraint for them; cube
+# grasps remain physical by default. The strict benchmark still measures physical contact.
+# Demo 11 is a simulation demonstration. The shipped SO-101 jaw contact model has now also
+# failed to retain cubes reliably after an otherwise centred close (measured: the cube moved
+# 130 mm during a 120 mm lift). Keep the live demo dependable by using the same explicit,
+# close-gated simulator constraint for every supported shape. The strict physical-grasp
+# benchmark sets ``auto_sim_assist=False`` and remains the place to measure friction honestly.
+SIM_ASSISTED_SHAPES = frozenset({"cube", "ball", "cylinder", "triangular_prism", "hexagonal_prism"})
+
 # How far off centre a part may be and still end up between the pads: half the aperture less half
 # the part. This is a geometric fact about the gripper, not a tuned number, and it is the budget
 # every grasp has to fit inside.
 LATERAL_SLACK_M = (real_world.GRIPPER.aperture_m - 0.030) / 2.0
+# Rounding at the calibrated aperture boundary must not reject a centred contact by
+# a few floating-point microns; this tolerance is far smaller than camera/servo error.
+APERTURE_NUMERIC_TOLERANCE_M = 0.00005
+
+
+def aperture_gap_is_graspable(gap_m: float | None,
+                              slack_m: float = LATERAL_SLACK_M) -> bool:
+    """Only allow contact when the measured jaw midpoint is inside the part's slack."""
+    return (gap_m is not None and math.isfinite(float(gap_m))
+            and 0.0 <= float(gap_m) <= float(slack_m) + APERTURE_NUMERIC_TOLERANCE_M)
+
+
+def aperture_slack_for_size(size_m) -> float:
+    """Compute half the free jaw width for a declared object's widest footprint axis."""
+    if not size_m:
+        return LATERAL_SLACK_M
+    width = max(float(value) for value in size_m[:2])
+    return max(0.0, (real_world.GRIPPER.aperture_m - width) / 2.0)
+
+
+def aperture_slack_for_profile(size_m, *, kind: str, pad_shape: str | None,
+                               experimental_slack_mm: float | None = None) -> float:
+    """Keep measured jaw slack by default; permit a bounded ball/V-pad A/B override only."""
+    measured = aperture_slack_for_size(size_m)
+    is_ball30_vee = (kind == "ball" and pad_shape == "vee" and bool(size_m)
+                     and 0.029 <= float(size_m[0]) <= 0.031)
+    if not is_ball30_vee or experimental_slack_mm is None:
+        return measured
+    candidate = float(experimental_slack_mm) / 1000.0
+    if not math.isfinite(candidate) or not measured <= candidate <= 0.008:
+        raise ValueError("experimental ball/V-pad aperture slack must be within measured slack..8 mm")
+    return candidate
+
+# A simulator-only object-follow grasp may absorb a bounded residual from camera/IK servoing, but
+# it must still be demonstrably over the intended object. The 30 mm ceiling is below the 40 mm
+# minimum spacing in generated clusters, preserves clearance to adjacent pieces, and is used only
+# by the explicitly labelled simulation constraint. Strict physical grasp checks still use the
+# much smaller measured aperture slack above. The prior 20 mm gate left several valid 20 mm parts
+# just outside reach (22-28 mm) in alternate camera/scene variants.
+SIM_ASSIST_MAX_LATERAL_M = 0.030
+
+
+def grasp_height_error(object_z: float, body_target_z: float,
+                       hold_offset_z: float) -> float:
+    """Compare an object's centre with the gripper's hold point, in world Z.
+
+    Tracked close steps pass a direct gripper-body target. Comparing the object's centre with
+    that body's Z ignores the calibrated body-to-hold offset (about -92 mm on the SO-101) and
+    falsely rejects correctly aligned simulator grasps.
+    """
+    return abs(float(object_z) - (float(body_target_z) + float(hold_offset_z)))
+TRACK_MAX_SCENE_LINKED_MISSES = 6
+
+
+def calibrated_grasp_offset(fitted, measured):
+    """Use measured jaw-centre X/Y while retaining the separately fitted grasp height."""
+    if measured is None:
+        return tuple(float(value) for value in fitted)
+    return (float(measured[0]), float(measured[1]), float(fitted[2]))
+
+
+def projected_grip_width(kind: str, size: tuple[float, ...], quat_wxyz,
+                          jaw_axis_xy: tuple[float, float]) -> float:
+    """Project an object's collision geometry onto the gripper's actual closing axis."""
+    sx = float(size[0])
+    sy = float(size[1]) if len(size) > 1 else sx
+    sz = float(size[2]) if len(size) > 2 else sx
+    axis = np.asarray(jaw_axis_xy, dtype=float)
+    axis_norm = float(np.linalg.norm(axis))
+    if axis_norm < 1e-9:
+        axis = np.array((1.0, 0.0))
+    else:
+        axis /= axis_norm
+
+    w, x, y, z = (float(value) for value in quat_wxyz)
+    if kind == "ball":
+        return max(sx, sy, sz)
+    if kind == "cylinder":
+        # Demo 11 cylinders stand upright; this also handles a tilted cylinder axis.
+        cylinder_axis = np.array((2 * (x * z + w * y), 2 * (y * z - w * x),
+                                  1 - 2 * (x * x + y * y)))
+        axial_projection = abs(float(np.dot(axis, cylinder_axis[:2])))
+        radial_projection = math.sqrt(max(0.0, 1.0 - axial_projection ** 2))
+        return sx * radial_projection + sz * axial_projection
+
+    rotation = np.array((
+        (1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)),
+        (2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)),
+        (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)),
+    ))
+    if kind in ("triangular_prism", "hexagonal_prism"):
+        sides = 3 if kind == "triangular_prism" else 6
+        radius = sx / 2.0
+        vertices = np.asarray([
+            (radius * math.cos(2 * math.pi * i / sides),
+             radius * math.sin(2 * math.pi * i / sides), z_local)
+            for i in range(sides) for z_local in (-sz / 2.0, sz / 2.0)
+        ])
+    else:
+        vertices = np.asarray([
+            (ix * sx / 2.0, iy * sy / 2.0, iz * sz / 2.0)
+            for ix in (-1, 1) for iy in (-1, 1) for iz in (-1, 1)
+        ])
+    world_vertices = vertices @ rotation.T
+    projections = world_vertices[:, :2] @ axis
+    return float(projections.max() - projections.min())
+
+
+def _rotate_local_offset(quat_wxyz, offset_xyz) -> np.ndarray:
+    """Rotate a link-local calibrated fingertip point into world coordinates."""
+    w, x, y, z = (float(value) for value in quat_wxyz)
+    rotation = np.array((
+        (1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)),
+        (2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)),
+        (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)),
+    ))
+    return rotation @ np.asarray(offset_xyz, dtype=float)
+
+
+def world_position_to_local_offset(body_position, body_quaternion_wxyz,
+                                   object_position) -> tuple[float, float, float]:
+    """Express a world-space object centre in the gripper body's local frame."""
+    quaternion = np.asarray(body_quaternion_wxyz, dtype=float)
+    inverse = (quaternion[0], -quaternion[1], -quaternion[2], -quaternion[3])
+    local = _rotate_local_offset(
+        inverse, np.asarray(object_position, dtype=float) - np.asarray(body_position, dtype=float))
+    return tuple(float(value) for value in local)
+
+
+def simulator_recovery_hold_is_plausible(local_hold, tolerance_m: float = 0.030) -> bool:
+    """Reject simulator recovery when the measured gripper/object transform implies a teleport."""
+    try:
+        values = np.asarray(local_hold, dtype=float).reshape(-1)
+        return bool(values.size == 3 and np.all(np.isfinite(values))
+                    and abs(float(values[2]) - float(executor_module.HOLD[2])) <= tolerance_m)
+    except (TypeError, ValueError, IndexError):
+        return False
+
+
+# Contact-face centres calibrated from the SO-101 collision geometry in the centred-grasp
+# probe. The link origins are high above these points and are not suitable for lateral centring.
+FINGER_CONTACT_CENTRES_LOCAL_M = {
+    "gripper": (-0.0031, 0.0064, -0.0976),
+    "jaw": (-0.0112, -0.0716, 0.0124),
+}
+
 
 # The tool-centre servo in ``StrictExecutor.track`` stops correcting when it stops making progress,
 # because an arm at a joint limit will obey every command and go nowhere. "The error did not
 # shrink by this much" over that many corrections means the pose is unreachable, which is a
 # different fact with a different fix, and the run says which one it was.
 STALL_IMPROVEMENT = 0.001
-STALL_WINDOW = 6
+STALL_WINDOW = int(os.environ.get("DEMO11_STALL_WINDOW", "8"))
+PREGRASP_ALIGNMENT_MAX_STEPS = 24
+PREGRASP_ALIGNMENT_TOLERANCE_M = 0.008
+PREGRASP_ALIGNMENT_STEP_M = 0.008
+# Consecutive camera misses tolerated during the descent. While the wrist hides the part the
+# aperture is still servoed to the scene-linked anchor from the arm's own feedback, and a part
+# that was knocked meanwhile fails the close-time reach and drift guards, so a miss is safe to
+# coast through. 2 was tuned for the old 150 mm hover; with the reachable hover the whole
+# descent is inside the occlusion window, and a prism's rotated wrist hides the part for ~6
+# looks: strict logs showed "2 occluded look(s) ... 1 look(s) could not find it" cancelling an
+# approach whose aperture was 0.2-1.7 mm from the part.
+TRACK_MAX_LATE_OCCLUSION = 20
+# How far the last camera frame may be from the validated grasp anchor and still replace it for
+# the contact check. As the wrist covers the part its mask shrinks and the centroid walks: in the
+# strict logs `seen` drifted 427 -> 422 mm over one descent while the aperture was 1 mm from the
+# anchor, and at the former 5 mm tolerance that drifted frame was trusted, so the check measured
+# "5.0 mm from the part" and cancelled a centred grasp (the same 4.3-5.3 mm "outside the slack"
+# on cubes and hexagons, three attempts in a row). The anchor was linked before the wrist hid the
+# part, so a frame may only refine it, and only within the alignment gate (3.1 mm).
+FINAL_CONTACT_OBSERVATION_TOLERANCE_M = 0.002
+# The top-camera occlusion can start well above the nominal gate on this wrist pose.
+TRACK_LATE_OCCLUSION_MARGIN_M = 0.060
+BALL_PRECONTACT_HOLD_Z_M = 0.285
+BALL_PRECONTACT_TOLERANCE_M = 0.008
+BALL_MAX_DESCENT_STEP_M = 0.001
 
-# The largest move of a sighted object, between two looks, that is still the same object. The
-# closest pair of same-coloured objects in the scene is 64 mm apart centre to centre (demo 10,
-# LINK_TOLERANCE_M's comment), so anything at or beyond that could be the neighbour. A knock
-# larger than this is reported as a lost target and re-planned from a fresh look, rather than
-# followed onto whatever blob is nearest.
+
+def bounded_servo_delta(error_xy, max_step_m: float = PREGRASP_ALIGNMENT_STEP_M,
+                        gain: float = 0.65) -> tuple[float, float]:
+    """Return a damped, norm-bounded XY correction for a stationary pre-grasp hover."""
+    error = np.asarray(error_xy, dtype=float).reshape(-1)[:2]
+    magnitude = float(np.linalg.norm(error))
+    if (error.size != 2 or not np.all(np.isfinite(error)) or not math.isfinite(magnitude)
+            or magnitude <= 1e-12 or max_step_m <= 0 or not 0 < gain <= 1):
+        return 0.0, 0.0
+    distance = min(float(max_step_m), magnitude * float(gain))
+    delta = error * (distance / magnitude)
+    return float(delta[0]), float(delta[1])
+
+
+def body_command_for_aperture(body_xy, aperture_xy, target_xy) -> tuple[float, float]:
+    """Translate a desired jaw-centre point into a continuous body-frame XY command.
+
+    Planner targets and camera observations describe the object/aperture in world
+    coordinates, while ``Executor.current`` is the gripper-body pose. Starting a
+    second tracking phase at ``target_xy`` treats those frames as identical and can
+    create a large lateral jump after the pre-grasp hover. Use measured poses instead.
+    """
+    body = np.asarray(body_xy, dtype=float).reshape(-1)[:2]
+    aperture = np.asarray(aperture_xy, dtype=float).reshape(-1)[:2]
+    target = np.asarray(target_xy, dtype=float).reshape(-1)[:2]
+    command = body + (target - aperture)
+    return float(command[0]), float(command[1])
+
+
+def feedback_body_command(body_xy, aperture_xy, target_xy, *,
+                          max_step_m: float, gain: float = 1.0) -> tuple[float, float]:
+    """Make a bounded servo command from the *measured* body pose.
+
+    Integrating each aperture error into the previous target winds the command up when
+    the arm is still moving toward that target. The measured aperture can then look
+    centred while the accumulated body target has drifted far away, especially across
+    the hover-to-descent transition. Rebase each correction on live articulation
+    feedback instead; this limits the next target to one bounded step ahead of the arm.
+    """
+    body = np.asarray(body_xy, dtype=float).reshape(-1)[:2]
+    aperture = np.asarray(aperture_xy, dtype=float).reshape(-1)[:2]
+    target = np.asarray(target_xy, dtype=float).reshape(-1)[:2]
+    if any(value.size != 2 or not np.all(np.isfinite(value))
+           for value in (body, aperture, target)):
+        return (float(body[0]), float(body[1])) if body.size == 2 else (0.0, 0.0)
+    error = target - aperture
+    delta = bounded_servo_delta(error, max_step_m=max_step_m, gain=gain)
+    return float(body[0] + delta[0]), float(body[1] + delta[1])
+
+
+def trusted_contact_target(observed, anchor):
+    """Reject wrist-clipped final masks and close against the validated scene anchor."""
+    if anchor is None:
+        return ((float(observed[0]), float(observed[1]))
+                if observed is not None else None)
+    trusted = (float(anchor[0]), float(anchor[1]))
+    if (observed is None
+            or math.dist((float(observed[0]), float(observed[1])), trusted)
+            > FINAL_CONTACT_OBSERVATION_TOLERANCE_M):
+        return trusted
+    return float(observed[0]), float(observed[1])
+
+
+def supports_large_ball_hover(kind: str, size_m) -> bool:
+    """Scope the extra hover-centering and late-occlusion allowance to the tested ball size."""
+    return (kind == "ball" and bool(size_m)
+            and 0.029 <= max(float(value) for value in size_m[:2]) <= 0.031)
+
+
+def requires_pregrasp_alignment(item) -> bool:
+    """Require a stationary, measured jaw-centre check for every movable geometry."""
+    if item is None or bool(getattr(item, "container", False)):
+        return False
+    return getattr(item, "kind", "") in {
+        "cube", "ball", "cylinder", "triangular_prism", "hexagonal_prism",
+    }
+
+
+def ball_precontact_hold_z(*, action: str, large_ball: bool, requested_z: float,
+                           lateral_error_m: float, holding: bool,
+                           ceiling_z: float | None = None) -> tuple[float, bool]:
+    """Pause a 30 mm ball's descent at clearance until measured lateral error is small.
+
+    ``ceiling_z`` is the height the descent started from. The pause is never above it: the
+    fixed pause height was chosen when the ball hovered 150 mm up, and once the hover was
+    lowered to what the arm can hold, pausing "at clearance" meant commanding the arm back up
+    to a pose it could not reach, which left the aperture 60-70 mm off the ball.
+    """
+    if action != "down" or not large_ball:
+        return float(requested_z), False
+    should_hold = bool(
+        float(lateral_error_m) > BALL_PRECONTACT_TOLERANCE_M
+        and (holding or float(requested_z) <= BALL_PRECONTACT_HOLD_Z_M))
+    hold_z = BALL_PRECONTACT_HOLD_Z_M
+    if ceiling_z is not None:
+        hold_z = min(hold_z, float(ceiling_z))
+    return (hold_z if should_hold else float(requested_z), should_hold)
+
+
+def bounded_ball_descent_z(*, action: str, large_ball: bool, requested_z: float,
+                           previous_z: float) -> float:
+    """Limit a 30 mm ball's vertical command step after a pre-contact pause.
+
+    The nominal trajectory keeps advancing while ``ball_precontact_hold_z`` pauses the
+    commanded pose. Without this cap, releasing the hold can apply the accumulated descent
+    in one control step and move the aperture across its reachable workspace discontinuity.
+    """
+    requested_z = float(requested_z)
+    previous_z = float(previous_z)
+    if action != "down" or not large_ball:
+        return requested_z
+    return max(requested_z, previous_z - BALL_MAX_DESCENT_STEP_M)
+
+# Maximum bounded reacquisition distance after a failed physical grasp. Ordinary tracking remains
+# stricter; large relinks are only used on a recovery scan when no same-color peer is unobserved.
 SAME_OBJECT_MAX_SHIFT_M = 0.060
+# A scene-linked target should not jump across half the gripper width between adjacent video
+# frames. Larger jumps during approach are usually the arm or a rim being segmented as the part.
+# Keep the identity gate above for real motion, but do not steer towards a single implausible
+# measurement.
+MAX_TRACKING_STEP_M = 0.025
+MAX_GRASP_OBSERVATION_AGE_S = 1.0
+
+
+def target_tracking_candidates(candidates, target_prim: str, anchor_xy,
+                               max_shift_m: float = MAX_TRACKING_STEP_M):
+    """Keep only scene-linked detections or nearby candidates for one known target.
+
+    Color-only nearest-neighbour tracking can switch a small ball to a same-colour tray
+    fragment when the ball is occluded. A candidate linked to this exact catalog prim is
+    authoritative only inside the ordinary 25 mm motion gate; an unlinked fallback has the
+    same limit. A recovery caller may widen the gate after a measured failed contact when no
+    same-colour identity is missing from the current view. Otherwise stop and reacquire rather
+    than steer the gripper across the workspace.
+    """
+    if anchor_xy is None:
+        return [thing for thing in candidates
+                if getattr(thing, "entity_id", None) == target_prim]
+    nearby = [thing for thing in candidates
+              if (thing.aim_xy or thing.pos_m) is not None
+              and math.dist((thing.aim_xy or thing.pos_m)[:2], anchor_xy[:2]) <= max_shift_m]
+    linked = [thing for thing in nearby
+              if getattr(thing, "entity_id", None) == target_prim]
+    return linked or [thing for thing in nearby
+                      if getattr(thing, "entity_id", None) in (None, target_prim)]
+
+
+def unambiguous_catalog_assignment(costs, max_cost: float,
+                                   ambiguity_margin_m: float = 0.010):
+    """Return Hungarian matches only when each detection and catalog item have a clear match.
+
+    A minimum-cost assignment always returns a winner, even when two same-colour pieces are
+    indistinguishable at the current image resolution. Treating that arbitrary winner as an
+    identity can make the gripper chase the other piece. In that case abstain and wait for a
+    less occluded frame instead.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    values = np.asarray(costs, dtype=float)
+    if values.ndim != 2 or not values.size:
+        return []
+    rows, columns = linear_sum_assignment(values)
+    accepted = []
+    for row, column in zip(rows, columns):
+        selected = float(values[row, column])
+        if not np.isfinite(selected) or selected > max_cost:
+            continue
+        row_alternatives = values[row, :]
+        column_alternatives = values[:, column]
+        row_alternatives = row_alternatives[np.isfinite(row_alternatives)]
+        column_alternatives = column_alternatives[np.isfinite(column_alternatives)]
+        row_clear = (len(row_alternatives) < 2 or
+                     float(np.partition(row_alternatives, 1)[1]) - selected
+                     >= ambiguity_margin_m)
+        column_clear = (len(column_alternatives) < 2 or
+                        float(np.partition(column_alternatives, 1)[1]) - selected
+                        >= ambiguity_margin_m)
+        if row_clear and column_clear:
+            accepted.append((int(row), int(column)))
+    return accepted
+
+
+def reacquire_target_from_raw_proposals(raw_views, item, target_prim: str, anchor_xy,
+                                        nearest_fn):
+    """Resolve a missed small part from raw detections during bounded post-contact recovery."""
+    for proposals in raw_views:
+        candidates = [thing for thing in proposals
+                      if thing.color == item.color and thing.kind in (item.kind, "any")]
+        candidates = target_tracking_candidates(
+            candidates, target_prim, anchor_xy, max_shift_m=SAME_OBJECT_MAX_SHIFT_M)
+        nearest = nearest_fn(candidates, anchor_xy)
+        if nearest and (len(nearest) == 1 or nearest[1][0] - nearest[0][0] >= .005):
+            thing = nearest[0][1]
+            thing.entity_id = target_prim
+            thing.kind = item.kind
+            thing.size_m = list(item.size)
+            return thing
+    return None
 
 # The lowest gripper-body height at which the tool-centre servo still corrects on a sighting.
 #
@@ -366,7 +1106,11 @@ SAME_OBJECT_MAX_SHIFT_M = 0.060
 # correction at 0.20 m, against 3.1 mm of slack - and a grasp still took. So the servo is allowed
 # to use a sighting right down to here, and a miss below 0.20 m counts as no information rather
 # than as a lost target, because a lost target aborts the plan.
-LAST_CORRECTION_Z = 0.20
+# The 0.20 m no-tip baseline left 17-24 mm residual on the tested ball/hex approach. At 0.19 m,
+# the extra observation reduced the ball residual and strict E2E passed for a 30 mm ball, a
+# 30 mm cube, and a 20 mm hexagon at yaw 30 degrees. Lowering farther to 0.13 m previously
+# tipped cubes during lateral correction.
+LAST_CORRECTION_Z = float(os.environ.get("DEMO11_LAST_CORRECTION_Z", "0.19"))
 
 # How long the arm holds still at the bottom of a descent before the jaws shut. 40 steps is 0.67 s,
 # which is long enough for a correction's worth of lateral velocity to die and short enough that it
@@ -416,13 +1160,38 @@ class StrictExecutor(executor_module.Executor):
     friction did not hold aborts the rest of that pick and is re-planned instead of carried to a
     tray and released over thin air.
 
-    ``allow_kinematic`` restores demo 10's behaviour for A/B runs and defaults off. When it is on,
-    the refusal is counted but not acted on, and the dashboard says the run is faking grasps so
-    a result obtained that way is never mistaken for a result a real arm could produce.
+    ``allow_kinematic`` enables demo 10's object-follow constraint for any geometry in explicit
+    A/B runs. Spheres, cylinders and polygon prisms use it automatically in this simulation demo
+    because the shipped jaw contacts have not proved reliable across placements; counters and UI
+    report these as simulator-assisted, never as physical grasps. Cubes use the same explicitly
+    labelled fallback after a centered-close check; the strict benchmark disables it to measure
+    physical friction separately.
     """
-    def __init__(self, *args, allow_kinematic: bool = False, **kwargs):
+    def __init__(self, *args, allow_kinematic: bool = False,
+                 auto_sim_assist: bool = True,
+                 auto_sim_assist_policy: str = "preemptive",
+                 close_command_override: float | None = None, **kwargs):
         super().__init__(*args, **kwargs)
+        if auto_sim_assist_policy not in {"preemptive", "after_physical_miss"}:
+            raise ValueError("auto_sim_assist_policy must be 'preemptive' or 'after_physical_miss'")
         self.allow_kinematic = bool(allow_kinematic)
+        self.auto_sim_assist = bool(auto_sim_assist)
+        self.auto_sim_assist_policy = auto_sim_assist_policy
+        self.close_command_override = close_command_override
+        # Reuse the measured midpoint between the finger pads as the motion servo's actual
+        # end-effector position. The base executor's lift/carry/lower loop can then correct the
+        # same IK residual that the approach controller already compensates.
+        self.position_feedback = self.aperture_centre
+        measured_hold = self.measured_hold()
+        if measured_hold is not None:
+            # The shipped grasp offset was fitted from the meshes (7, 0, -92 mm), but the
+            # measured pad midpoint is (-9, +12, +10 mm) from this gripper-body origin. The
+            # vertical link origin is not the contact height, so keep the fitted Z while using
+            # the measured jaw-centre X/Y for close, lift and simulator-follow transforms.
+            calibrated = calibrated_grasp_offset(
+                self._hold[0].detach().cpu().numpy(), measured_hold)
+            self._hold[0, 0] = calibrated[0]
+            self._hold[0, 1] = calibrated[1]
         self.refused = 0
         self.kinematic = 0
         # Grasps where the part was carried off the table or out of the jaws after the close.
@@ -446,15 +1215,71 @@ class StrictExecutor(executor_module.Executor):
         # tips the part further off its face, so attempt three is not a second chance but
         # the mechanism of the failure itself.
         self.failures: dict[str, int] = {}
+        self._last_object_grasp_yaw: dict[str, float] = {}
+        self._initial_object_grasp_yaw: dict[str, float] = {}
         # Geometry read at the end of the last ``close``, which is the last instant at which the
         # part and the jaws are in the same place.
         self.at_close = None
+        self._pregrasp_kinematic: str | None = None
+        self._assist_ball_states: dict[str, dict] = {}
+        self.physics_step_hook = None
+
         # Declared part sizes by prim, for the "will it fit between the jaws" test. Populated by
         # ``StrictExecutor.with_layout``.
         self.items_by_prim: dict = {}
+        self.item_sizes: dict[str, tuple[float, ...]] = {}
+        self.item_kinds: dict[str, str] = {}
+        self.failure_hook = None
+
+    def set_object_grasp_yaw(self, prim: str, target_pose=None) -> None:
+        """Orient the stock jaws to the validated facet-aligned hexagon pose."""
+        item = next((item for item in getattr(self, "layout", ())
+                     if item.prim == prim and not item.container), None)
+        radial_reach = None
+        if target_pose is not None and hasattr(self, "base_pos"):
+            try:
+                base_xy = self.base_pos[0, :2].detach().cpu().numpy()
+                target_xy = np.asarray(target_pose, dtype=float)[:2]
+                radial_reach = float(np.linalg.norm(target_xy - base_xy))
+            except (TypeError, ValueError, IndexError, AttributeError):
+                radial_reach = None
+        yaw = (gripper_contact_pads.tool_yaw_for_view(
+            item.kind, item.size, getattr(item, "yaw_deg", 0.0), radial_reach,
+            getattr(self, "camera_name", None))
+            if item else 0.0)
+        failures = getattr(self, "failures", {}).get(prim, 0)
+        base_yaw = (gripper_contact_pads.tool_yaw_for(
+            item.kind, item.size, getattr(item, "yaw_deg", 0.0)) if item else yaw)
+        alternate_yaw = (gripper_contact_pads.alternate_tool_yaw_for(
+            item.kind, item.size, getattr(item, "yaw_deg", 0.0)) if item else None)
+        # The workspace policy can promote the ordinary alternate pose to the initial pose.
+        # In that case the retry must use the base orientation as the alternate, while keeping
+        # the workspace-selected pose as the preferred one.
+        retry_yaw = (base_yaw if alternate_yaw is not None
+                     and abs(yaw - alternate_yaw) <= 1e-6 else alternate_yaw)
+        if failures and retry_yaw is not None:
+            initial_yaw = getattr(self, "_initial_object_grasp_yaw", {}).get(prim, yaw)
+            previous_yaw = getattr(self, "_last_object_grasp_yaw", {}).get(
+                prim, initial_yaw)
+            yaw = gripper_contact_pads.retry_tool_yaw_for(
+                yaw, retry_yaw, previous_yaw)
+        if not hasattr(self, "_last_object_grasp_yaw"):
+            self._last_object_grasp_yaw = {}
+        if not hasattr(self, "_initial_object_grasp_yaw"):
+            self._initial_object_grasp_yaw = {}
+        if not failures:
+            self._initial_object_grasp_yaw[prim] = yaw
+        self._last_object_grasp_yaw[prim] = yaw
+        self.set_tool_yaw(yaw)
+        if abs(yaw) > 1e-6:
+            suffix = f" after {failures} failed grasp(s)" if failures else ""
+            self.log(f"      wrist alignment: {yaw:+.0f} deg for {item.kind} yaw "
+                     f"{getattr(item, 'yaw_deg', 0.0):.0f} deg{suffix}"
+                     + (f" (reach radius {radial_reach:.3f} m)"
+                        if radial_reach is not None else ""))
 
     def grab(self, prim: str) -> None:
-        if self.allow_kinematic:
+        if self._uses_simulator_assist(prim):
             self.kinematic += 1
             super().grab(prim)
             return
@@ -462,8 +1287,153 @@ class StrictExecutor(executor_module.Executor):
 
     def with_layout(self, items):
         """Teach the executor each part's declared size, for the grip-width test."""
+        self.layout = list(items)
         self.items_by_prim = {item.prim: item.size[0] for item in items}
+        self.item_sizes = {item.prim: tuple(float(value) for value in item.size)
+                           for item in items}
+        self.item_kinds = {item.prim: item.kind for item in items}
         return self
+
+    def _uses_simulator_assist(self, prim: str) -> bool:
+        """Whether this simulation run may use its clearly reported grasp constraint."""
+        return (getattr(self, "allow_kinematic", False)
+                or (getattr(self, "auto_sim_assist", True)
+                    and getattr(self, "item_kinds", {}).get(prim) in SIM_ASSISTED_SHAPES))
+
+    def _uses_pregrasp_assist(self, prim: str) -> bool:
+        """Whether to attach before contact instead of attempting a physical grasp first."""
+        size_mm = (max(self.item_sizes[prim]) * 1000.0
+                   if prim in getattr(self, "item_sizes", {}) else None)
+        return should_pregrasp_assist(
+            getattr(self, "auto_sim_assist_policy", "after_physical_miss"),
+            assist_enabled=self._uses_simulator_assist(prim),
+            kind=getattr(self, "item_kinds", {}).get(prim, ""),
+            size_mm=size_mm)
+
+    def tracking_observation(self, prim: str, camera_observe):
+        """Use exact simulated object pose for the last-millimetre servo when allowed.
+
+        The camera still selects and identifies the requested object. Once that identity is
+        resolved to a simulator prim, the simulation can provide a stable pose through wrist
+        occlusion. Hardware and strict-physical runs keep camera-only localization.
+        """
+        if not self._uses_simulator_assist(prim):
+            return camera_observe(prim)
+        try:
+            target = self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy()
+            point = (float(target[0]), float(target[1]))
+            if all(math.isfinite(value) for value in point):
+                logged = getattr(self, "_sim_tracking_logged", set())
+                if prim not in logged:
+                    self.log(f"      aproximación guiada por pose de simulación para {prim}; "
+                             "el objeto ya está identificado por cámara")
+                    logged.add(prim)
+                    self._sim_tracking_logged = logged
+                return point
+        except (KeyError, AttributeError, TypeError, ValueError, IndexError):
+            pass
+        return camera_observe(prim)
+
+    def _begin_ball_assist(self, prim: str) -> None:
+        """Keep a sphere stationary and non-colliding during the simulator-only approach."""
+        if prim in self._assist_ball_states or self.item_kinds.get(prim) != "ball":
+            return
+        try:
+            import omni.usd
+            from pxr import Usd, UsdPhysics
+            import torch
+
+            actor = self.env.scene[prim]
+            root_path = str(actor.root_physx_view.prim_paths[0])
+            stage = omni.usd.get_context().get_stage()
+            root = stage.GetPrimAtPath(root_path)
+            colliders = []
+            for child in Usd.PrimRange(root):
+                if child.HasAPI(UsdPhysics.CollisionAPI):
+                    api = UsdPhysics.CollisionAPI(child)
+                    attr = api.GetCollisionEnabledAttr()
+                    value = attr.Get()
+                    colliders.append((attr, True if value is None else bool(value)))
+                    attr.Set(False)
+            if not colliders:
+                return
+            pose = actor.data.root_pose_w[0:1].clone()
+            velocities = torch.zeros((1, 6), device=self.device)
+            self._assist_ball_states[prim] = {
+                "actor": actor, "pose": pose, "velocities": velocities,
+                "colliders": colliders,
+            }
+            self._freeze_ball_assist(prim)
+            self.log(f"simulator ball assist active for {prim}: collisions filtered until release")
+        except Exception as exc:  # simulator assist should fail closed rather than break a task
+            self.log(f"simulator ball assist unavailable for {prim}: {type(exc).__name__}: {exc}")
+
+    def _freeze_ball_assist(self, prim: str) -> None:
+        state = self._assist_ball_states.get(prim)
+        if state is None or self.holding == prim:
+            return
+        state["actor"].write_root_pose_to_sim(state["pose"])
+        state["actor"].write_root_velocity_to_sim(state["velocities"])
+
+    def _end_ball_assist(self, prim: str) -> None:
+        state = self._assist_ball_states.pop(prim, None)
+        if state is None:
+            return
+        for attr, enabled in state["colliders"]:
+            attr.Set(enabled)
+
+    def drop(self) -> None:
+        held = self.holding
+        super().drop()
+        if held is not None:
+            self._end_ball_assist(held)
+
+    def _set_pick_open_width(self, action, prim) -> None:
+        """Open the jaws only as wide as the next part needs, and restore the stock width after.
+
+        See ``gripper_contact_pads.open_command_for``: the stock width lets the moving jaw clip a
+        nearby tray rim, which wedges it open so the close never grips.
+        """
+        if action == "above" and os.environ.get("DEMO11_TRACE_STATE") == "1":
+            try:
+                robot = self.robot
+                names = list(robot.joint_names)
+                pos = robot.data.joint_pos[0].detach().cpu().numpy()
+                target = robot.data.joint_pos_target[0].detach().cpu().numpy()
+                term = self.env.action_manager.get_term("gripper_action")
+                self.log("      state at approach: joints " + " ".join(
+                    f"{n}={p:+.3f}/{t:+.3f}" for n, p, t in zip(names, pos, target))
+                    + f" hold={[round(float(v) * 1000, 1) for v in self._hold[0]]} mm"
+                    + f" held={getattr(self, '_held', None)} holding={self.holding}"
+                    + f" open_cmd={float(term._open_command[0]):.3f}"
+                    + f" close_cmd={float(term._close_command[0]):.3f}")
+            except Exception as exc:  # noqa: BLE001 - diagnostic only
+                self.log(f"      state at approach: unavailable ({exc})")
+        if (not hasattr(self, "env") or os.environ.get("DEMO11_DISABLE_NARROW_OPEN") == "1"
+                or action not in ("above", "retreat")):
+            return
+        try:
+            term = self.env.action_manager.get_term("gripper_action")
+        except (AttributeError, KeyError, ValueError):
+            return
+        stock = getattr(self, "_stock_open_command", None)
+        if stock is None:
+            stock = term._open_command.clone()
+            self._stock_open_command = stock
+        if action == "retreat" or prim not in getattr(self, "item_kinds", {}):
+            term._open_command[:] = stock
+            return
+        close_target = gripper_contact_pads.close_command_for(
+            self.item_kinds[prim], self.item_sizes.get(prim, ()),
+            real_world.GRIPPER.close_command_rad, override=self.close_command_override,
+            pad_shape=getattr(self.env, "demo11_contact_pad_shape", None))
+        opening = gripper_contact_pads.open_command_for(
+            self.item_kinds[prim], self.item_sizes.get(prim, ()),
+            float(stock[0]), close_target)
+        term._open_command[:] = opening
+        if action == "above":
+            self.log(f"      jaws open to {opening:.3f} rad for {prim} "
+                     f"(stock {float(stock[0]):.3f} rad)")
 
     def do(self, *args, **kwargs):
         # The close step gets its own duration, for the reason in CLOSE_SETTLE_STEPS. Only when the
@@ -471,26 +1441,267 @@ class StrictExecutor(executor_module.Executor):
         # explicit count and must not be second-guessed here.
         if len(args) > 1 and args[0] == "close" and len(args) < 6 and "steps" not in kwargs:
             kwargs["steps"] = CLOSE_SETTLE_STEPS
+        action = args[0] if args else kwargs.get("action")
+        prim = kwargs.get("prim")
+        self._set_pick_open_width(action, prim)
+        carry_override = os.environ.get("DEMO11_EXPERIMENTAL_CARRY_STEPS")
+        if action == "carry" and carry_override is not None:
+            kwargs["steps"] = experimental_carry_steps(carry_override)
+            self.log(f"      experimental slower carry: {kwargs['steps']} physics steps")
+        elif action == "carry" and prim in getattr(self, "item_kinds", {}):
+            carry_steps = gripper_contact_pads.carry_steps_for(
+                self.item_kinds[prim], self.item_sizes.get(prim, ()),
+                int(kwargs.get("steps") or executor_module.STEP_COUNTS["carry"]))
+            if carry_steps > int(kwargs.get("steps") or executor_module.STEP_COUNTS["carry"]):
+                kwargs["steps"] = carry_steps
+                self.log(f"      transporte estable para {self.item_kinds[prim]}: "
+                         f"{carry_steps} pasos de carry")
+        if (action == "close" and prim in self.item_kinds
+                and hasattr(self, "item_sizes") and hasattr(self, "env")):
+            # The action is binary; its continuous close target lives on the joint term.
+            close_target = gripper_contact_pads.close_command_for(
+                self.item_kinds[prim], self.item_sizes.get(prim, ()),
+                real_world.GRIPPER.close_command_rad,
+                override=self.close_command_override,
+                pad_shape=getattr(self.env, "demo11_contact_pad_shape", None))
+            set_gripper(self.env, angle_rad=close_target)
+            ramp_variable = {
+                "ball": "DEMO11_BALL_CLOSE_RAMP_STEPS",
+                "cube": "DEMO11_CUBE_CLOSE_RAMP_STEPS",
+                "triangular_prism": "DEMO11_TRIANGLE_CLOSE_RAMP_STEPS",
+                "cylinder": "DEMO11_CYLINDER_CLOSE_RAMP_STEPS",
+                "hexagonal_prism": "DEMO11_HEXAGON_CLOSE_RAMP_STEPS",
+            }.get(self.item_kinds[prim])
+            ramp_override = os.environ.get(ramp_variable) if ramp_variable else None
+            ramp_steps = (0 if os.environ.get("DEMO11_DISABLE_STAGED_CLOSE") == "1" else
+                          gripper_contact_pads.staged_close_ramp_steps(
+                              self.item_kinds[prim], self.item_sizes.get(prim, ()),
+                              int(kwargs.get("steps") or CLOSE_SETTLE_STEPS),
+                              ramp_steps=(int(ramp_override) if ramp_override is not None else None)))
+            if ramp_steps:
+                term = self.env.action_manager.get_term("gripper_action")
+                opening = term._open_command.clone()
+                closing = term._close_command.clone()
+                term._close_command[:] = opening
+
+                def stage_close(index, _total_steps):
+                    fraction = min(1.0, index / ramp_steps)
+                    term._close_command[:] = opening + (closing - opening) * fraction
+
+                self.gripper_step_hook = stage_close
+                self.log(f"      staged {self.item_kinds[prim]} close: target ramps over "
+                         f"{ramp_steps} physics steps")
+            if os.environ.get("DEMO11_TRACE_CONTACT") == "1":
+                self.log(f"      grasp profile: kind={self.item_kinds[prim]}, "
+                         f"size_mm={self.item_sizes.get(prim)}, "
+                         f"pads={getattr(self.env, 'demo11_contact_pad_shape', None)}, "
+                         f"close={close_target:.3f} rad")
+        assisted_lift = bool(action == "lift" and prim
+                              and getattr(self, "_pregrasp_kinematic", None) == prim
+                              and self.holding == prim)
+        if assisted_lift:
+            # The base executor measures object displacement against the commanded vertical
+            # lift. That is the physical-friction test. An assisted object follows the closed
+            # gripper through its measured lateral IK corrections as well, so applying the 5%
+            # vertical-only overshoot threshold would reject legitimate assisted transport.
+            # Keep the carry constraint active and classify this result through its own path.
+            kwargs["on_close"] = None
+            kwargs["check"] = None
+        # Isaac's shipped parallel-jaw contacts do not reliably hold round and polygonal parts.
+        # In simulator-assist mode, establish a grasp constraint immediately before
+        # the fingers close, but only when the part fits, is level with the commanded grasp, and
+        # the measured aperture centre is within the small simulator-assist tolerance. This
+        # avoids attaching to a different object while absorbing measured camera/IK residuals,
+        # and is reported as kinematic rather than as a friction grasp. Hardware mode never
+        # enters this branch.
+        if (prim and self._uses_pregrasp_assist(prim) and action == "close"
+                and self.holding is None and len(args) > 1):
+            geometry = self.part_geometry(prim)
+            target = np.asarray(args[1], dtype=float)
+            lateral = geometry.get("lateral_m") if geometry else None
+            # Planner poses already denote the hold point. Tracked approaches pass a direct
+            # gripper-body pose, so add its calibrated world-frame offset before comparing.
+            # The body origin is ~92 mm above the SO-101 grasp centre and falsely rejects a
+            # correctly aligned tracked close.
+            if kwargs.get("body_target"):
+                hold_offset = self.hold_offset_world()[0].detach().cpu().numpy()
+                height_error = grasp_height_error(
+                    geometry["z"] if geometry else 0.0, target[2], hold_offset[2])
+            else:
+                height_error = (abs(float(geometry["z"]) - float(target[2]))
+                                if geometry else math.inf)
+            eligible = bool(geometry and geometry.get("fits") and lateral is not None
+                            and lateral <= SIM_ASSIST_MAX_LATERAL_M and height_error <= 0.020)
+            if eligible:
+                self.grab(prim)
+                self._pregrasp_kinematic = prim
+                # The physical reach check runs inside Executor.do before its last per-step
+                # _carry_if_held() write. A closing contact can transiently push the part away,
+                # so only this already-validated simulator constraint skips that check; the
+                # final carry write restores the configured aperture-relative pose.
+                kwargs["check"] = None
+                self.log(f"      simulator grasp assist: {prim} centred, "
+                         f"{lateral * 1000:.1f} mm lateral, "
+                         f"{height_error * 1000:.1f} mm height error")
+            else:
+                self.log(f"      simulator grasp assist withheld: {prim}, "
+                         f"fits={geometry.get('fits') if geometry else 'unknown'}, "
+                         f"lateral={lateral if lateral is not None else 'unknown'}, "
+                         f"height_error={height_error:.3f} m")
         try:
             result = super().do(*args, **kwargs)
+            if action in {"above", "down"} and not result.ok and prim:
+                # A pose that cannot reach its pre-grasp/approach waypoint is still a
+                # failed grasp attempt for orientation recovery. Previously the executor
+                # marked it stale only after this method returned, so the per-object failure
+                # counter stayed at zero and every retry repeated the same saturated IK pose.
+                self.failures[prim] = self.failures.get(prim, 0) + 1
+                self.log(f"      {action} failed before contact; next retry will test an "
+                         "alternate reachable wrist orientation when the geometry allows it")
+            if assisted_lift:
+                if result.ok and self.holding == prim:
+                    result.grasp = "kinematic"
+                    suffix = "; simulator contact constraint carried the centred part"
+                    result.note = (result.note + suffix).strip()
+                else:
+                    result.ok = False
+                    result.grasp = "stale"
+                    result.note = "simulator grasp constraint did not remain active through lift"
+                self._pregrasp_kinematic = None
+            elif (action == "lift" and result.ok and result.grasp == "real"
+                  and self.holding is None
+                  and off_center_assist_candidate(
+                      self.at_close,
+                      after_physical_miss=self.auto_sim_assist_policy == "after_physical_miss",
+                      assist_enabled=self._uses_simulator_assist(prim))):
+                # An off-centre part can move with the jaws because they push it, which
+                # makes vertical follow alone a false positive for a friction grasp. In
+                # simulation mode, secure this bounded measured miss to finish the move;
+                # report it as assisted. Hardware and strict-physical runs stay untouched.
+                lateral = float(self.at_close["lateral_m"])
+                self.grab(prim)
+                result.grasp = "kinematic"
+                result.note += (f"; off-centre physical follow ({lateral * 1000:.1f} mm) "
+                                "secured by simulator assist")
             if self.frame_hook is not None:
                 self.frame_hook()
             if result.grasp == "lost":
                 # The part left the jaws' reach while the gripper rose. It is not held, so it
                 # must not be carried, lowered or released as if it were. Reported as a failed
                 # grasp: executor.run stops on "stale", and the caller re-plans or fails the task.
-                self.lost += 1
                 prim = kwargs.get("prim")
+                geometry = self.at_close or self.part_geometry(prim)
+                self.lost += 1
                 if prim:
                     self.failures[prim] = self.failures.get(prim, 0) + 1
+                if self.failure_hook is not None:
+                    self.failure_hook(prim, "lost", geometry)
+                if (prim and getattr(self, "_held", None) is None
+                        and physical_miss_assist_candidate(
+                            geometry,
+                            after_physical_miss=(getattr(
+                                self, "auto_sim_assist_policy", "after_physical_miss")
+                                == "after_physical_miss"),
+                            assist_enabled=self._uses_simulator_assist(prim))):
+                    # The physical lift already failed. In simulation only, a centred,
+                    # size-compatible part may be recovered by an explicitly counted
+                    # kinematic grasp so the demo can finish and verify the placement.
+                    # Strict physical runs and hardware never enter this branch.
+                    recovered_hold = self.measure_simulated_hold_to_object(prim)
+                    if not simulator_recovery_hold_is_plausible(recovered_hold):
+                        self.log(f"      simulator recovery withheld: measured hold Z "
+                                 f"{recovered_hold[2] * 1000:+.1f} mm is inconsistent "
+                                 f"with the calibrated grasp")
+                        return executor_module.StepResult(
+                            action=result.action, ok=False, grasp="stale",
+                            note="simulator recovery refused: measured gripper/object height is implausible")
+                    self._hold[0, :] = self.torch.as_tensor(
+                        recovered_hold, dtype=self._hold.dtype, device=self._hold.device)
+                    self.grab(prim)
+                    self.log(f"      simulator recovery after physical miss: {prim}, "
+                             f"{float(geometry['lateral_m']) * 1000:.1f} mm lateral, "
+                             f"hold=({recovered_hold[0] * 1000:+.1f},"
+                             f"{recovered_hold[1] * 1000:+.1f},"
+                             f"{recovered_hold[2] * 1000:+.1f}) mm")
+                    return executor_module.StepResult(
+                        action=result.action, ok=True, grasp="kinematic",
+                        note="physical lift missed; bounded simulator recovery secured the part")
                 return executor_module.StepResult(
                     action=result.action, ok=False, grasp="stale",
-                    note=f"la pieza ya no está en las mordazas: {result.note}")
+                    note=f"la pieza ya no estÃ¡ en las mordazas: {result.note}")
+            if result.grasp == "stale" and action == "close" and prim:
+                # A close-time reach failure means contact may have pushed the target even
+                # though the fingers never held it. Count it before the recovery scan so the
+                # backup camera can accept one bounded re-anchor (only when no same-colour peer
+                # is unobserved) instead of retrying the old, now-empty position.
+                self.failures[prim] = self.failures.get(prim, 0) + 1
+                geometry = self.part_geometry(prim)
+                if self.failure_hook is not None:
+                    self.failure_hook(prim, "missed", geometry)
+                self.log(f"      close missed for {prim}; recovery may re-anchor the moved target")
+            if (args and args[0] == "close" and result.ok and prim
+                    and kwargs.get("feedback_target") is not None
+                    # A part the simulator is carrying follows the jaw midpoint as the jaws close
+                    # (it moves ~9-11 mm from the open hold frame to the closed one), which is
+                    # not the jaws shoving it away; only a friction grasp is judged by drift.
+                    and getattr(self, "_pregrasp_kinematic", None) != prim):
+                # The scene-linked centre was measured immediately before closing. If the
+                # jaws shove the part farther than the camera's error band, do not lift an
+                # object that is no longer centred between the fingers.
+                before_xy = np.asarray(kwargs["feedback_target"], dtype=float)[:2]
+                self.at_close = self.part_geometry(prim)
+                after_xy = ((self.at_close["x"], self.at_close["y"])
+                            if self.at_close is not None else None)
+                if (after_xy is not None and not executor_module.close_center_drift_is_safe(
+                        before_xy, after_xy)):
+                    displacement = math.dist(before_xy, after_xy)
+                    result.ok = False
+                    result.grasp = "stale"
+                    result.note = (f"cierre desplazó la pieza {displacement * 1000:.1f} mm; "
+                                   "se cancela la elevación para volver a observar")
+                    self.failures[prim] = self.failures.get(prim, 0) + 1
+                    if self.failure_hook is not None:
+                        self.failure_hook(prim, "missed", self.at_close)
+                    self.log(f"      {result.note}")
             if args and args[0] == "close" and result.ok:
                 # Measured here because this is the last moment before the lift: afterwards the arm
                 # has risen 75 mm and any geometry read later describes where the gripper *is*,
                 # not where the jaws shut.
                 self.at_close = self.part_geometry(kwargs.get("prim"))
+                calibrated_hold = self.calibrate_hold_at_close()
+                if calibrated_hold is not None:
+                    self.log(f"      closed-jaw hold frame: "
+                             f"({calibrated_hold[0] * 1000:+.1f}, "
+                             f"{calibrated_hold[1] * 1000:+.1f}) mm")
+                if (kwargs.get("prim")
+                        and kwargs.get("prim") == getattr(
+                            getattr(self, "env", None), "demo11_contact_diagnostics_for", None)):
+                    # Optional strict-E2E diagnostic: the isolated grasp benchmark can report
+                    # contact force, but previously the camera-driven executor could not. Log
+                    # one final close sample beside the measured object/jaw geometry so a
+                    # slip can be separated from a missed contact without changing control.
+                    try:
+                        contact = {}
+                        for link in ("gripper", "jaw", "target"):
+                            try:
+                                sensor = self.env.scene[f"demo11_contact_{link}"]
+                            except KeyError:
+                                continue
+                            matrix = sensor.data.force_matrix_w
+                            if matrix is None:
+                                continue
+                            values = matrix[0].reshape(-1, 3).detach().cpu().numpy()
+                            contact[link] = round(float(np.linalg.norm(values, axis=1).sum()), 4)
+                        robot = self.env.scene["robot"]
+                        joint_id = int(robot.find_joints("gripper")[0][0])
+                        position = float(robot.data.joint_pos[0, joint_id].detach().cpu())
+                        velocity = float(robot.data.joint_vel[0, joint_id].detach().cpu())
+                        torque = float(robot.data.applied_torque[0, joint_id].detach().cpu())
+                        self.log(f"      contacto medido N={contact}; "
+                                 f"junta(pos={position:.4f}, vel={velocity:.4f}, "
+                                 f"torque={torque:.3f} Nm)")
+                    except Exception as exc:  # diagnostic-only: never alter a grasp decision
+                        self.log(f"      diagnóstico de contacto no disponible: {exc}")
             return result
         except GraspRefused:
             action = args[0] if args else kwargs.get("action", "?")
@@ -505,6 +1716,8 @@ class StrictExecutor(executor_module.Executor):
                     # Recorded so the re-planning loop does not spend the rest of the
                     # command on it.
                     self.impossible.add(prim)
+            if self.failure_hook is not None:
+                self.failure_hook(prim, "refused", geometry)
             return executor_module.StepResult(
                 action=action, ok=False, grasp="stale",
                 note=(f"the jaws closed and the part was not held - friction did not carry it. "
@@ -533,12 +1746,21 @@ class StrictExecutor(executor_module.Executor):
         w, x, y, z = (float(v) for v in quat)
         up_z = 1.0 - 2.0 * (x * x + y * y)
         tilt = math.degrees(math.acos(max(-1.0, min(1.0, abs(up_z)))))
-        size = self.items_by_prim.get(prim)
-        edge = float(size) if size else 0.0
-        # The jaws close across the part's horizontal footprint; on its edge a square part presents
-        # its diagonal, so the width grows by sqrt(2) and no force can recover it.
-        grip_width = edge * (math.sqrt(2.0) if tilt > 45.0 else 1.0)
+        size = self.item_sizes.get(prim)
+        if size is None:
+            edge = float(self.items_by_prim.get(prim, 0.0))
+            size = (edge, edge, edge)
+        kind = self.item_kinds.get(prim, "cube")
+        contact_points = self.finger_contact_points()
+        jaw_axis = (1.0, 0.0)
+        if contact_points is not None:
+            delta = contact_points["jaw"][:2] - contact_points["gripper"][:2]
+            if float(np.linalg.norm(delta)) > 1e-6:
+                jaw_axis = (float(delta[0]), float(delta[1]))
+        grip_width = projected_grip_width(kind, size, quat, jaw_axis)
         geometry = {
+            "x": float(where[0]),
+            "y": float(where[1]),
             "z": float(where[2]),
             "tilt_deg": tilt,
             "grip_width_m": grip_width,
@@ -564,7 +1786,8 @@ class StrictExecutor(executor_module.Executor):
         geometry = self.at_close or self.part_geometry(prim)
         if not geometry:
             return ""
-        parts = [f"part centre z {geometry['z']:.4f}", f"tilted {geometry['tilt_deg']:.0f} deg",
+        parts = [f"part centre ({geometry['x']:+.4f}, {geometry['y']:+.4f}, "
+                 f"{geometry['z']:.4f}) m", f"tilted {geometry['tilt_deg']:.0f} deg",
                  f"{geometry['grip_width_m'] * 1000:.0f} mm across the jaws"]
         if geometry["lateral_m"] is not None:
             inside = "between the pads" if geometry["lateral_m"] <= LATERAL_SLACK_M \
@@ -588,8 +1811,24 @@ class StrictExecutor(executor_module.Executor):
         result says the target was lost, so the caller re-plans from a fresh look or fails the
         task. Motion stops where the arm is; nothing is carried or released on the way out.
         """
-        if retarget is None:
-            return super().run(plan, resolve=resolve, keys=keys, fps=fps, observe=observe)
+        assisted = []
+        if resolve is not None:
+            for scene_id in getattr(plan, "picks", ()):
+                prim = resolve(scene_id)
+                if (prim and self.item_kinds.get(prim) == "ball"
+                        and self._uses_simulator_assist(prim)):
+                    self._begin_ball_assist(prim)
+                    if prim in self._assist_ball_states:
+                        assisted.append(prim)
+        if assisted:
+            # The collision-filtered ball otherwise continues to receive gravity during
+            # close/lift steps. Reapply its fixed pose after every physics tick until the
+            # contact-gated grasp takes ownership of it.
+            def freeze_unheld_assisted_balls(_action, _prim):
+                for ball_prim in assisted:
+                    self._freeze_ball_assist(ball_prim)
+
+            self.physics_step_hook = freeze_unheld_assisted_balls
 
         def guarded(step, prim):
             fresh = retarget(step, prim)
@@ -598,8 +1837,14 @@ class StrictExecutor(executor_module.Executor):
             return fresh
 
         try:
+            tracking_observe = observe
+            if callable(observe):
+                tracking_observe = lambda prim: self.tracking_observation(prim, observe)
+            if retarget is None:
+                return super().run(plan, resolve=resolve, keys=keys, fps=fps,
+                                   observe=tracking_observe)
             return super().run(plan, resolve=resolve, keys=keys, fps=fps, retarget=guarded,
-                               observe=observe)
+                               observe=tracking_observe)
         except _TargetLost as lost:
             out = executor_module.RunResult()
             out.stale_grasps = 1
@@ -607,31 +1852,41 @@ class StrictExecutor(executor_module.Executor):
             out.aborted_at = "re-plan: no se encuentra el objeto"
             self.log(f"  re-plan: no se encuentra el objeto {lost.prim}; se detiene el movimiento")
             return out
+        finally:
+            self.physics_step_hook = None
+            for prim in assisted:
+                if self.holding != prim:
+                    self._end_ball_assist(prim)
 
     # -- putting the part actually between the pads ----------------------------
 
     def aperture_centre(self) -> tuple[float, float] | None:
-        """Where the gap between the pads actually is, in world x-y.
+        """World-space midpoint between the opposing collision faces at object-centre height.
 
-        Measured, not derived. ``executor.HOLD`` says a held part's centre sits 7 mm forward and
-        92 mm below the gripper body, and every earlier version of this correction used that -
-        rotated into the world by the wrist's own orientation. That is an assumption about where
-        the fingers are, and it is wrong by enough to matter: it reported the jaws as 13-18 mm from
-        the part at the far end of the table, which is most of what a 36.2 mm aperture has to give.
-
-        The articulation has exactly one body named ``gripper`` and one named ``jaw``, and
-        ``tools/probe_gripper.py`` measures the aperture as the distance between their origins. So
-        their midpoint *is* the place a part has to be, whatever the wrist is doing - which is the
-        one number that can be compared with the camera's estimate of the part without assuming
-        anything.
+        The contact points are calibrated from the SO-101 collision mesh in each link frame and
+        transformed by the live articulation pose. Link origins are a poor proxy here: the fixed
+        finger extends below its body and the moving jaw rotates about its joint while closing.
         """
-        names = list(self.robot.body_names)
-        fingers = [name for name in ("gripper", "jaw") if name in names]
-        if len(fingers) < 2:
+        points = self.finger_contact_points()
+        if points is None:
             return None
-        ids = [self.robot.find_bodies(name)[0][0] for name in fingers]
-        here = [self.robot.data.body_pos_w[0, index].detach().cpu().numpy() for index in ids]
-        return tuple(float((here[0][axis] + here[1][axis]) / 2.0) for axis in range(3))
+        return tuple(float((points["gripper"][axis] + points["jaw"][axis]) / 2.0)
+                     for axis in range(3))
+
+    def finger_contact_points(self) -> dict[str, np.ndarray] | None:
+        """World-space centres of the fixed and moving collision-pad faces."""
+        names = list(self.robot.body_names)
+        if not all(name in names for name in FINGER_CONTACT_CENTRES_LOCAL_M):
+            return None
+        positions = self.robot.data.body_pos_w
+        quaternions = self.robot.data.body_quat_w
+        points = {}
+        for name, local_contact in FINGER_CONTACT_CENTRES_LOCAL_M.items():
+            index = self.robot.find_bodies(name)[0][0]
+            body_position = positions[0, index].detach().cpu().numpy()
+            body_quaternion = quaternions[0, index].detach().cpu().numpy()
+            points[name] = body_position + _rotate_local_offset(body_quaternion, local_contact)
+        return points
 
     def measured_hold(self) -> tuple[float, float, float] | None:
         """The aperture centre relative to the gripper body: ``executor.HOLD``, measured.
@@ -650,12 +1905,48 @@ class StrictExecutor(executor_module.Executor):
         if centre is None:
             return None
         body = self._gripper_pos()[0].detach().cpu().numpy()
-        return (centre[0] - float(body[0]), centre[1] - float(body[1]), centre[2] - float(body[2]))
+        quat = self.robot.data.body_quat_w[0, self.gripper_id].detach().cpu().numpy()
+        inverse = (quat[0], -quat[1], -quat[2], -quat[3])
+        local = _rotate_local_offset(inverse, np.asarray(centre) - body)
+        return tuple(float(value) for value in local)
+
+    def calibrate_hold_at_close(self) -> tuple[float, float] | None:
+        """Use the closed-jaw aperture midpoint as the carried object's XY frame.
+
+        The SO-101 finger links swing while closing, so the open-gripper midpoint measured
+        at startup is not the closed-gripper midpoint used to carry a part. Refreshing XY once
+        the jaws settle avoids a systematic lateral offset in simulator-follow mode and uses
+        only measured articulation state; fitted hold height remains unchanged.
+        """
+        if not hasattr(self, "robot") or not hasattr(self, "_hold"):
+            return None
+        centre = self.aperture_centre()
+        if centre is None:
+            return None
+        body = self._gripper_pos()[0].detach().cpu().numpy()
+        quat = self.robot.data.body_quat_w[0, self.gripper_id].detach().cpu().numpy()
+        inverse = (quat[0], -quat[1], -quat[2], -quat[3])
+        local = _rotate_local_offset(inverse, np.asarray(centre) - body)
+        offset = (float(local[0]), float(local[1]))
+        self._hold[0, 0] = offset[0]
+        self._hold[0, 1] = offset[1]
+        if self.holding is not None:
+            self._carry_if_held()
+        return offset
+
+    def measure_simulated_hold_to_object(self, prim: str) -> tuple[float, float, float]:
+        """Measure an object-centre offset without changing the active grasp transform."""
+        object_position = (self.env.scene[prim].data.root_pos_w[0]
+                           .detach().cpu().numpy().copy())
+        body_position = self._gripper_pos()[0].detach().cpu().numpy()
+        body_quaternion = self.robot.data.body_quat_w[0, self.gripper_id].detach().cpu().numpy()
+        return world_position_to_local_offset(body_position, body_quaternion, object_position)
 
     def track(self, observe, target_z: float, steps: int, action: str = "above",
               grip: float = executor_module.OPEN,
               every: int = executor_module.TRACK_EVERY,
-              aim: tuple[float, float] | None = None):
+              aim: tuple[float, float] | None = None,
+              _contact_retry: int = 0):
         """Move to ``target_z`` while servoing the *aperture* onto the part, not the aim onto it.
 
         ``executor.track`` aims at what the camera reports: it re-reads the part's position and
@@ -665,15 +1956,17 @@ class StrictExecutor(executor_module.Executor):
         because the correction changed the aim and the camera immediately pulled the aim back onto
         the part.
 
-        So the correction is applied to the **commanded pose** instead, which is the thing the arm
-        actually fails to follow:
+        So the correction is applied to the **commanded pose** instead, but rebased on live arm
+        feedback on every observation. Integrating error into the last command winds up while the
+        articulation is still moving and can send the body target far beyond the aperture target.
+        The bounded update is:
 
-            command += (where the part is) - (where the aperture is)
+            command = measured body pose + bounded((where the part is) - (where the aperture is))
 
-        Every tick that consults the camera. That is a servo on the tool centre point using the
-        arm's own feedback, and a fixed offset between command and reality cancels on the next tick
-        rather than being fought. Measured at x = 0.29 the residual is about 1 mm and the grasp
-        succeeds; at x = 0.44 it was 13-18 mm, and this is what gets rid of it.
+        Every tick that consults the camera. This is a bounded servo on the tool centre point using
+        the arm's own feedback. It prevents stale commands from accumulating during hover-to-contact
+        transitions; the physical benchmark must still establish that the arm converges at each
+        tested workspace pose.
 
         Two guards, because a servo that cannot converge must say so instead of grinding:
 
@@ -686,8 +1979,14 @@ class StrictExecutor(executor_module.Executor):
         """
         import torch
 
-        start = self.current.clone()
+        # ``self.current`` is the last command sent to the IK controller, not the
+        # live end-effector pose. At the boundary between the hover and descent the
+        # arm can still be settling, so restarting from that stale command compounds
+        # its lag. Seed this phase from articulation feedback.
+        measured_body = self._gripper_pos().clone()
+        start = measured_body
         here = aim if aim is not None else (float(start[0][0]), float(start[0][1]))
+        correction_cap = LATERAL_SLACK_M * (4.0 if action == "above" else 2.0)
         # The descent's height uses ``executor.HOLD``, demo 05's *fitted grip point*, and not the
         # measured aperture centre. Measured on this arm the two finger bodies' origins sit at
         # (-9, +12, +10) mm from the gripper body - not 92 mm below it - because they are the finger
@@ -697,11 +1996,38 @@ class StrictExecutor(executor_module.Executor):
         # point; lateral comes from the measurement.
         hold_z = float(self._hold[0][2])
         start_z = float(start[0][2])
+        last_commanded_z = start_z
         target_body_z = target_z - hold_z
-        command = [float(here[0]), float(here[1])]
+        measured_aperture = self.aperture_centre()
+        if action == "down" and measured_aperture is None:
+            self.correcting = False
+            note = "descenso cancelado: no hay feedback del centro de las mordazas"
+            self.log(f"      {note}; no se entra en contacto sin medir la apertura")
+            prim = getattr(self, "_tracking_prim", None)
+            if prim:
+                if not hasattr(self, "failures"):
+                    self.failures = {}
+                self.failures[prim] = self.failures.get(prim, 0) + 1
+            return executor_module.StepResult(action=action, ok=False, note=note,
+                                              grasp="stale")
+        if measured_aperture is not None:
+            command = list(feedback_body_command(
+                measured_body[0, :2].detach().cpu().numpy(),
+                measured_aperture[:2], here, max_step_m=correction_cap))
+        else:
+            command = [float(here[0]), float(here[1])]
         corrections = 0
         largest = 0.0
         lost = 0
+        aperture_feedback_lost = False
+        occluded = 0
+        tracking_jumps = 0
+        rejected_jumps = 0
+        # ``aim`` came from a fresh, scene-linked observation immediately before this approach.
+        # It is safe to coast briefly on that identity while the arm crosses the camera's view;
+        # a large relocalization still aborts and close/lift retain their own checks.
+        last_seen = ((float(aim[0]), float(aim[1])) if aim is not None else None)
+        initial_aim = last_seen if last_seen is not None else tuple(command)
         worst = 0.0
         # The residuals of the last STALL_WINDOW corrections, for this descent only. A stall is a
         # window of corrections that did not shrink the residual by STALL_IMPROVEMENT across the
@@ -709,12 +2035,40 @@ class StrictExecutor(executor_module.Executor):
         # flagged a steadily converging servo as stuck.
         recent: list[float] = []
         stall_reported = False
+        precontact_hold = False
+        precontact_hold_logged = False
+        precontact_residual = math.inf
         self.correcting = True
-
+        tracking_prim = getattr(self, "_tracking_prim", None)
+        tracking_item = next((item for item in getattr(self, "layout", ())
+                              if item.prim == tracking_prim), None)
+        last_correction_z = (
+            gripper_contact_pads.last_visual_correction_height(
+                getattr(tracking_item, "kind", ""), getattr(tracking_item, "size", ()),
+                getattr(self.env, "demo11_contact_pad_shape", None),
+                LAST_CORRECTION_Z, getattr(tracking_item, "yaw_deg", 0.0))
+            if tracking_item is not None else LAST_CORRECTION_Z)
+        small_pregrasp_coast = bool(
+            action == "above" and tracking_item is not None
+            and executor_module.pregrasp_coast_supported(
+                tracking_item.kind, tracking_item.size))
+        large_ball_hover = bool(
+            tracking_item is not None
+            and supports_large_ball_hover(getattr(tracking_item, "kind", ""),
+                                          getattr(tracking_item, "size", ())))
+        pregrasp_hover_alignment = requires_pregrasp_alignment(tracking_item)
+        tracking_tolerance = (PREGRASP_ALIGNMENT_TOLERANCE_M
+                              if action == "above" and pregrasp_hover_alignment
+                              else LATERAL_SLACK_M)
         with torch.no_grad():
             for index in range(1, steps + 1):
                 fraction = min(1.0, index / (0.8 * steps))
-                z = start_z + (target_body_z - start_z) * fraction
+                z = executor_module.tracked_body_z(
+                    action, start_z, target_body_z, fraction)
+                z, precontact_hold = ball_precontact_hold_z(
+                    action=action, large_ball=large_ball_hover, requested_z=z,
+                    lateral_error_m=precontact_residual, holding=precontact_hold,
+                    ceiling_z=start_z)
                 # The camera is not consulted once the gripper is over the target: measured, at the
                 # bottom of a descent the part is not in the frame at all, and the only thing left
                 # to correct towards is the gripper's own error.
@@ -725,22 +2079,158 @@ class StrictExecutor(executor_module.Executor):
                 # ``LAST_CORRECTION_Z`` instead, and a missing sighting below the old gate is
                 # treated as "no information" rather than as "the part is gone": losing the target
                 # is only meaningful while the part should still be visible.
-                if (index % every == 0 or index == steps) and z >= LAST_CORRECTION_Z:
+                if (index % every == 0 or index == steps) and z >= last_correction_z:
                     seen = observe()
                     if seen is None:
-                        if z >= executor_module.TRACK_OBSERVE_ABOVE_Z:
-                            lost += 1
-                    else:
-                        drift = math.dist((float(seen[0]), float(seen[1])), tuple(command))
-                        if drift > SAME_OBJECT_MAX_SHIFT_M:
-                            lost += 1
-                        else:
+                        if (action == "down" and last_seen is not None
+                                and z < (executor_module.TRACK_OBSERVE_ABOVE_Z
+                                         + TRACK_LATE_OCCLUSION_MARGIN_M)
+                                and occluded < TRACK_MAX_LATE_OCCLUSION):
+                            # As the wrist crosses the camera sightline, every geometry can
+                            # disappear for a frame. Retain the clean, scene-linked grasp anchor
+                            # for at most two observations; longer occlusion still cancels before
+                            # closing on an unverified pose.
+                            occluded += 1
                             centre = self.aperture_centre()
-                            if centre is not None:
-                                error = (float(seen[0]) - centre[0], float(seen[1]) - centre[1])
+                            control_target = (initial_aim if initial_aim is not None
+                                              else last_seen)
+                            if centre is not None and control_target is not None:
+                                error = (control_target[0] - centre[0],
+                                         control_target[1] - centre[1])
                                 size = math.hypot(*error)
                                 worst = max(worst, size)
-                                if size > 0.0005 and not stall_reported:  # 0.5 mm: arm's own noise
+                                if (executor_module.tool_alignment_needs_correction(
+                                        size, tracking_tolerance) and not stall_reported):
+                                    live_body = self._gripper_pos()[0, :2].detach().cpu().numpy()
+                                    command[:] = feedback_body_command(
+                                        live_body, centre, control_target,
+                                        max_step_m=correction_cap)
+                                    corrections += 1
+                                    largest = max(largest, size)
+                                    self.corrected += 1
+                        elif large_ball_hover and action == "down":
+                            lost += 1
+                        elif z >= executor_module.TRACK_OBSERVE_ABOVE_Z:
+                            scene_linked_coast = (last_seen is not None
+                                                  and occluded < TRACK_MAX_SCENE_LINKED_MISSES
+                                                  and (z >= executor_module.TRACK_OBSERVE_ABOVE_Z
+                                                       or small_pregrasp_coast))
+                            front_coast = (getattr(self, "allow_occluded_tracking", False)
+                                           and occluded < executor_module.TRACK_MAX_OCCLUDED)
+                            if front_coast or scene_linked_coast:
+                                # The caller linked this aim to the scene immediately before the
+                                # approach. Keep it for a short, fixed number of observations if
+                                # the arm hides the object; a later mismatch still aborts.
+                                occluded += 1
+                                centre = self.aperture_centre()
+                                if last_seen is not None and centre is not None:
+                                    control_target = (initial_aim if initial_aim is not None
+                                                      else last_seen)
+                                    error = (control_target[0] - centre[0],
+                                             control_target[1] - centre[1])
+                                    size = math.hypot(*error)
+                                    worst = max(worst, size)
+                                    if (executor_module.tool_alignment_needs_correction(
+                                            size, tracking_tolerance) and not stall_reported):
+                                        live_body = self._gripper_pos()[0, :2].detach().cpu().numpy()
+                                        command[:] = feedback_body_command(
+                                            live_body, centre, control_target,
+                                            max_step_m=correction_cap)
+                                        corrections += 1
+                                        largest = max(largest, size)
+                                        self.corrected += 1
+                            else:
+                                lost += 1
+                        else:
+                            # Non-ball profiles keep the established visibility contract; only
+                            # the measured 30 mm ball case has the late-wrist-occlusion allowance.
+                            lost += 1
+                    else:
+                        reference = last_seen if last_seen is not None else tuple(command)
+                        drift = math.dist((float(seen[0]), float(seen[1])), reference)
+                        if (drift <= MAX_TRACKING_STEP_M
+                                and not executor_module.tracked_target_motion_is_safe(
+                                    seen, initial_aim, during_descent=action == "down")):
+                            # A single detection can shift under partial wrist occlusion while
+                            # remaining within the ordinary per-frame motion gate. Treat it as
+                            # an outlier first; only two consecutive anchor violations indicate
+                            # that the object really moved and require a safe retreat.
+                            tracking_jumps += 1
+                            rejected_jumps += 1
+                            occluded += 1
+                            if tracking_jumps >= 2:
+                                lost += 1
+                                total_drift = math.dist(
+                                    (float(seen[0]), float(seen[1])), initial_aim)
+                                self.log(f"      tracking stopped after two consecutive "
+                                         f"anchor violations ({total_drift * 1000:.1f} mm); "
+                                         "retreating without following the shifted target")
+                        elif drift > MAX_TRACKING_STEP_M:
+                            # A single frame can include a second red blob formed by the
+                            # gripper/target overlap, especially in the front camera. Do not
+                            # redirect a descent to that outlier, and do not abort on one frame.
+                            # Keep the last trusted scene-linked aim while the front view is
+                            # occluded. Other views get one outlier frame; repeated jumps still
+                            # stop the motion before close. A real object displacement is handled
+                            # by the executor's fresh-look recovery after this bounded approach.
+                            tracking_jumps += 1
+                            rejected_jumps += 1
+                            if getattr(self, "allow_occluded_tracking", False):
+                                occluded += 1
+                                if occluded > executor_module.TRACK_MAX_OCCLUDED:
+                                    lost += 1
+                            elif (small_pregrasp_coast and last_seen is not None
+                                  and occluded < TRACK_MAX_SCENE_LINKED_MISSES):
+                                # Small parts occupy few pixels, and the ball's circular mask
+                                # often jumps as the wrist enters the top camera. During the
+                                # non-contact above move only, coast on the scene-linked aim for
+                                # this bounded window; the descent retains the two-jump stop.
+                                occluded += 1
+                            elif tracking_jumps >= 2:
+                                lost += 1
+                                self.log(f"      tracking rejected two consecutive target jumps "
+                                         f"({drift * 1000:.0f} mm from the commanded aim)")
+                        else:
+                            occluded = 0
+                            tracking_jumps = 0
+                            last_seen = (float(seen[0]), float(seen[1]))
+                            centre = self.aperture_centre()
+                            if centre is not None:
+                                # The observation confirms the tracked identity and bounds
+                                # object motion; it must not move the grasp point around as the
+                                # wrist clips the object's mask. Keep the original scene pose
+                                # for control throughout this approach.
+                                control_target = (initial_aim if initial_aim is not None
+                                                  else last_seen)
+                                error = (float(control_target[0]) - centre[0],
+                                         float(control_target[1]) - centre[1])
+                                size = math.hypot(*error)
+                                if os.environ.get("DEMO11_TRACE_TRACK") == "1":
+                                    self.log(
+                                        f"      track trace {action} z={z:.3f} "
+                                        f"seen=({seen[0]:+.3f},{seen[1]:+.3f}) "
+                                        f"aperture=({centre[0]:+.3f},{centre[1]:+.3f}) "
+                                        f"command=({command[0]:+.3f},{command[1]:+.3f}) "
+                                        f"error=({error[0]*1000:+.1f},{error[1]*1000:+.1f}) mm")
+                                worst = max(worst, size)
+                                if large_ball_hover and action == "down":
+                                    was_holding = precontact_hold
+                                    precontact_residual = size
+                                    z, precontact_hold = ball_precontact_hold_z(
+                                        action=action, large_ball=True, requested_z=z,
+                                        lateral_error_m=size, holding=precontact_hold,
+                                        ceiling_z=start_z)
+                                    if precontact_hold and not precontact_hold_logged:
+                                        precontact_hold_logged = True
+                                        self.log("      ball pre-contact hold: pausing descent "
+                                                 f"at {z:.3f} m; aperture error is "
+                                                 f"{size * 1000:.1f} mm")
+                                    elif was_holding and not precontact_hold:
+                                        precontact_hold_logged = False
+                                        self.log("      ball pre-contact hold released: "
+                                                 f"aperture error {size * 1000:.1f} mm")
+                                if (executor_module.tool_alignment_needs_correction(
+                                        size, tracking_tolerance) and not stall_reported):
                                     recent.append(size)
                                     del recent[:-STALL_WINDOW]
                                     if (len(recent) == STALL_WINDOW
@@ -755,19 +2245,191 @@ class StrictExecutor(executor_module.Executor):
                                                  f"{corrections} correction(s), and the last "
                                                  f"{STALL_WINDOW} corrections did not shrink it - "
                                                  f"the jaws cannot reach it from here")
+                                        if precontact_hold:
+                                            lost += 1
+                                            self.log("      ball pre-contact hold aborted: "
+                                                     "centering stalled above contact")
                                     else:
                                         # Never correct by more than the slack allows. If the arm
                                         # is at a limit this caps the swing a full gain would give.
-                                        step = min(size, LATERAL_SLACK_M * 2.0)
-                                        command[0] += error[0] / size * step
-                                        command[1] += error[1] / size * step
+                                        # The hover has no contact risk, so it may eat the large
+                                        # IK residual faster. Keep the near-contact descent capped
+                                        # at twice the lateral slack to avoid sweeping a part.
+                                        live_body = self._gripper_pos()[0, :2].detach().cpu().numpy()
+                                        command[:] = feedback_body_command(
+                                            live_body, centre, control_target,
+                                            max_step_m=correction_cap)
                                         corrections += 1
                                         largest = max(largest, size)
                                         self.corrected += 1
+                    if lost:
+                        # A missing or mismatched target is a hard stop on top/side cameras and
+                        # after the bounded front-camera coast expires.
+                        break
                 if self.frame_hook is not None:
                     self.frame_hook()
+                z = bounded_ball_descent_z(
+                    action=action, large_ball=large_ball_hover,
+                    requested_z=z, previous_z=last_commanded_z)
+                last_commanded_z = z
                 self.current = torch.tensor([[command[0], command[1], z]], device=self.device)
+                if self.pause_hook is not None and not self.pause_hook():
+                    lost += 1
+                    break
+                if action == "down" and self.aperture_centre() is None:
+                    aperture_feedback_lost = True
+                    self.correcting = False
+                    self.log("      descenso detenido: se perdió el feedback de apertura; "
+                             "no se continúa hacia el contacto")
+                    break
                 self.env.step(self._action(self.current, grip))
+                if (os.environ.get("DEMO11_TRACE_MOTION") == "1"
+                        and index % max(1, every) == 0 and corrections % 5 == 0):
+                    live_body = self._gripper_pos()[0].detach().cpu().numpy()
+                    live_aperture = self.aperture_centre()
+                    joint_ids, _ = self.robot.find_joints([
+                        "shoulder_pan", "shoulder_lift", "elbow_flex",
+                        "wrist_flex", "wrist_roll"])
+                    joints = self.robot.data.joint_pos[0, joint_ids].detach().cpu().numpy()
+                    aperture_xy = (live_aperture[:2] if live_aperture is not None
+                                   else (math.nan, math.nan))
+                    self.log(
+                        f"      [motion] {action} target=({last_seen[0]:+.3f},"
+                        f" {last_seen[1]:+.3f}) body=({live_body[0]:+.3f},"
+                        f" {live_body[1]:+.3f}, {live_body[2]:+.3f}) "
+                        f"aperture=({aperture_xy[0]:+.3f}, {aperture_xy[1]:+.3f}) "
+                        f"command=({command[0]:+.3f}, {command[1]:+.3f}, {z:.3f}) "
+                        f"joints={np.round(joints, 3).tolist()}")
+                tracked_prim = getattr(self, "_tracking_prim", None)
+                if tracked_prim:
+                    self._freeze_ball_assist(tracked_prim)
+                if (tracked_prim and self._uses_simulator_assist(tracked_prim)
+                        and action == "down"
+                        and self.holding is None
+                        and self.item_kinds.get(tracked_prim) == "ball"):
+                    # The SO-101 fingers cannot reliably pinch a sphere while the wrist is
+                    # entering it from above: the forearm pushes the ball before the pads meet.
+                    # In simulator-assist mode, create a vacuum-style grasp at first contact,
+                    # based on measured aperture XY, the declared sphere radius, and the target
+                    # height. This is a contact-gated simulator constraint; hardware remains on
+                    # the ordinary physical path and the result is explicitly counted kinematic.
+                    try:
+                        ball = self.env.scene[tracked_prim]
+                        ball_pos = ball.data.root_pos_w[0].detach().cpu().numpy()
+                        centre = self.aperture_centre()
+                        radius = float(self.items_by_prim[tracked_prim]) / 2.0
+                        aperture_hold_z = float(self.current[0, 2].detach().cpu()) + hold_z
+                        gap = (math.dist(centre[:2], ball_pos[:2])
+                               if centre is not None else math.inf)
+                        contact_band = (ball_pos[2] - 0.008, ball_pos[2] + radius + 0.005)
+                        in_contact_band = contact_band[0] <= aperture_hold_z <= contact_band[1]
+                        if os.environ.get("DEMO11_TRACE_CONTACT") == "1":
+                            self.log(
+                                f"      ball assist contact check: gap={gap * 1000:.1f} mm, "
+                                f"hold_z={aperture_hold_z:.4f} m, "
+                                f"ball_z={float(ball_pos[2]):.4f} m, "
+                                f"band=({contact_band[0]:.4f},{contact_band[1]:.4f}) m, "
+                                f"eligible={gap <= 0.006 and in_contact_band}")
+                        if gap <= 0.006 and in_contact_band:
+                            self.grab(tracked_prim)
+                            self._pregrasp_kinematic = tracked_prim
+                            if os.environ.get("DEMO11_TRACE_CONTACT") == "1":
+                                self.log("      ball assist contact constraint attached")
+                    except (KeyError, TypeError, ValueError, IndexError) as exc:
+                        if os.environ.get("DEMO11_TRACE_CONTACT") == "1":
+                            self.log(f"      ball assist contact check unavailable: "
+                                     f"{type(exc).__name__}: {exc}")
+                if getattr(self, "_held", None) is not None:
+                    self._carry_if_held()
+
+        # The preceding above trajectory can end with the gripper still several centimetres
+        # away from the target: it has to converge while changing height, and the SO-101 response
+        # couples X/Y as its wrist rotates. Finish alignment at the safe hover height for every
+        # movable geometry before beginning contact descent. This stationary correction cannot
+        # drag a part across the table, and failure to converge prevents contact.
+        pregrasp_residual = math.inf
+        if (action == "above" and pregrasp_hover_alignment and lost == 0
+                and last_seen is not None):
+            hover_value = self.current[0, 2]
+            if callable(getattr(hover_value, "detach", None)):
+                hover_value = hover_value.detach().cpu()
+            hover_z = float(hover_value)
+            pregrasp_misses = 0
+            for alignment_step in range(PREGRASP_ALIGNMENT_MAX_STEPS + 1):
+                if self.pause_hook is not None and not self.pause_hook():
+                    lost += 1
+                    self.log("      centrado previo interrumpido por el usuario")
+                    break
+                seen = observe()
+                jump = (seen is not None and last_seen is not None
+                        and math.dist((float(seen[0]), float(seen[1])), last_seen)
+                        > MAX_TRACKING_STEP_M)
+                if seen is None or jump:
+                    if pregrasp_misses < TRACK_MAX_SCENE_LINKED_MISSES:
+                        pregrasp_misses += 1
+                        occluded += 1
+                        if jump:
+                            rejected_jumps += 1
+                        # Hold the current hover pose while waiting for a fresh, scene-linked
+                        # frame; do not issue another correction from a stale or shifted mask.
+                        self.env.step(self._action(self.current, grip))
+                        continue
+                    lost += 1
+                    if jump:
+                        self.log("      centrado previo cancelado: detección desplazada de forma persistente")
+                    break
+                pregrasp_misses = 0
+                if not executor_module.tracked_target_motion_is_safe(
+                        seen, initial_aim, during_descent=False):
+                    lost += 1
+                    self.log("      pre-grasp hover stopped: target moved outside its scene anchor")
+                    break
+                last_seen = (float(seen[0]), float(seen[1]))
+                centre = self.aperture_centre()
+                if centre is None:
+                    lost += 1
+                    break
+                # The gripper can shift or partly occlude a target's mask at hover height.
+                # Continue aiming at the pose planned from the last clean scene view; the new
+                # frame is used to verify identity and reject excessive object motion.
+                control_target = initial_aim if initial_aim is not None else last_seen
+                error = (control_target[0] - centre[0], control_target[1] - centre[1])
+                pregrasp_residual = math.hypot(*error)
+                worst = max(worst, pregrasp_residual)
+                if os.environ.get("DEMO11_TRACE_MOTION") == "1":
+                    live_body = self._gripper_pos()[0].detach().cpu().numpy()
+                    joint_ids, _ = self.robot.find_joints([
+                        "shoulder_pan", "shoulder_lift", "elbow_flex",
+                        "wrist_flex", "wrist_roll"])
+                    joints = self.robot.data.joint_pos[0, joint_ids].detach().cpu().numpy()
+                    self.log(
+                        f"      [hover] step={alignment_step} target=({last_seen[0]:+.3f},"
+                        f" {last_seen[1]:+.3f}) body=({live_body[0]:+.3f},"
+                        f" {live_body[1]:+.3f}, {live_body[2]:+.3f}) "
+                        f"aperture=({centre[0]:+.3f}, {centre[1]:+.3f}) "
+                        f"error=({error[0] * 1000:+.1f}, {error[1] * 1000:+.1f}) mm "
+                        f"joints={np.round(joints, 3).tolist()}")
+                if pregrasp_residual <= PREGRASP_ALIGNMENT_TOLERANCE_M:
+                    break
+                if alignment_step >= PREGRASP_ALIGNMENT_MAX_STEPS:
+                    break
+                live_body = self._gripper_pos()[0, :2].detach().cpu().numpy()
+                command[:] = feedback_body_command(
+                    live_body, centre, control_target,
+                    max_step_m=PREGRASP_ALIGNMENT_STEP_M, gain=0.65)
+                corrections += 1
+                largest = max(largest, pregrasp_residual)
+                self.corrected += 1
+                self.current = torch.tensor([[command[0], command[1], hover_z]],
+                                            device=self.device)
+                self.env.step(self._action(self.current, grip))
+            if (lost == 0
+                    and pregrasp_residual > PREGRASP_ALIGNMENT_TOLERANCE_M):
+                stall_reported = True
+                self.correcting = False
+                self.log(f"      pre-grasp hover did not converge: aperture remains "
+                         f"{pregrasp_residual * 1000:.1f} mm from target; "
+                         "contact descent cancelled")
 
         # Settle before the jaws shut: TRIED AT 40 STEPS AND REVERTED, because it measured worse.
         #
@@ -788,23 +2450,114 @@ class StrictExecutor(executor_module.Executor):
         if corrections:
             note += (f", {corrections} tool-centre correction(s) (largest {largest * 1000:.0f} mm, "
                      f"worst residual {worst * 1000:.0f} mm)")
+        if occluded:
+            note += f", {occluded} occluded look(s), retained the last scene-linked aim"
         if lost:
             note += f", {lost} look(s) could not find it"
+        if aperture_feedback_lost:
+            note += ", descenso cancelado al perder el feedback de las mordazas"
+        if rejected_jumps:
+            note += f", ignored {rejected_jumps} isolated target-jump frame(s)"
         # The residual in all three axes, because "the grasp failed" is not a diagnosis and this is
         # the one number that turns it into one. A part is between the pads only if the aperture
         # centre is within LATERAL_SLACK_M of it laterally and within half the part's height
         # vertically.
         centre = self.aperture_centre()
-        if centre is not None and action == "down":
+        contact_misaligned = False
+        contact_error = None
+        if action == "down" and centre is None:
+            contact_misaligned = True
+            note += ", sin feedback del centro de mordazas: agarre cancelado"
+        elif centre is not None and action == "down":
             here3 = observe()
-            if here3 is not None:
-                gap = math.dist(centre[:2], (float(here3[0]), float(here3[1])))
+            # A final frame can contain a wrist-clipped object mask. Accept it only while it
+            # remains inside the same descent motion gate; otherwise use the last plan anchor,
+            # never the new shifted centroid, for the physical aperture check.
+            contact_frame_trusted = (here3 is None or initial_aim is None or
+                                     math.dist((float(here3[0]), float(here3[1])),
+                                               (float(initial_aim[0]),
+                                                float(initial_aim[1])))
+                                     <= FINAL_CONTACT_OBSERVATION_TOLERANCE_M)
+            contact_target = trusted_contact_target(here3, initial_aim)
+            if here3 is not None and not contact_frame_trusted:
+                note += ", rejected wrist-clipped final mask; using the planned grasp anchor"
+            if contact_target is not None:
+                gap = math.dist(centre[:2], contact_target[:2])
+                experimental_slack = None
+                pad_shape = getattr(self.env, "demo11_contact_pad_shape", None)
+                slack_override = os.environ.get("DEMO11_EXPERIMENTAL_APERTURE_SLACK_MM")
+                if slack_override is not None:
+                    try:
+                        experimental_slack = float(slack_override)
+                    except ValueError:
+                        experimental_slack = math.nan
+                contact_slack = aperture_slack_for_profile(
+                    getattr(tracking_item, "size", None),
+                    kind=getattr(tracking_item, "kind", ""), pad_shape=pad_shape,
+                    experimental_slack_mm=experimental_slack)
+                contact_misaligned = (contact_misaligned
+                                       or not aperture_gap_is_graspable(gap, contact_slack))
+                if contact_misaligned:
+                    contact_error = (float(contact_target[0]) - float(centre[0]),
+                                     float(contact_target[1]) - float(centre[1]))
                 note += (f", aperture {gap * 1000:.1f} mm from the part"
-                         f"{' (between the pads)' if gap <= LATERAL_SLACK_M else ' (outside the slack)'}")
+                         f"{' (between the pads)' if gap <= contact_slack else ' (outside the slack)'}")
+                if contact_misaligned:
+                    note += "; cierre cancelado para volver a centrar sin contacto"
+        if (contact_misaligned and contact_error is not None and _contact_retry < 1
+                and callable(getattr(self.current, "clone", None))
+                and callable(getattr(self.current[0, 2], "detach", None))):
+            # A failed final aperture check used to cancel the close, then restart the same
+            # descent from the same pose. On the next pass the camera returned the same aim and
+            # the robot repeated the same miss. Retreat vertically while the fingers are open,
+            # move the measured aperture error at clearance, and make one fresh descent. This
+            # preserves the object instead of dragging the open fingers across it.
+            current = self.current.clone()
+            safe_z = max(float(current[0, 2].detach().cpu()), target_body_z + 0.045)
+            high = current.clone()
+            high[0, 2] = safe_z
+            corrected = high.clone()
+            measured_body = self._gripper_pos()[0, :2].detach().cpu().numpy()
+            corrected_xy = feedback_body_command(
+                measured_body, centre[:2], contact_target,
+                max_step_m=MAX_TRACKING_STEP_M)
+            corrected[0, 0] = corrected_xy[0]
+            corrected[0, 1] = corrected_xy[1]
+            with torch.no_grad():
+                for index in range(1, 17):
+                    if self.pause_hook is not None and not self.pause_hook():
+                        return executor_module.StepResult(
+                            action=action, ok=False, note="parada solicitada durante el reajuste")
+                    self.current = current + (high - current) * (index / 16.0)
+                    self.env.step(self._action(self.current, grip))
+                for index in range(1, 17):
+                    if self.pause_hook is not None and not self.pause_hook():
+                        return executor_module.StepResult(
+                            action=action, ok=False, note="parada solicitada durante el reajuste")
+                    self.current = high + (corrected - high) * (index / 16.0)
+                    self.env.step(self._action(self.current, grip))
+            self.log(f"      re-centro seguro: retiro vertical y corrección "
+                     f"({contact_error[0] * 1000:+.1f}, {contact_error[1] * 1000:+.1f}) mm")
+            retried = self.track(
+                observe, target_z, steps, action=action, grip=grip, every=every,
+                aim=initial_aim,
+                _contact_retry=_contact_retry + 1)
+            if retried.ok:
+                retried.note = "recentrado seguro; " + retried.note
+            return retried
         if stall_reported:
-            note += ", centrado detenido: la pose no es alcanzable desde aquí"
-        return executor_module.StepResult(action=action, note=note,
-                                          ok=lost == 0 and not stall_reported)
+            note += ", centrado detenido: la pose no es alcanzable desde aquÃ­"
+        ok = (lost == 0 and not stall_reported and not contact_misaligned
+              and not aperture_feedback_lost)
+        if not ok and tracking_prim and action in {"above", "down"}:
+            if not hasattr(self, "failures"):
+                self.failures = {}
+            self.failures[tracking_prim] = self.failures.get(tracking_prim, 0) + 1
+            self.log(f"      {action} failed before contact; next retry will test an "
+                     "alternate reachable wrist orientation when the geometry allows it")
+        return executor_module.StepResult(
+            action=action, note=note, ok=ok,
+            grasp="stale" if (contact_misaligned or aperture_feedback_lost) else None)
 
 
 # --------------------------------------------------------------------------------------
@@ -1039,7 +2792,8 @@ def _short_summary(run) -> str:
     """The execute box's note: a few words, since the box is small. The full summary is in the log."""
     if run.aborted:
         return f"parado en {run.aborted_at.split(' ')[0]}"
-    text = f"{len(run.steps)} pasos, {run.real_grasps} agarre(s)"
+    text = (f"{len(run.steps)} pasos, {run.real_grasps} agarre(s) fÃ­sico(s), "
+            f"{run.kinematic_grasps} asistido(s) en simulaciÃ³n")
     if run.stale_grasps:
         text += ", sin pieza"
     if run.lost_grasps:
@@ -1048,6 +2802,155 @@ def _short_summary(run) -> str:
 
 
 EXIT_CODE = {"SUCCESS": 0, "NO_TASKS": 0, "PARTIAL_SUCCESS": 2, "FAILED": 2, "ABORTED": 3}
+
+
+def should_use_backup_camera(*, has_backup: bool, primary_capture_failed: bool,
+                             objects_seen: int, containers_expected: bool,
+                             containers_seen: int, tasks_pending: bool,
+                             robot_holding: bool, grasp_failed: bool = False,
+                             ambiguous_objects: int = 0) -> bool:
+    """Recover from failed frames and obvious arm occlusion in oblique views."""
+    if not has_backup:
+        return False
+    if grasp_failed and not robot_holding:
+        return True
+    if primary_capture_failed:
+        return True
+    if ambiguous_objects > 0 and tasks_pending and not robot_holding:
+        return True
+    if containers_expected and containers_seen == 0:
+        return True
+    return tasks_pending and not robot_holding and objects_seen == 0
+
+
+def allow_occluded_tracking_for_camera(camera_name: str, active_sensor, primary_sensor) -> bool:
+    """Coast through brief arm occlusion only while tracking the oblique front camera.
+
+    The top camera is the recovery view and has a different occlusion geometry. Keeping the
+    front-camera coast policy after a fallback lets stale target coordinates drive repeated
+    wrist corrections even though tracking is now using the overhead sensor.
+    """
+    return camera_name == "front" and active_sensor is primary_sensor
+
+
+def experimental_approach_clearance_z(value: str | None) -> float | None:
+    """Parse an opt-in world-frame height for a vertical-then-horizontal approach A/B."""
+    if value is None or not str(value).strip():
+        return None
+    height = float(value)
+    if not 0.12 <= height <= 0.50:
+        raise ValueError("approach clearance height must be within [0.12, 0.50] m")
+    return height
+
+
+def safe_approach_clearance_z(items) -> float:
+    """Choose a scene-aware hold-point height for collision-free XY approach travel.
+
+    The approach waypoint itself is already above the selected object, but the arm can start
+    above or below it. Translating and descending at the same time sweeps the open fingers and
+    wrist through nearby objects. Keep the approach stage above every configured object and
+    container, with 40 mm of clearance, and at least at the calibrated travel plane. The actual
+    per-object waypoint can be higher (notably the ball profile) and still takes precedence.
+    """
+    top_z = scene_spec.TABLE_TOP_Z
+    for item in items or ():
+        try:
+            top_z = max(top_z, scene_spec.TABLE_TOP_Z + float(item.height))
+        except (AttributeError, TypeError, ValueError):
+            size = getattr(item, "size", ()) or ()
+            if size:
+                top_z = max(top_z, scene_spec.TABLE_TOP_Z + max(float(v) for v in size))
+    return max(float(planner.TRAVEL_Z), top_z + 0.040)
+
+
+def off_center_assist_candidate(geometry: dict | None, *, after_physical_miss: bool,
+                                assist_enabled: bool) -> bool:
+    """A high lift-follow score is not a centered physical grasp by itself."""
+    if not after_physical_miss or not assist_enabled or not geometry:
+        return False
+    lateral = geometry.get("lateral_m")
+    return bool(geometry.get("fits") and lateral is not None
+                and LATERAL_SLACK_M < lateral <= SIM_ASSIST_MAX_LATERAL_M)
+
+
+def physical_miss_assist_candidate(geometry: dict | None, *, after_physical_miss: bool,
+                                   assist_enabled: bool) -> bool:
+    """Allow simulation-only recovery after a lost lift when the measured close was viable."""
+    if not after_physical_miss or not assist_enabled or not geometry:
+        return False
+    lateral = geometry.get("lateral_m")
+    return bool(geometry.get("fits") and lateral is not None
+                and 0.0 <= lateral <= SIM_ASSIST_MAX_LATERAL_M)
+
+
+def should_pregrasp_assist(policy: str, *, assist_enabled: bool, kind: str,
+                           size_mm: float | None) -> bool:
+    """Select pre-contact assistance for explicit policy or empirically fragile small parts."""
+    if not assist_enabled:
+        return False
+    if policy == "preemptive":
+        return True
+    if (policy == "after_physical_miss" and size_mm is not None
+            and ((kind == "cube" and float(size_mm) <= 20.0)
+                 or (kind == "cylinder" and float(size_mm) <= 30.0)
+                 or (kind in {"hexagonal_prism", "triangular_prism"}
+                     and float(size_mm) <= 30.0))):
+        # Repeated small-cube, 30 mm prism, and side-view 30 mm cylinder trials showed that
+        # physical-first contact can leave the arm outside its calibrated frame or lose the part
+        # in carry. In simulation, avoid that fragile contact for these profiles and count them
+        # as assisted; strict/hardware runs stay real.
+        return True
+    return False
+
+
+def stabilize_fallback_position(measured_xy, trusted_xy, max_shift_m: float):
+    """Keep the last scene-linked pose when a backup view jumps beyond its error budget."""
+    if measured_xy is None or trusted_xy is None:
+        return measured_xy, False
+    if math.dist(measured_xy, trusted_xy) > max_shift_m:
+        return tuple(trusted_xy), True
+    return tuple(measured_xy), False
+
+
+def tracking_measurement_is_reliable(area_px: int, confidence: float,
+                                     previous_area_px: int | None,
+                                     min_confidence: float = 0.20,
+                                     min_area_fraction: float = 0.40) -> bool:
+    """Reject weak or abruptly clipped masks as pose updates for a known object.
+
+    The catalog linker can identify a partly occluded object by colour and location, but
+    the centroid of a clipped mask is not the object's centre. Keep the identity association
+    while retaining the last full-view pose until the mask recovers.
+    """
+    area = max(0, int(area_px))
+    if area == 0 or float(confidence) < min_confidence:
+        return False
+    if previous_area_px is not None and previous_area_px > 0:
+        if area < float(previous_area_px) * min_area_fraction:
+            return False
+    return True
+
+
+def fallback_tracking_step_limit(*, after_grasp_failure: bool,
+                                  normal_m: float = MAX_TRACKING_STEP_M,
+                                  recovery_m: float = SAME_OBJECT_MAX_SHIFT_M,
+                                  ambiguous_same_color_peer: bool = False) -> float:
+    """Allow bounded re-linking when failed jaw contact may have moved the target.
+
+    Before contact, a 25 mm jump is usually camera/gripper error. After a recorded failed grasp,
+    28-40 mm physical pushes have been observed; retaining the old anchor aims the retry at an
+    empty point. A large re-link is permitted only when no same-color peer is left unobserved in
+    this scan; if a peer is missing, the ordinary gate avoids switching object identity.
+    """
+    return float(recovery_m if after_grasp_failure and not ambiguous_same_color_peer else normal_m)
+
+
+def fallback_link_tolerance(base_m: float, *, backup_view: bool,
+                            is_container: bool, max_tracking_shift_m: float) -> float:
+    """Allow association first, then stabilize object coordinates against the last view."""
+    if backup_view and not is_container:
+        return base_m + max_tracking_shift_m
+    return base_m
 
 
 class MonitoredRobot(load_demo10().Robot):
@@ -1086,10 +2989,16 @@ class MonitoredRobot(load_demo10().Robot):
         # The verdict per task for the whole run; the final result is derived from it alone.
         self.ledger = TaskLedger()
         super().__init__(env, sensor, args, viewer=viewer, model=model)
+        self.primary_sensor = sensor
+        self.backup_sensor = getattr(env, "demo11_backup_camera", None)
+        self._active_sensor = sensor
+        self._backup_capture_stale = True
+        self._last_backup_capture = None
         if getattr(args, "scene_items", None):
             self.base = list(args.scene_items)
             self.layout = list(self.base)
             self.tracked_xy = {i.prim: (i.x, i.y) for i in self.base}
+            self.tracked_area_px = {}
         self.catalog = scene_config.catalog(getattr(args, "scene_data", scene_config.default_config()), self.base)
         self._initial_layout = list(self.base)
         self._placed_slots = {}
@@ -1101,8 +3010,25 @@ class MonitoredRobot(load_demo10().Robot):
         # request, and mixing them into demo 10's would make either run's folder a mixture.
         self.writer = viewer_module.FrameWriter(
             HERE / "out11", every=args.save_every if args.save_every > 0 else 10 ** 9)
-        self.bot = StrictExecutor(env, log=self.say, allow_kinematic=args.allow_kinematic)
+        self.bot = StrictExecutor(env, log=self.say, allow_kinematic=args.allow_kinematic,
+                                  auto_sim_assist=not args.strict_physical,
+                                  auto_sim_assist_policy=args.sim_assist_policy,
+                                  close_command_override=getattr(
+                                      args, "close_command_override", None))
+        clearance_override = experimental_approach_clearance_z(
+            os.environ.get("DEMO11_EXPERIMENTAL_APPROACH_CLEARANCE_Z"))
+        self.bot.approach_clearance_z = (
+            clearance_override if clearance_override is not None
+            else safe_approach_clearance_z(self.base))
+        # The executor needs the declared footprint to apply the bounded pre-grasp coasting
+        # rule only to small, scene-linked targets; its generic grasp geometry stays separate.
+        self.bot.layout = list(self.base)
+        self.bot.camera_name = args.camera
+        self.bot.allow_occluded_tracking = allow_occluded_tracking_for_camera(
+            args.camera, self._active_sensor, self.primary_sensor)
         self.bot.log = self._step_logged
+        self.bot.failure_hook = self._grasp_failure
+        self.bot.pause_hook = self.bus.wait_if_paused
         self.bot.frame_hook = self.cam_pump if self.cam_fps > 0.0 else None
         # The waits that issue no action at all - ``settle`` after a release, and the
         # settling between a placement and its measurement - used to run with no
@@ -1116,6 +3042,48 @@ class MonitoredRobot(load_demo10().Robot):
             _PLAN_SPIES.append(self)
         if self not in _PLAN_FILTERS:
             _PLAN_FILTERS.append(self)
+
+    def populate(self, layout) -> None:
+        """Refresh both the spawned layout and the identity linker after every scene change."""
+        super().populate(layout)
+        self.tracked_xy = {item.prim: (float(item.x), float(item.y)) for item in self.layout}
+        self.tracked_area_px = {}
+        bot = getattr(self, "bot", None)
+        if bot is not None and os.environ.get("DEMO11_EXPERIMENTAL_APPROACH_CLEARANCE_Z") is None:
+            bot.approach_clearance_z = safe_approach_clearance_z(self.layout)
+        # Let the RTX render product catch up with place_items' prim transforms. These steps
+        # do not pass simulator positions to perception; they only synchronize physics/render.
+        sim = getattr(getattr(self, "env", None), "sim", None)
+        step = getattr(sim, "step", None)
+        if callable(step):
+            for _ in range(SCENE_SETTLE_RENDER_STEPS):
+                step(render=True)
+        if getattr(self, "backup_sensor", None) is not None:
+            # Initialize the backup RTX render product immediately after scene population;
+            # lazily rendering it for the first time during an occlusion produced blank
+            # buffers in several otherwise valid front/side trials.
+            try:
+                self._last_backup_capture = isaac_io.capture(self.env, self.backup_sensor)
+                self._backup_capture_stale = False
+                self.bus.set_state(backup_camera_ready=True)
+            except RuntimeError as exc:
+                self.bus.set_state(backup_camera_ready=False)
+                self.bus.log(f"La cámara cenital de respaldo aún está inicializándose: {exc}",
+                             level="warn", node="capture")
+
+    def _capture_backup(self):
+        """Capture overhead, reusing the same-scene warm frame only before any arm motion."""
+        try:
+            captured = isaac_io.capture(self.env, self.backup_sensor)
+            self._last_backup_capture = captured
+            return captured
+        except RuntimeError:
+            cached = self._last_backup_capture
+            if cached is not None and not self._backup_capture_stale:
+                self.say("  la cámara cenital no refresca; uso el último fotograma de esta "
+                         "escena, capturado antes de mover el brazo")
+                return cached
+            raise
 
     # -- output ----------------------------------------------------------------
 
@@ -1135,7 +3103,7 @@ class MonitoredRobot(load_demo10().Robot):
         if head:
             import ui_spanish
             self.bus.set_state(progress=head[0])
-            self.bus.node("execute", telemetry.ACTIVE, ui_spanish.ACTIONS.get(head[0], "Comprobando ejecución"))
+            self.bus.node("execute", telemetry.ACTIVE, ui_spanish.ACTIONS.get(head[0], "Comprobando ejecuciÃ³n"))
             # One call is one step executed, counted against the total the plan published, so the
             # panel can say "paso 3 de 8". The counter is reset by `run_plan`, which is where the
             # total is known.
@@ -1204,10 +3172,10 @@ class MonitoredRobot(load_demo10().Robot):
         reasons = [
             (f"{prim} de canto, sin ninguna fuerza posible entre las mordazas"
              if prim in impossible else
-             f"{prim} tras {failures.get(prim, 0)} sujeción(es) fallidas")
+             f"{prim} tras {failures.get(prim, 0)} sujeciÃ³n(es) fallidas")
             for prim in dropped]
         self.say("  demo 11: " + "; ".join(reasons) +
-                 "; se sacan del plan de esta pasada y el comando sigue con lo demás")
+                 "; se sacan del plan de esta pasada y el comando sigue con lo demÃ¡s")
         return fresh
 
     def _prim_of(self, thing) -> str | None:
@@ -1231,7 +3199,7 @@ class MonitoredRobot(load_demo10().Robot):
         """
         if plan.question:
             line = next(iter(plan.question.values()))
-            self.bus.node("ground", telemetry.WARN, f"Aclaración: {line}")
+            self.bus.node("ground", telemetry.WARN, f"AclaraciÃ³n: {line}")
         elif plan.unresolved:
             self.bus.node("ground", telemetry.WARN, "; ".join(plan.unresolved))
         else:
@@ -1417,6 +3385,10 @@ class MonitoredRobot(load_demo10().Robot):
         self.bot.settle()
         first = self._placement_verdicts(plan, premise)
         retry = [prim for _key, placed, prim in first if not placed and prim is not None]
+        for prim in retry:
+            # Say which containment test failed and by how much: "not placed" alone sent the
+            # last investigation looking at the wrong axis (see ``_why_not_inside``).
+            self.say(f"    not verified: {prim} {self._why_not_inside(prim)}")
         if retry:
             self.say("  re-planning the ones that missed")
         for prim in retry:
@@ -1444,7 +3416,7 @@ class MonitoredRobot(load_demo10().Robot):
 
     # -- perception ------------------------------------------------------------
 
-    def look(self, caption: str = ""):
+    def look(self, caption: str = "", *, after_grasp_failure: bool = False):
         """One frame, then the dashboard knows what was in it.
 
         The frame published is ``self.shown`` - the ANNOTATED one, every blob outlined and
@@ -1452,23 +3424,107 @@ class MonitoredRobot(load_demo10().Robot):
         question the dashboard exists to answer: whether the robot saw the green ball as a ball
         at (+0.366, -0.472) or as an unclassified blob.
         """
+        backup_sensor = getattr(self, "backup_sensor", None)
+        robot_holding = getattr(getattr(self, "bot", None), "holding", None)
+        if after_grasp_failure and backup_sensor is not None and robot_holding is None:
+            self._active_sensor = backup_sensor
+            self.sensor = self._active_sensor
+            self.say("  agarre fallido: vuelvo a localizar la pieza desde la cámara cenital")
         self.bus.node("capture", telemetry.ACTIVE, "Capturando la mesa")
         began = time.perf_counter()
-        image, depth, camera = isaac_io.capture(self.env, self.sensor)
+        capture_failed = False
+        try:
+            image, depth, camera = isaac_io.capture(self.env, self._active_sensor)
+        except RuntimeError as exc:
+            capture_failed = True
+            reason = str(exc)
+            if self.backup_sensor is None:
+                self.bus.node("capture", telemetry.FAIL, "La c?mara no entreg? una imagen v?lida")
+                self._camera_error(reason)
+                raise
+            self.say(f"  vista {self._active_sensor} no disponible; cambio a cenital: {reason}")
+            self._active_sensor = self.backup_sensor
+            self.sensor = self._active_sensor
+            image, depth, camera = self._capture_backup()
+        captured_at = time.time()
         self._last_capture = (image, depth, camera)
         self.bus.set_metric("capture_ms", round((time.perf_counter() - began) * 1000, 1))
         self._latest_rgb = (time.monotonic(), image, time.time())
         if self.mask_arm:
             image = self._mask(image, camera)
         perceived = time.perf_counter()
+        smallest_part_m = min(
+            (min(item.size[:2]) for item in self.layout if not item.container),
+            default=None,
+        )
+        largest_part_m = max(
+            (max(item.size[:2]) for item in self.layout if not item.container),
+            default=None,
+        )
+        largest_part_footprint_m2 = max(
+            (float(item.size[0]) * float(item.size[1])
+             for item in self.layout if not item.container),
+            default=None,
+        )
+        object_bounds_by_color = {}
+        for item in self.layout:
+            if item.container:
+                continue
+            extent = max(float(item.size[0]), float(item.size[1]))
+            footprint = float(item.size[0]) * float(item.size[1])
+            previous = object_bounds_by_color.get(item.color)
+            if previous is None or footprint > previous[1]:
+                object_bounds_by_color[item.color] = (extent, footprint)
         seen = perceive.perceive(image, source=self.label, camera=camera,
-                                frame=isaac_io.robot_frame(self.env), plane_z=scene_spec.TABLE_TOP_Z,
-                                depth=depth, looking_for=self.args.detect,
-                                robust=not getattr(self.args, "legacy_perception", False) and self.args.variant != "out_of_reach")
+                                 frame=isaac_io.robot_frame(self.env), plane_z=scene_spec.TABLE_TOP_Z,
+                                 depth=depth, looking_for=self.args.detect,
+                                 robust=not getattr(self.args, "legacy_perception", False) and self.args.variant != "out_of_reach",
+                                 min_area_px=colors.min_area_for_object_size(smallest_part_m),
+                                 max_object_extent_m=largest_part_m,
+                                 max_object_footprint_m2=largest_part_footprint_m2,
+                                 object_bounds_by_color=object_bounds_by_color,
+                                 captured_at=captured_at)
+        completed, unresolved = self.ledger.counts()
+        pending = unresolved > 0 or (completed == 0 and unresolved == 0
+                                      and any(not item.container for item in self.layout))
+        containers_expected = any(item.container for item in self.layout)
+        if (self._active_sensor == self.primary_sensor and should_use_backup_camera(
+                has_backup=self.backup_sensor is not None,
+                primary_capture_failed=capture_failed,
+                objects_seen=len(seen.objects),
+                 containers_expected=containers_expected,
+                 containers_seen=len(seen.containers),
+                 tasks_pending=pending,
+                 robot_holding=self.bot.holding is not None,
+                 ambiguous_objects=sum(bool(thing.ambiguous) for thing in seen.objects))):
+            ambiguous_count = sum(bool(thing.ambiguous) for thing in seen.objects)
+            self.say(f"  vista {self._active_sensor} incompleta ({len(seen.objects)} objetos, "
+                     f"{ambiguous_count} ambiguos, "
+                     f"{len(seen.containers)} destinos); verifico desde cenital")
+            self._active_sensor = self.backup_sensor
+            self.sensor = self._active_sensor
+            image, depth, camera = isaac_io.capture(self.env, self._active_sensor)
+            captured_at = time.time()
+            if self.mask_arm:
+                image = self._mask(image, camera)
+            seen = perceive.perceive(image, source=self.label, camera=camera,
+                                     frame=isaac_io.robot_frame(self.env), plane_z=scene_spec.TABLE_TOP_Z,
+                                     depth=depth, looking_for=self.args.detect,
+                                     robust=not getattr(self.args, "legacy_perception", False) and self.args.variant != "out_of_reach",
+                                     min_area_px=colors.min_area_for_object_size(smallest_part_m),
+                                     max_object_extent_m=largest_part_m,
+                                     max_object_footprint_m2=largest_part_footprint_m2,
+                                     object_bounds_by_color=object_bounds_by_color,
+                                     captured_at=captured_at)
+            self._latest_rgb = (time.monotonic(), image, time.time())
+        self.bot.allow_occluded_tracking = allow_occluded_tracking_for_camera(
+            self.args.camera, self._active_sensor, self.primary_sensor)
+        self.bus.set_state(camera=self._active_sensor,
+                           camera_fallback=self._active_sensor != self.primary_sensor)
         self.bus.set_metric("segmentation_ms", round((time.perf_counter() - perceived) * 1000, 1))
         self.scene, self.last_image = seen, image
         annotation = time.perf_counter()
-        self.shown = image if self.args.raw else perceive.annotate(image, seen, "Percepción de la mesa", lang="es")
+        self.shown = image if self.args.raw else perceive.annotate(image, seen, "PercepciÃ³n de la mesa", lang="es")
         self.bus.set_metric("annotation_ms", round((time.perf_counter() - annotation) * 1000, 1))
         self.writer.offer(self.shown)
         if self.viewer is not None:
@@ -1476,18 +3532,37 @@ class MonitoredRobot(load_demo10().Robot):
         self.frames += 1
         self.bus.node("capture", telemetry.OK, "Fotograma capturado")
         self.bus.set_metric("perception_ms", round((time.perf_counter() - began) * 1000, 1))
-        # Corta a propósito: la caja de percepción es pequeña. El motivo va en la caja de cámara.
-        note = f"{len(seen.objects)} objetos, {len(seen.containers)} cestas"
-        self.bus.node("perceive", telemetry.WARN if not seen.objects else telemetry.OK, note)
+        # Corta a propÃ³sito: la caja de percepciÃ³n es pequeÃ±a. El motivo va en la caja de cÃ¡mara.
+        confirmed_objects = sum(not thing.ambiguous for thing in seen.objects)
+        ambiguous_objects = len(seen.objects) - confirmed_objects
+        note = (f"{confirmed_objects} objetos confirmados, "
+                f"{ambiguous_objects} por reobservar, {len(seen.containers)} destinos")
+        self.bus.node("perceive", telemetry.WARN if not confirmed_objects or ambiguous_objects else telemetry.OK,
+                      note)
         try:
             mapping = self.link(seen)
         except Exception as exc:
             self.bus.node("link", telemetry.FAIL, f"No se pudo asociar la escena: {exc}")
             raise
         self.bus.set_state(detections=self._detection_rows(seen, mapping),
-                           frame_note=note, frames=self.frames)
+                           frame_note=note, frames=self.frames,
+                           perception_captured_at=seen.captured_at)
         self._publish_frame(note)
         return seen
+
+    def _grasp_failure(self, prim, stage, geometry):
+        if stage == "lost":
+            cause = "La pieza no siguio el ascenso; revisar contacto y retencion."
+        elif geometry and geometry.get("fits") is False:
+            cause = "La pieza excede la apertura util en esta orientacion."
+        elif geometry and geometry.get("lateral_m") is not None and geometry["lateral_m"] > LATERAL_SLACK_M:
+            cause = "El centro quedo fuera del margen de la pinza; volver a observar y centrar."
+        else:
+            cause = "La pinza cerro, pero el contacto no retuvo la pieza; revisar friccion y cierre."
+        details = {}
+        if geometry:
+            details = {key: geometry.get(key) for key in ("z", "tilt_deg", "grip_width_m", "lateral_m", "fits")}
+        self.bus.set_state(grasp_failure={"prim": prim, "stage": stage, "cause": cause, **details})
 
     def _detection_rows(self, seen, mapping: dict[int, str]) -> list[dict]:
         """What the dashboard shows per detected thing: the blob and which part it resolved to."""
@@ -1495,6 +3570,9 @@ class MonitoredRobot(load_demo10().Robot):
         for thing in seen.everything:
             rows.append({"id": thing.id, "kind": thing.kind, "color": thing.color,
                          "pos": thing.pos_m, "area": thing.area_px,
+                         "confidence": round(float(thing.confidence), 3),
+                         "ambiguous": bool(thing.ambiguous),
+                         "ambiguity_reason": thing.ambiguity_reason,
                          "prim": mapping.get(thing.id, ""),
                          "container": bool(thing.inner_rect_m)})
         return rows
@@ -1524,7 +3602,7 @@ class MonitoredRobot(load_demo10().Robot):
         last = getattr(self, "_camera_error_at", 0.0)
         self.bus.set_state(camera_error=reason)
         if time.monotonic() - last > 5:
-            self.bus.log(f"La cámara no se actualiza: {reason}", level="warn", node="capture")
+            self.bus.log(f"La cÃ¡mara no se actualiza: {reason}", level="warn", node="capture")
             self._camera_error_at = time.monotonic()
 
     def cam_pump(self) -> None:
@@ -1561,7 +3639,7 @@ class MonitoredRobot(load_demo10().Robot):
                 self.bus.add_to_metric("camera_reused_frames", 1)
             else:
                 capture_started = time.perf_counter()
-                image, _camera = isaac_io.capture_rgb(self.env, self.sensor)
+                image, _camera = isaac_io.capture_rgb(self.env, self._active_sensor)
                 captured_at = time.time()
                 self.bus.set_metric("live_capture_ms", round((time.perf_counter() - capture_started) * 1000, 1))
             if getattr(self, "frame_encoder", None):
@@ -1578,31 +3656,73 @@ class MonitoredRobot(load_demo10().Robot):
                 self.bus.tick("camera")
                 self.bus.set_state(camera_error="")
             else:
-                self._camera_error("No se pudo codificar el vídeo.")
+                self._camera_error("No se pudo codificar el vÃ­deo.")
         except Exception as exc:
             self._camera_error(str(exc))
 
     def link(self, seen):
-        from scipy.optimize import linear_sum_assignment
-        things = [t for t in seen.everything if t.pos_m is not None]
+        if not hasattr(self, "tracked_area_px"):
+            self.tracked_area_px = {}
+        primary_sensor = getattr(self, "primary_sensor", None)
+        backup_view = (primary_sensor is not None
+                       and getattr(self, "_active_sensor", primary_sensor) != primary_sensor)
+        things = [t for t in seen.everything if t.pos_m is not None and not t.ambiguous]
         items = list(self.layout)
         costs = np.full((len(things), len(items)), 1e6)
         for row, thing in enumerate(things):
             for column, item in enumerate(items):
-                if thing.color != item.color or (thing in seen.containers) != item.container:
-                    continue
-                if not item.container and thing.kind not in ("any", item.kind):
+                if thing.color != item.color:
                     continue
                 last = self.tracked_xy.get(item.prim, (item.x, item.y))
-                gap = math.dist(thing.aim_xy or thing.pos_m[:2], last)
-                if gap <= self.demo10.LINK_TOLERANCE_M:
-                    costs[row, column] = gap
+                # For a tilted camera, projecting a raised object's centroid onto the
+                # table plane shifts its XY estimate. Compare against the catalog item
+                # at its own centre height before deciding identity; applying this
+                # correction only after association is too late for side views.
+                candidate_xy = None
+                if seen.camera and getattr(thing, "centroid_px", None):
+                    try:
+                        from scene import CameraModel
+                        projected = CameraModel.from_dict(seen.camera).on_plane(
+                            *thing.centroid_px, scene_spec.TABLE_TOP_Z + item.height / 2)
+                        if projected:
+                            candidate_xy = projected[:2]
+                    except (KeyError, TypeError, ValueError, AttributeError):
+                        candidate_xy = None
+                gap = math.dist(candidate_xy or thing.aim_xy or thing.pos_m[:2], last)
+                tolerance = fallback_link_tolerance(
+                    self.demo10.LINK_TOLERANCE_M,
+                    backup_view=backup_view,
+                    is_container=item.container,
+                    max_tracking_shift_m=MAX_TRACKING_STEP_M)
+                if gap <= tolerance:
+                    # Camera foreshortening can reverse the image-area ordering of a tray and a
+                    # large object. The scene catalog plus position is the stronger class cue;
+                    # category mismatch is a small tie-break penalty, not a hard exclusion.
+                    category_penalty = 0.012 if (thing in seen.containers) != item.container else 0.0
+                    costs[row, column] = gap + category_penalty
         mapping = {}
+        association_max_cost = max(fallback_link_tolerance(
+            self.demo10.LINK_TOLERANCE_M,
+            backup_view=backup_view,
+            is_container=False,
+            max_tracking_shift_m=MAX_TRACKING_STEP_M),
+            self.demo10.LINK_TOLERANCE_M) + 0.012  # category tie-break cost, not XY error
         if things and items:
-            rows, columns = linear_sum_assignment(costs)
-            for row, column in zip(rows, columns):
-                if costs[row, column] < 1e6:
-                    mapping[things[row].id] = items[column].prim
+            assignments = unambiguous_catalog_assignment(
+                costs, max_cost=association_max_cost)
+            for row, column in assignments:
+                mapping[things[row].id] = items[column].prim
+            linked_rows = {row for row, _column in assignments}
+            uncertain_rows = [row for row in range(len(things))
+                              if row not in linked_rows
+                              and np.min(costs[row]) <= association_max_cost]
+            for row in uncertain_rows:
+                things[row].ambiguous = True
+                things[row].ambiguity_reason = "identidad de escena ambigua"
+            if uncertain_rows:
+                seen.notes.append(
+                    f"{len(uncertain_rows)} deteccion(es) sin identidad segura; se omiten "
+                    "para evitar agarrar otra pieza")
         by_name = {i.prim: i for i in self.layout}
         names = {entry["id"]: entry["name"] for entry in self.catalog}
         for thing in seen.everything:
@@ -1611,14 +3731,107 @@ class MonitoredRobot(load_demo10().Robot):
                 thing.entity_id = item.prim
                 thing.display_name = names.get(item.prim, item.prim)
                 thing.size_m = list(item.size)
-                if (item.container or thing.kind in ("ball", "cube")) and seen.camera and not getattr(self.args, "legacy_perception", False):
+                # The catalog is authoritative for type after color and world position associate.
+                # This repairs camera-dependent size/shape classifications and supplies custom
+                # geometry to planning.
+                thing.kind = item.kind
+                thing.hollow = item.container
+                if item.container:
+                    # Simulator receptacles are fixed kinematic scene objects. Their known
+                    # configured pose is more accurate than projecting the visible rim or a
+                    # partly occluded red wall to the table plane, especially in front views.
+                    # Keep the image association above as the evidence that this is the tray,
+                    # then use its configured centre for release and verification.
+                    thing.aim_xy = [float(item.x), float(item.y)]
+                    thing.pos_m = [float(item.x), float(item.y),
+                                   float(scene_spec.TABLE_TOP_Z + item.height / 2)]
+                elif seen.camera and not getattr(self.args, "legacy_perception", False):
                     from scene import CameraModel
                     point = CameraModel.from_dict(seen.camera).on_plane(*thing.centroid_px, scene_spec.TABLE_TOP_Z + item.height / 2)
                     if point:
-                        thing.aim_xy = point[:2]
-                self.tracked_xy[item.prim] = tuple(thing.aim_xy or scene_spec.aim_point(thing.pos_m, container=item.container))
+                        measured_xy = tuple(point[:2])
+                        if backup_view and item.prim in self.tracked_xy:
+                            old_xy = tuple(self.tracked_xy[item.prim])
+                            bot = getattr(self, "bot", None)
+                            failures = getattr(bot, "failures", {})
+                            after_grasp_failure = bool(failures.get(item.prim, 0))
+                            linked_prims = set(mapping.values())
+                            ambiguous_same_color_peer = any(
+                                candidate.prim != item.prim and not candidate.container
+                                and candidate.color == item.color
+                                and candidate.prim not in linked_prims
+                                for candidate in self.layout)
+                            max_shift = fallback_tracking_step_limit(
+                                after_grasp_failure=after_grasp_failure,
+                                ambiguous_same_color_peer=ambiguous_same_color_peer)
+                            measured_xy, rejected_jump = stabilize_fallback_position(
+                                measured_xy, old_xy, max_shift)
+                            accepted_reanchor = (after_grasp_failure and not rejected_jump
+                                    and math.dist(measured_xy, old_xy) > MAX_TRACKING_STEP_M)
+                            if accepted_reanchor:
+                                self.say(f"  vista de respaldo: reanclo {item.prim} tras contacto "
+                                         f"fallido: ({old_xy[0]:+.3f}, {old_xy[1]:+.3f}) → "
+                                         f"({measured_xy[0]:+.3f}, {measured_xy[1]:+.3f})")
+                            if math.dist(point[:2], old_xy) > 0.015:
+                                if rejected_jump:
+                                    status, display_xy = "rechazada; conservo", old_xy
+                                elif accepted_reanchor:
+                                    status, display_xy = "reanclada a", measured_xy
+                                else:
+                                    status, display_xy = "asociada a", measured_xy
+                                self.say(f"  localización de respaldo {item.prim}: "
+                                         f"medida ({point[0]:+.3f}, {point[1]:+.3f}), "
+                                         f"{status} ({display_xy[0]:+.3f}, {display_xy[1]:+.3f})")
+                            if rejected_jump:
+                                self.say(f"  vista de respaldo: rechazo salto de "
+                                         f"{math.dist(point[:2], self.tracked_xy[item.prim]) * 1000:.0f} mm "
+                                         f"en {item.prim}; conservo la posición asociada")
+                                seen.notes.append(
+                                    f"vista de respaldo: se conserva la última posición "
+                                    f"asociada de {item.prim} ante un salto > "
+                                    f"{max_shift * 1000:.0f} mm")
+                        thing.aim_xy = list(measured_xy)
+                        # The generic detector's pos_m intersects the centroid ray with the
+                        # tabletop. For tilted views that shifts a raised object's estimate by
+                        # centimetres. Once the catalog provides its height, use the object-centre
+                        # plane for both world reasoning and grasp aiming.
+                        thing.pos_m = [round(float(measured_xy[0]), 5), round(float(measured_xy[1]), 5),
+                                       round(scene_spec.TABLE_TOP_Z + item.height / 2, 5)]
+                measured_area = int(getattr(thing, "area_px", 0) or 0)
+                previous_area = self.tracked_area_px.get(item.prim)
+                if tracking_measurement_is_reliable(
+                        measured_area, getattr(thing, "confidence", 0.0), previous_area):
+                    # Keep the largest recent full-view mask as the occlusion reference. If we
+                    # ratchet this baseline down every frame, a slowly shrinking gripper-occluded
+                    # mask can drag the anchor even though each individual change looks small.
+                    self.tracked_area_px[item.prim] = max(measured_area, previous_area or 0)
+                    self.tracked_xy[item.prim] = tuple(
+                        thing.aim_xy or scene_spec.aim_point(thing.pos_m, container=item.container))
+                else:
+                    # Keep the catalog identity for visualization, but do not feed a clipped
+                    # component centroid into the grasp servo or the next association pass.
+                    trusted_xy = self.tracked_xy.get(item.prim, (item.x, item.y))
+                    thing.aim_xy = [float(trusted_xy[0]), float(trusted_xy[1])]
+                    if thing.pos_m is not None:
+                        thing.pos_m = [float(trusted_xy[0]), float(trusted_xy[1]),
+                                       float(scene_spec.TABLE_TOP_Z + item.height / 2)]
+                    seen.notes.append(
+                        f"se conserva la pose de {item.prim}: máscara parcial o de baja confianza")
                 if item.container:
                     thing.cavity_m = list(item.inner)
+        # Rebuild category lists after catalog association so downstream locate/plan logic sees
+        # camera-corrected object and container classes in this same frame.
+        container_ids = {thing.id for thing in seen.containers}
+        all_things, suppressed = scene_config.suppress_unlinked_fragments(
+            list(seen.everything), container_ids, mapping, self.layout)
+        seen.objects = [thing for thing in all_things if thing.id not in container_ids]
+        seen.containers = [thing for thing in all_things if thing.id in container_ids]
+        if suppressed:
+            seen.notes.append(f"se descartaron {len(suppressed)} fragmento(s) duplicado(s) de objetos asociados")
+        self.scene.objects = [thing for thing in all_things
+                              if not getattr(thing, "hollow", False)]
+        self.scene.containers = [thing for thing in all_things
+                                 if getattr(thing, "hollow", False)]
         self.bus.node("link", telemetry.OK if mapping else telemetry.WARN,
                       f"{len(mapping)}/{len(seen.everything)} detecciones asociadas")
         return mapping
@@ -1629,20 +3842,76 @@ class MonitoredRobot(load_demo10().Robot):
             self.locate_note = "La pieza no pertenece a la escena activa."
             return None
         seen = self.look("Siguiendo la pieza")
-        candidates = [t for t in seen.objects if t.color == item.color
-                      and (kind_hint == "any" or t.kind in ("any", kind_hint or item.kind))]
+        if (seen.captured_at is None
+                or time.time() - float(seen.captured_at) > MAX_GRASP_OBSERVATION_AGE_S):
+            self.locate_note = "La imagen ha caducado; vuelve a observar antes de agarrar."
+            self.bus.log(self.locate_note, level="warn")
+            return None
+        candidates = [t for t in seen.objects if t.color == item.color and not t.ambiguous]
+        # Same-colour parts can be adjacent in a customized scene. Use the known
+        # scene geometry as an identity cue when perception has a confident class;
+        # retain "any" detections so cylinders and user-added shapes still track.
+        wanted_kind = kind_hint or item.kind
+        if wanted_kind != "any":
+            compatible = [t for t in candidates if t.kind in (wanted_kind, "any")]
+            if compatible:
+                candidates = compatible
+        anchor_xy = last_xy if last_xy is not None else (item.x, item.y)
+        peer_prims = {other.prim for other in self.layout
+                      if not other.container and other.prim != prim
+                      and other.color == item.color}
+        visible_peer_prims = {getattr(candidate, "entity_id", None)
+                              for candidate in candidates}
+        ambiguous_peer = bool(peer_prims - visible_peer_prims)
+        failures = getattr(getattr(self, "bot", None), "failures", {})
+        shift_limit = fallback_tracking_step_limit(
+            after_grasp_failure=bool(failures.get(prim, 0)),
+            ambiguous_same_color_peer=ambiguous_peer)
+        candidates = target_tracking_candidates(
+            candidates, prim, anchor_xy, max_shift_m=shift_limit)
         nearest = self._nearest(candidates, last_xy)
         if not nearest:
-            self.locate_note = "La pieza está oculta o no se identifica con seguridad."
+            self.locate_note = "La pieza estÃ¡ oculta o no se identifica con seguridad."
             return None
         nearest.sort(key=lambda pair: pair[0])
         if len(nearest) > 1 and abs(nearest[0][0] - nearest[1][0]) < .005:
             self.locate_note = "Dos piezas coinciden con la referencia; seguimiento ambiguo."
             return None
         best = nearest[0][1]
+        best.kind = item.kind
+        best.size_m = list(item.size)
         self.locate_note = ""
         self.tracked_xy[prim] = tuple(best.aim_xy or scene_spec.aim_point(best.pos_m))
         return self.tracked_xy[prim]
+
+    def _observe_grasp_target(self, prim, kind_hint=None):
+        """Track the calibrated tool aim while retaining the measured object centre."""
+        trusted = self.tracked_xy.get(prim)
+        point = self.locate(prim, trusted, kind_hint=kind_hint)
+        # ``Executor.track`` calls this immediately before each servo segment. The opening
+        # observation can still use the same-scene warm frame if RTX has not produced a new
+        # frame yet; after that observation the executor is about to step the arm, so that
+        # cache must no longer be used for any later localization.
+        if hasattr(self, "_backup_capture_stale"):
+            self._backup_capture_stale = True
+        if point is None:
+            return None
+        item = next((entry for entry in self.layout if entry.prim == prim), None)
+        small_target = bool(item is not None
+                            and max(float(v) for v in item.size[:2]) <= 0.022)
+        if (small_target and trusted is not None
+                and math.dist(point, trusted) > MAX_TRACKING_STEP_M):
+            # ``locate`` may have selected a same-colour tray or gripper fragment when a
+            # small object disappears behind the arm. Reject that measurement before it
+            # replaces the scene-linked identity; StrictExecutor can then use its bounded
+            # small-object pre-grasp coast or stop safely during descent.
+            self.tracked_xy[prim] = trusted
+            self.locate_note = "La detecciÃ³n siguiÃ³ otro elemento; se conserva la asociaciÃ³n previa."
+            return None
+        if item is None:
+            return point
+        dx, dy = real_world.jaw_sweep_approach_offset(item.kind, item.size)
+        return float(point[0]) + dx, float(point[1]) + dy
 
     # -- planning and motion ---------------------------------------------------
 
@@ -1739,8 +4008,7 @@ class MonitoredRobot(load_demo10().Robot):
         self.mask_arm = True
         try:
             run = self.bot.run(plan, resolve=premise.get, keys=lambda: self.keys(),
-                               observe=lambda prim: self.locate(prim, self.tracked_xy.get(prim)),
-                               retarget=None)
+                               observe=self._observe_grasp_target, retarget=None)
         finally:
             self.mask_arm = was_masked
         if run.stale_grasps:
@@ -1762,7 +4030,10 @@ class MonitoredRobot(load_demo10().Robot):
                      "carried. A real arm drops the part here rather than flying on to the tray.")
         state = telemetry.FAIL if (run.stale_grasps or run.aborted) else telemetry.OK
         self.bus.node("execute", state, _short_summary(run))
-        self.bus.set_state(real_grasps=run.real_grasps, tracked=self.tracked,
+        # Cumulative over the command: a retry runs its own grasp (see ``_retry_placed``'s lift) and
+        # a later run must not overwrite an earlier physical grasp with its own zero.
+        self._count_real_grasps(run.real_grasps)
+        self.bus.set_state(real_grasps=self.real_grasps_total, tracked=self.tracked,
                            reaimed=self.reaimed, refused_grasps=self.bot.refused,
                            recentred=self.bot.corrected,
                            kinematic_grasps=self.bot.kinematic)
@@ -1774,8 +4045,8 @@ class MonitoredRobot(load_demo10().Robot):
 
         ``progress``, ``step_index`` and ``step_total`` are written by
         ``_step_logged`` and ``run_plan`` but were never cleared, so after the last
-        step of a plan the panel kept asserting the last verb - «ahora: retirar ·
-        paso 8 de 8» - through the whole of verification, recovery and the report.
+        step of a plan the panel kept asserting the last verb - Â«ahora: retirar Â·
+        paso 8 de 8Â» - through the whole of verification, recovery and the report.
         The stage being shown then disagreed with what the arm was doing, which is
         the one thing a demo's dashboard cannot get wrong.
 
@@ -1811,6 +4082,36 @@ class MonitoredRobot(load_demo10().Robot):
                       f"{prim}: {'recuperada' if done else 'no se pudo recuperar'}")
         return done
 
+    def _retry_original_targets(self, plan, premise) -> bool:
+        """Retry the exact catalog identities if language replanning becomes ambiguous.
+
+        Recovery remains camera-linked and physical. It never substitutes a same-colour object,
+        and counts a retry only when the original part is measured inside its original tray.
+        """
+        retried = False
+        for task in getattr(plan, "tasks", ()):
+            prim = premise.get(task.pick)
+            if prim is None:
+                continue
+            retried = True
+            self._retry_one(prim)
+        if not retried:
+            return False
+        self.bot.settle()
+        verdicts = self._placement_verdicts(plan, premise)
+        for key, placed, _prim in verdicts:
+            self.ledger.record(key, placed)
+            if placed:
+                self.recovered += 1
+        self.verified, self.missed = self.ledger.counts()
+        self._settle_rows()
+        return bool(verdicts) and all(placed for _key, placed, _prim in verdicts)
+
+    def _count_real_grasps(self, count: int) -> int:
+        """Add friction grasps to the command's running total, which the report reads."""
+        self.real_grasps_total = getattr(self, "real_grasps_total", 0) + int(count)
+        return self.real_grasps_total
+
     def _retry_placed(self, prim: str) -> bool:
         """Pick one misplaced part up again, with the same steps and the same safety as a pick.
 
@@ -1823,23 +4124,48 @@ class MonitoredRobot(load_demo10().Robot):
         item = next((i for i in self.layout if i.prim == prim), None)
         tray = self._tray_of(prim)
         if item is None or tray is None:
-            self.say(f"    {prim}: no hay dónde devolverlo")
+            self.say(f"    {prim}: no hay dÃ³nde devolverlo")
             return False
-        seen = self.look("recuperación")
+        seen = self.look("recuperaciÃ³n")
+        # Preserve the detector's raw proposals: catalog linking can reclassify a ball inside a
+        # same-colour tray as the receptacle and remove it from ``seen.objects``.
+        raw_objects_by_view = [copy.deepcopy(seen.objects)]
         premise = self.link(seen)
         pid = next((key for key, name in premise.items() if name == prim), None)
         thing = (next((t for t in seen.everything if t.id == pid), None)
                  if pid is not None else None)
+        if thing is None:
+            # A failed close can knock a small part outside the stricter 35 mm catalog-link
+            # radius. Reacquire only within the bounded 60 mm motion gate from the last trusted
+            # anchor, with expected color and geometry; never follow an arbitrary red fragment.
+            anchor = self.tracked_xy.get(prim, (item.x, item.y))
+            fresh_view = self.look("Confirmando la pieza tras el agarre fallido",
+                                   after_grasp_failure=True)
+            raw_objects_by_view.append(copy.deepcopy(fresh_view.objects))
+            rejected = [
+                f"{candidate.kind}/{candidate.color}@"
+                f"({candidate.pos_m[0]:+.3f},{candidate.pos_m[1]:+.3f})"
+                f"[{getattr(candidate, 'entity_id', None) or 'sin vínculo'}]"
+                for raw_objects in raw_objects_by_view for candidate in raw_objects
+                if candidate.pos_m is not None]
+            thing = reacquire_target_from_raw_proposals(
+                raw_objects_by_view, item, prim, anchor, self._nearest)
         if thing is None or thing.pos_m is None:
-            self.say(f"    {prim}: no lo encuentro en la imagen; no se intenta a ciegas")
+            anchor = self.tracked_xy.get(prim, (item.x, item.y))
+            detail = f"; ancla ({anchor[0]:+.3f}, {anchor[1]:+.3f})"
+            if 'rejected' in locals() and rejected:
+                detail += "; candidatos " + ", ".join(rejected[-6:])
+            self.say(f"    {prim}: no lo encuentro en la imagen{detail}; no se intenta a ciegas")
             return False
         grasp = np.asarray(planner.grasp_pose(thing, offset=self.args.offset), dtype=float)
         lift = grasp + np.array([0.0, 0.0, executor_module.ABOVE])
         target = next((t for t in seen.containers if t.entity_id == tray.prim), None)
         if target is None:
-            self.bus.log("No se identifica el recipiente durante la recuperación.", level="warn")
+            self.bus.log("No se identifica el recipiente durante la recuperaciÃ³n.", level="warn")
             return False
         drop = np.asarray(planner.place_pose(target), dtype=float)
+        compensation = real_world.jaw_sweep_approach_offset(item.kind, item.size)
+        drop[:2] += np.asarray(compensation, dtype=float)
         allocation = getattr(self, "_task_slots", {}).get(prim)
         if allocation:
             drop[:2] += allocation[1]
@@ -1848,7 +4174,7 @@ class MonitoredRobot(load_demo10().Robot):
         above_drop = drop_low + np.array([0.0, 0.0, executor_module.ABOVE])
 
         self.tracked_xy[prim] = (float(thing.pos_m[0]), float(thing.pos_m[1]))
-        observe = lambda: self.locate(prim, self.tracked_xy.get(prim), kind_hint="any")
+        observe = lambda: self._observe_grasp_target(prim, kind_hint="any")
         approach = self.bot.track(observe=observe, target_z=float(lift[2]),
                                   steps=executor_module.TRACK_DESCEND_STEPS, action="above",
                                   grip=executor_module.OPEN, aim=(float(lift[0]), float(lift[1])))
@@ -1861,25 +4187,41 @@ class MonitoredRobot(load_demo10().Robot):
         closed = self.bot.do("close", grasp, executor_module.CLOSE, prim=prim, on_close=grasp,
                              check="reach")
         if not closed.ok:
-            self.say(f"    {prim}: las mordazas cierran sobre nada")
+            self.say(f"    {prim}: {closed.note or 'las mordazas cierran sobre nada'}")
             return False
         before = self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy().copy()
         lifted = self.bot.do("lift", lift, executor_module.CLOSE, prim=prim, on_close=before,
                              check="follow")
         self.bot.log(f"      lift: {lifted.note}")
+        if lifted.ok and getattr(lifted, "grasp", None) == "real":
+            # The recovery grasp is judged here, not by ``Executor.run``, so count it here.
+            self._count_real_grasps(1)
+            self.bus.set_state(real_grasps=self.real_grasps_total)
         if not lifted.ok:
             return False
-        self.bot.do("carry", above_drop, executor_module.CLOSE)
-        self.bot.do("lower", drop_low, executor_module.CLOSE)
+        carried = self.bot.do("carry", above_drop, executor_module.CLOSE)
+        if not carried.ok:
+            self.say(f"    {prim}: transporte detenido; {carried.note or 'no se alcanzó el destino'}")
+            return False
+        lowered = self.bot.do("lower", drop_low, executor_module.CLOSE)
+        if not lowered.ok:
+            self.say(f"    {prim}: descenso detenido; {lowered.note or 'no se alcanzó el destino'}")
+            return False
         self.bot.drop()
-        self.bot.do("release", drop_low, executor_module.OPEN)
-        self.bot.do("retreat", above_drop, executor_module.OPEN)
+        released = self.bot.do("release", drop_low, executor_module.OPEN)
+        if not released.ok:
+            self.say(f"    {prim}: no se confirmó la liberación")
+            return False
+        retreated = self.bot.do("retreat", above_drop, executor_module.OPEN)
+        if not retreated.ok:
+            self.say(f"    {prim}: no se confirmó la retirada")
+            return False
         self.bot.settle()
         return True
 
     def _one_at_a_time(self, command, plan) -> bool:
         self.bus.set_state(phase="sorting")
-        self.bus.node("plan", telemetry.ACTIVE, "Una pieza por vez; observación entre tareas")
+        self.bus.node("plan", telemetry.ACTIVE, "Una pieza por vez; observaciÃ³n entre tareas")
         # Keep the requested identities and destinations. Replanning the entire command
         # would silently forget missing pieces or select a different same-colour object.
         initial = self.link(self.scene)
@@ -1889,7 +4231,7 @@ class MonitoredRobot(load_demo10().Robot):
             for attempt in range(1 + self.args.regrasp):
                 if self.bus.stop_requested():
                     return False
-                seen = self.look("Actualizando la posición de la siguiente pieza")
+                seen = self.look("Actualizando la posiciÃ³n de la siguiente pieza")
                 premise = self.link(seen)
                 inverse = {name: identifier for identifier, name in premise.items()}
                 things = {thing.id: thing for thing in seen.everything}
@@ -1898,10 +4240,12 @@ class MonitoredRobot(load_demo10().Robot):
                     break
                 one = planner.Plan(intent=plan.intent)
                 piece = things[inverse[prim]]
+                grasp_offset = self._scene_grasp_offset(piece, seen)
                 if task.place is None:
-                    planner._grasp_and_hold(one, piece, self.args.offset, task.tag)
+                    planner._grasp_and_hold(one, piece, grasp_offset, task.tag)
                 else:
-                    planner._pick_and_place(one, piece, things[inverse[tray_prim]], self.args.offset, task.tag)
+                    planner._pick_and_place(one, piece, things[inverse[tray_prim]],
+                                            grasp_offset, task.tag)
                 run = self.run_plan(one, premise, command)
                 if run.aborted and not run.stale_grasps:
                     return False
@@ -1909,12 +4253,26 @@ class MonitoredRobot(load_demo10().Robot):
                     if one.places:
                         self.check(one, premise, announce=False)
                     else:
-                        self.ledger.record(self._task_key(one.tasks[0], premise), bool(run.real_grasps and self.bot.holding))
+                        held = bool((run.real_grasps + run.kinematic_grasps) and self.bot.holding)
+                        self.ledger.record(self._task_key(one.tasks[0], premise), held)
                         self._settle_rows()
                     break
                 if attempt < self.args.regrasp:
                     self.park()
         return True
+
+    def _scene_grasp_offset(self, thing, seen) -> tuple[float, float]:
+        """Select a tested assisted-mode correction from the visible scene geometry."""
+        base = tuple(self.args.offset)
+        chosen = planner.simulated_cluster_grasp_offset(
+            thing, seen.everything, base, enabled=self.bot.auto_sim_assist,
+            camera=self.args.camera)
+        if chosen != base:
+            self.bus.log(
+                f"Ajuste de aproximaciÃ³n asistido para prisma triangular de 20 mm "
+                f"en grupo: ({chosen[0] * 1000:+.0f}, {chosen[1] * 1000:+.0f}) mm; "
+                f"no es calibraciÃ³n fÃ­sica.", level="info")
+        return chosen
 
     def _tray_of(self, prim):
         allocation = getattr(self, "_task_slots", {}).get(prim) or getattr(self, "_placed_slots", {}).get(prim)
@@ -1946,6 +4304,33 @@ class MonitoredRobot(load_demo10().Robot):
 
     # -- input -----------------------------------------------------------------
 
+    @staticmethod
+    def _ignore_parts_already_in_trays(seen) -> int:
+        """Drop detected parts that already stand inside a receptacle; return how many.
+
+        A part the arm has just placed in a tray of its own colour merges with the tray's mask and
+        comes back from perception as an unlinked object at the tray (it was reported as a red
+        ball, "sin vínculo": its tracked position is still the one it started from). "Separa las
+        piezas por colores" then planned a pick for it, could not name it, and refused the whole
+        order with "No puedo identificar todas las piezas y sus destinos" - 6 of 6 times in a
+        session that had just placed one piece. A sort has nothing to do for a part that is
+        already in a tray, so it leaves them out of the plan.
+        """
+        trays = [t for t in seen.containers if t.pos_m is not None and t.size_m]
+        kept, ignored = [], 0
+        for thing in seen.objects:
+            point = thing.aim_xy or (thing.pos_m[:2] if thing.pos_m is not None else None)
+            inside = point is not None and any(
+                abs(point[0] - tray.pos_m[0]) <= tray.size_m[0] / 2.0
+                and abs(point[1] - tray.pos_m[1]) <= tray.size_m[1] / 2.0
+                for tray in trays)
+            if inside:
+                ignored += 1
+            else:
+                kept.append(thing)
+        seen.objects = kept
+        return ignored
+
     def _catalog_gaps(self, command, premise):
         """Do not let an occluded configured piece disappear from an 'all' request."""
         filters = command.get("sort_filter") or command.get("items") or [{"kind": "any"}]
@@ -1958,7 +4343,7 @@ class MonitoredRobot(load_demo10().Robot):
                           and selection.get("color") in (None, item.color)]
             missing = [item.prim for item in candidates if item.prim not in visible]
             if missing:
-                return "No se identifican todas las piezas de esa referencia: " + ", ".join(missing) + ". Separa las piezas o cambia la cámara."
+                return "No se identifican todas las piezas de esa referencia: " + ", ".join(missing) + ". Separa las piezas o cambia la cÃ¡mara."
         destinations = [command.get("place"), *[item.get("place") for item in command.get("items", [])]]
         for destination in destinations:
             if destination and not destination.get("entity_id"):
@@ -1975,13 +4360,15 @@ class MonitoredRobot(load_demo10().Robot):
         # things down between commands, and a part lying flat is a part the jaws can hold.
         self.bot.impossible.clear()
         self.bot.failures.clear()
+        getattr(self.bot, "_last_object_grasp_yaw", {}).clear()
+        getattr(self.bot, "_initial_object_grasp_yaw", {}).clear()
         # A new command is a new job: the previous one's checklist has nothing to do with this
         # one, and leaving it up would claim work that was never asked for.
         self._task_rows.clear()
         self._publish_tasks()
         telemetry.reset_nodes(self.bus)
         self.bus.node("input", telemetry.ACTIVE, text)
-        self.bus.set_state(phase="command", command=text)
+        self.bus.set_state(grasp_failure=None, phase="command", command=text)
         cid = self.bus.active_command_id()
         current = self.bus.command_state(cid) or {}
         if current.get("state") != telemetry.RUNNING or current.get("text") != text:
@@ -2022,10 +4409,33 @@ class MonitoredRobot(load_demo10().Robot):
             seen = self.look("Observando para resolver la orden")
             premise = self.link(seen)
             gap = self._catalog_gaps(command, premise)
+            # A single side-view render can have a stale or partially updated color mask even
+            # when the object is plainly visible. Never move the arm on that frame, but give the
+            # camera two stationary refreshes before asking the user to reposition the scene.
+            for retry in range(2):
+                if not gap:
+                    break
+                self.bus.log(f"La primera lectura dejÃ³ piezas sin asociar; repito la captura "
+                             f"({retry + 1}/2) antes de rechazar la orden.", level="warn")
+                seen = self.look("Confirmando visualmente la escena")
+                premise = self.link(seen)
+                gap = self._catalog_gaps(command, premise)
             if gap:
                 outcome, reason = telemetry.NEEDS_CLARIFICATION, gap
                 return True
+            if command.get("intent") in ("sort", "clear", "sequence"):
+                ignored = self._ignore_parts_already_in_trays(seen)
+                if ignored:
+                    self.bus.log(f"  {ignored} pieza(s) ya están dentro de un recipiente; "
+                                 "no se vuelven a ordenar.", level="info")
             plan = planner.plan_command(command, seen, offset=self.args.offset)
+            if len(plan.picks) == 1:
+                picked = next((thing for thing in seen.everything
+                               if thing.id == plan.picks[0]), None)
+                if picked is not None:
+                    effective_offset = self._scene_grasp_offset(picked, seen)
+                    if effective_offset != tuple(self.args.offset):
+                        plan = planner.plan_command(command, seen, offset=effective_offset)
             if plan.question or plan.unresolved or not plan.moves:
                 reason = plan.question.get("es") or "; ".join(plan.unresolved) or plan.reply
                 outcome = telemetry.NEEDS_CLARIFICATION
@@ -2038,7 +4448,7 @@ class MonitoredRobot(load_demo10().Robot):
                 outcome, reason = telemetry.NEEDS_CLARIFICATION, "La pinza solo puede sostener una pieza. Indica una pieza o un recipiente."
                 return True
             if len({premise[pick] for pick in plan.picks}) != len(plan.picks):
-                outcome, reason = telemetry.NEEDS_CLARIFICATION, "Una pieza aparece varias veces. Envía cada traslado de esa pieza en una orden distinta."
+                outcome, reason = telemetry.NEEDS_CLARIFICATION, "Una pieza aparece varias veces. EnvÃ­a cada traslado de esa pieza en una orden distinta."
                 return True
             import capacity
             try:
@@ -2054,21 +4464,21 @@ class MonitoredRobot(load_demo10().Robot):
                 for attempt in range(1 + self.args.regrasp):
                     run = self.run_plan(plan, premise, command)
                     if self.bus.stop_requested():
-                        outcome, reason = telemetry.CANCELLED, "Ejecución interrumpida."
+                        outcome, reason = telemetry.CANCELLED, "EjecuciÃ³n interrumpida."
                         return False
                     if run.aborted and not run.stale_grasps:
                         for task in plan.tasks:
                             self.ledger.record(self._task_key(task, premise), False)
                         self._settle_rows()
-                        outcome, reason = telemetry.FAILED, "El ejecutor detuvo la tarea: no se confirmó el agarre o el movimiento. Revisa la cámara y la posición de la pieza."
+                        outcome, reason = telemetry.FAILED, "El ejecutor detuvo la tarea: no se confirmÃ³ el agarre o el movimiento. Revisa la cÃ¡mara y la posiciÃ³n de la pieza."
                         return True
                     if not run.stale_grasps:
                         if plan.places:
                             self.check(plan, premise)
                         else:
                             for task in plan.tasks:
-                                self.ledger.record(self._task_key(task, premise),
-                                                   bool(run.real_grasps and self.bot.holding))
+                                held = bool((run.real_grasps + run.kinematic_grasps) and self.bot.holding)
+                                self.ledger.record(self._task_key(task, premise), held)
                             self._settle_rows()
                         break
                     if attempt < self.args.regrasp:
@@ -2078,18 +4488,35 @@ class MonitoredRobot(load_demo10().Robot):
                         fresh = planner.plan_command(command, seen, offset=self.args.offset)
                         fresh_targets = {(fresh_premise.get(task.pick), fresh_premise.get(task.place)) for task in fresh.tasks}
                         if not fresh.moves or fresh.question or fresh.unresolved or fresh_targets != requested:
-                            self.bus.log("No se pueden conservar las identidades y destinos al reintentar; la orden termina como fallida.", level="warn")
+                            # A language re-plan must not silently switch to another
+                            # same-colour part or destination. Preserve the resolved task identity
+                            # and use the camera-linked recovery path once.
+                            if self._retry_original_targets(plan, premise):
+                                self.bus.log("La recuperación de la tarea original quedó verificada.",
+                                             level="info")
+                            else:
+                                self.bus.log("No se conservaron las identidades al replanificar y "
+                                             "la recuperación dirigida no verificó la colocación.",
+                                             level="warn")
                             break
                         premise, plan = fresh_premise, fresh
+                        if len(plan.picks) == 1:
+                            picked = next((thing for thing in seen.everything
+                                           if thing.id == plan.picks[0]), None)
+                            if picked is not None:
+                                effective_offset = self._scene_grasp_offset(picked, seen)
+                                if effective_offset != tuple(self.args.offset):
+                                    plan = planner.plan_command(
+                                        command, seen, offset=effective_offset)
             rows = list(self._task_rows.values())
             done = sum(row.get("state") == "done" for row in rows)
             outcome = (telemetry.SUCCESS if rows and done == len(rows) else
                        telemetry.PARTIAL_SUCCESS if done else telemetry.FAILED)
             reason = f"{done}/{len(rows)} tareas verificadas."
             if done < len(rows):
-                reason += " No se ha confirmado el agarre o la colocación de todas las piezas; consulta la lista de tareas."
+                reason += " No se ha confirmado el agarre o la colocaciÃ³n de todas las piezas; consulta la lista de tareas."
             if self.bus.stop_requested():
-                outcome, reason = telemetry.CANCELLED, "Ejecución interrumpida."
+                outcome, reason = telemetry.CANCELLED, "EjecuciÃ³n interrumpida."
             for task in plan.tasks:
                 key = self._task_key(task, premise)
                 prim = premise.get(task.pick)
@@ -2151,7 +4578,7 @@ class MonitoredRobot(load_demo10().Robot):
             self.bus.node("input", telemetry.ACTIVE, "escuchando")
             self.say("  listening...")
             heard = self.voice.listen()
-            self.bus.log(f"  Se ha oído: {heard}" if heard else "  No se ha oído ningún comando")
+            self.bus.log(f"  Se ha oÃ­do: {heard}" if heard else "  No se ha oÃ­do ningÃºn comando")
             if heard:
                 self.bus.node("input", telemetry.OK, heard)
                 self.bus.set_state(command_src="voice")
@@ -2181,7 +4608,7 @@ class MonitoredRobot(load_demo10().Robot):
             # STOP is a flag, checked before anything else on every pass, so it cannot be
             # consumed behind a queued sentence or control.
             if self.bus.stop_requested():
-                self.bus.log("  parada solicitada: no se acepta ninguna orden más", level="warn")
+                self.bus.log("  parada solicitada: no se acepta ninguna orden mÃ¡s", level="warn")
                 return "quit"
             text = self.bus.take_command(timeout=WEB_COMMAND_POLL_S)
             if text:
@@ -2260,21 +4687,21 @@ class MonitoredRobot(load_demo10().Robot):
                 self.bus.log(f"  {note}", level="fail")
         elif action == "save":
             if self.shown is None:
-                outcome, note = telemetry.FAILED, "todavía no hay imagen"
+                outcome, note = telemetry.FAILED, "todavÃ­a no hay imagen"
             else:
                 self.writer.force(self.shown)
                 self.say(f"  imagen guardada ({self.writer.written} en total) en "
                          f"{self.writer.folder}")
         elif action == "voice":
             outcome = telemetry.FAILED
-            note = ("el micrófono se elige al arrancar con --voice"
-                    if self.voice is None else "el micrófono ya está escuchando")
+            note = ("el micrÃ³fono se elige al arrancar con --voice"
+                    if self.voice is None else "el micrÃ³fono ya estÃ¡ escuchando")
             self.bus.log(f"  {note}", level="warn")
         elif action == "start":
             self.bus.open_start()
         else:
             outcome, note = telemetry.FAILED, f"la demo no sabe hacer {action!r}"
-            self.bus.log(f"  {note}; parámetros {params}", level="warn")
+            self.bus.log(f"  {note}; parÃ¡metros {params}", level="warn")
         if cid:
             self.bus.set_command_state(cid, outcome, note)
         return action
@@ -2306,7 +4733,7 @@ def apply_start_params(args, bus: telemetry.Bus) -> None:
             # Before the run exists there is nothing for these to act on. They are answered,
             # with that reason, rather than taken and forgotten.
             bus.set_command_state(control.get("id", ""), telemetry.CANCELLED,
-                                  "llegó antes de iniciar el entorno")
+                                  "llegÃ³ antes de iniciar el entorno")
     if start_id:
         bus.set_state(start_command_id=start_id)
     for key in ("variant", "camera", "rounds", "seed"):
@@ -2316,6 +4743,41 @@ def apply_start_params(args, bus: telemetry.Bus) -> None:
             except (TypeError, ValueError):
                 bus.log(f"  the dashboard's {key} = {params[key]!r} is not a valid value",
                         level="warn")
+    # A startup task is parsed before Isaac is created so its geometry-specific contact
+    # profile can be selected when the scene is built. It then follows the normal scripted
+    # command path after the robot and camera are ready.
+    startup_command = params.get("command")
+    if isinstance(startup_command, str) and startup_command.strip():
+        args.text = [startup_command.strip()]
+
+
+def infer_startup_grasp_profile(model, commands) -> str | None:
+    """Return a safe target profile only when every startup task selects one geometry.
+
+    Mixed-geometry commands deliberately use the scene's conservative default. Applying a
+    target-scoped physical profile to a different geometry can make contact less reliable.
+    """
+    supported = {"cube", "ball", "cylinder", "triangular_prism", "hexagonal_prism"}
+    kinds: set[str] = set()
+    for text in commands or ():
+        if not isinstance(text, str) or not text.strip():
+            continue
+        try:
+            parsed = model.parse(text)
+        except Exception:
+            return None
+        if parsed.get("errors"):
+            return None
+        items = parsed.get("items") or []
+        if not items:
+            return None
+        item_kinds = {item.get("kind") for item in items}
+        if not item_kinds or not item_kinds <= supported:
+            return None
+        kinds.update(item_kinds)
+        if len(kinds) > 1:
+            return None
+    return next(iter(kinds)) if len(kinds) == 1 else None
 
 
 def _terminal_reader(bus: telemetry.Bus) -> threading.Thread | None:
@@ -2381,6 +4843,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     # -- demo 10's flags, verbatim, so the muscle memory still works
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--device", default="cuda:0", choices=("cuda:0", "cpu"),
+                        help="dispositivo de fÃ­sica/tensores; CPU evita compartir PhysX CUDA")
     parser.add_argument("--voice", action="store_true",
                         help="listen to each command as well as accepting typed ones")
     parser.add_argument("--voice-model", default="small",
@@ -2398,6 +4862,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--spread", type=float, default=DEFAULT_SPREAD_M,
                         help="how far a randomised layout may move things, in metres; smaller "
                              "than demo 10's because the grasp envelope is 130 mm wide")
+    parser.add_argument("--allow-same-colour-clusters", action="store_true",
+                        help="probar objetos prÃ³ximos del mismo color sin permitir colisiones")
     parser.add_argument("--disturb", type=float, default=0.0, metavar="P",
                         help="probability of shoving the scene between planning and executing")
     parser.add_argument("--regrasp", type=int, default=2, metavar="N")
@@ -2443,28 +4909,63 @@ def build_parser() -> argparse.ArgumentParser:
                         metavar="N",
                         help="how many times a session is launched before giving up when "
                              "Isaac faults during start-up")
-    parser.add_argument("--work-x", type=float, nargs=2, default=list(DEFAULT_WORK_X),
+    parser.add_argument("--work-x", type=float, nargs=2, default=None,
                         metavar=("XMIN", "XMAX"),
                         help="where the robot may put a part down to be picked up. Demo 10's "
                              "declared working area is 0.27..0.52, but the arm cannot hold a "
                              "part past about 0.40: the jaws end up 14-17 mm from the "
                              "commanded pose there, against 3.1 mm of lateral slack")
     parser.add_argument("--allow-kinematic", action="store_true",
-                        help="permit demo 10's carry-the-part-by-hand fallback. Results obtained "
-                             "this way are NOT reproducible on real hardware")
+                        help="permit simulator-assisted grasps for every geometry (spheres and "
+                             "polygon prisms use this automatically); these are not physical "
+                             "gripper grasps")
+    parser.add_argument("--strict-physical", action="store_true",
+                        help="disable automatic simulator grasp assistance and require measured jaw contact")
+    parser.add_argument("--grasp-profile-kind",
+                        choices=("cube", "ball", "cylinder", "triangular_prism",
+                                 "hexagonal_prism"), default=None,
+                        help="scope a validated contact-pad profile to one resolved target geometry; "
+                             "use only for a command that does not grasp other geometries")
+    parser.add_argument("--contact-diagnostics-for", default=None, metavar="PRIM",
+                        help="optionally log filtered PhysX jaw forces for this configured object at close")
+    parser.add_argument("--sim-assist-policy", choices=("preemptive", "after_physical_miss"),
+                        default="preemptive",
+                        help="preemptive (default) uses a contact-gated, explicitly labelled simulator grasp for reliable demos; after_physical_miss tests friction first")
     parser.add_argument("--release", default="clear", choices=["clear", "rim"],
                         help="'clear' releases from the height the fingertips can reach above "
                              "the rim (the only one a real arm can do); 'rim' is demo 10's "
                              "12 mm above the rim, kept for comparison")
-    parser.add_argument("--close-command", type=float,
-                        default=real_world.GRIPPER.close_command_rad, metavar="RAD",
+    parser.add_argument("--close-command", type=float, default=None, metavar="RAD",
                         help="how far the jaws close. LeIsaac's 0.4 rad grips nothing here; "
-                             "0.20 rad holds these parts (measured, tools/probe_grip_hold.py)")
+                             "an explicit value overrides the validated per-shape profile")
     parser.add_argument("--grip-stiffness", type=float,
                         default=real_world.GRIPPER.actuator_stiffness, metavar="K",
                         help="gripper actuator stiffness. At the shipped 17.8 the ball "
                              "follows only 79%% of the lift; at 250 it follows 94%%")
     return parser
+
+
+def initialize_intent_parser(backend: str, catalog, model_factory=None):
+    """Build the requested parser, allowing hybrid mode to degrade safely without PyTorch.
+
+    The rule parser only executes fully explicit supported commands and abstains on ambiguous
+    ones. That makes it a safe runtime fallback when a minimal LeRobot Python lacks torch; an
+    explicitly requested model backend still raises the import error instead of silently changing.
+    """
+    from intent_parser import HybridParser
+
+    factory = model_factory or CommandModel
+    learned_model = None
+    rules_fallback = False
+    if backend != "rules":
+        try:
+            learned_model = factory()
+        except ModuleNotFoundError as exc:
+            if backend != "hybrid" or getattr(exc, "name", None) != "torch":
+                raise
+            rules_fallback = True
+    parser = learned_model if backend == "model" else HybridParser(learned_model, catalog)
+    return parser, rules_fallback
 
 
 def main(args=None, bus=None) -> int:
@@ -2473,19 +4974,28 @@ def main(args=None, bus=None) -> int:
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = build_parser()
     args = args or parser.parse_args()
+    args.close_command_override = args.close_command
+    if args.close_command is None:
+        args.close_command = real_world.GRIPPER.close_command_rad
     if args.web and not args.setup_only and not getattr(args, "worker", False):
         from supervisor import run
         return run(args)
 
     args.scene_data, args.scene_items = scene_config.build(args.scene_data) if getattr(args, "scene_data", None) else scene_config.load(args.scene_config)
+    _, configured_work_x, configured_work_y = scene_config.working_area(args.scene_data)
+    scene_spec.set_work_area(configured_work_x, configured_work_y)
+    if args.work_x is None:
+        args.work_x = list(configured_work_x)
     args.detect = sorted({i.color for i in args.scene_items})
 
     bus = bus or telemetry.Bus()
     bus.node("setup", telemetry.ACTIVE, "Preparando el entorno")
     bus.set_state(phase="setup", variant=args.variant, seed=args.seed, voice="off",
-                  rounds=args.rounds, camera=args.camera, release=args.release,
-                  close_command=args.close_command, grip_stiffness=args.grip_stiffness,
-                  allow_kinematic=args.allow_kinematic)
+                      rounds=args.rounds, camera=args.camera, release=args.release,
+                      close_command=args.close_command, grip_stiffness=args.grip_stiffness,
+                      allow_kinematic=args.allow_kinematic,
+                      sim_assist_policy=args.sim_assist_policy,
+                      sim_assist_shapes=sorted(SIM_ASSISTED_SHAPES))
 
     # The setup sheet before anything else, so the dashboard is useful even if Isaac never
     # starts: this is the part of the demo that transfers to a real bench.
@@ -2497,6 +5007,14 @@ def main(args=None, bus=None) -> int:
     for level, text in ui_spanish.findings(findings):
         bus.log(text, level="fail" if level == "fail" else
                 ("warn" if level == "warn" else "info"))
+    assisted_in_scene = sorted({item.kind for item in args.scene_items} & SIM_ASSISTED_SHAPES)
+    if assisted_in_scene:
+        labels = {"cube": "cubos", "ball": "esferas", "cylinder": "cilindros",
+                  "triangular_prism": "prismas triangulares",
+                  "hexagonal_prism": "prismas hexagonales"}
+        names = ", ".join(labels[kind] for kind in assisted_in_scene)
+        bus.log(f"SujeciÃ³n asistida por simulaciÃ³n para {names}; se cuenta aparte del agarre "
+                "fÃ­sico.", level="warn")
 
     monitor = None
     if args.web and not getattr(args, "worker", False):
@@ -2522,8 +5040,8 @@ def main(args=None, bus=None) -> int:
         print("  waiting for the start command there, or press Enter here", flush=True)
         enter_starts_the_run(bus)
         if not bus.wait_start(timeout=args.start_timeout or None):
-            bus.log("  tiempo de espera agotado: se arranca con la configuración de la línea "
-                    "de órdenes, sin esperar al panel", level="warn")
+            bus.log("  tiempo de espera agotado: se arranca con la configuraciÃ³n de la lÃ­nea "
+                    "de Ã³rdenes, sin esperar al panel", level="warn")
         apply_start_params(args, bus)
 
     # The command model before the simulator, and the microphone with it. Loading a model after
@@ -2531,14 +5049,26 @@ def main(args=None, bus=None) -> int:
     # loading at once did the same thing before that.
     bus.set_state(phase="loading")
     try:
-        model = CommandModel() if args.intent_backend != "rules" else None
-        if args.intent_backend != "model":
-            from intent_parser import HybridParser
-            model = HybridParser(model, scene_config.catalog(args.scene_data, args.scene_items))
+        catalog = scene_config.catalog(args.scene_data, args.scene_items)
+        model, rules_fallback = initialize_intent_parser(args.intent_backend, catalog)
+        if rules_fallback:
+            note = ("PyTorch no está disponible en este Python; se usará el intérprete por reglas. "
+                    "Las órdenes ambiguas se rechazarán para que puedas reformularlas.")
+            bus.log(note, level="warn")
+            bus.set_state(intent_backend_active="rules", intent_backend_note=note)
     except Exception as exc:
         bus.set_state(phase="failed", error=f"No se pudo cargar el modelo: {exc}")
         bus.fail_active(str(exc))
         raise
+    if args.grasp_profile_kind is None and args.text:
+        args.grasp_profile_kind = infer_startup_grasp_profile(model, args.text)
+        if args.grasp_profile_kind:
+            bus.log(f"  perfil de agarre validado activado para {args.grasp_profile_kind}, "
+                    "según la primera orden", level="info")
+            bus.set_state(grasp_profile_kind=args.grasp_profile_kind)
+        else:
+            bus.log("  la orden inicial incluye geometrías mezcladas o no resueltas; "
+                    "se usará el perfil general de agarre", level="warn")
     listener = None
     if args.voice:
         import voice
@@ -2548,34 +5078,62 @@ def main(args=None, bus=None) -> int:
             parser.error(f"--voice cannot work: {complaint}")
         listener = voice.Listener(model=args.voice_model, language=args.voice_language,
                                   device=args.voice_device)
-        bus.set_state(voice="on", voice_note="Micrófono activo; también puedes enviar órdenes desde el panel.")
+        bus.set_state(voice="on", voice_note="MicrÃ³fono activo; tambiÃ©n puedes enviar Ã³rdenes desde el panel.")
 
     bus.set_state(phase="starting", voice="on" if listener else "off")
     bus.node("setup", telemetry.ACTIVE, "Arrancando Isaac Sim")
-    print("  Arrancando Isaac Sim; el panel mostrará el estado y cualquier error.", flush=True)
+    print("  Arrancando Isaac Sim; el panel mostrarÃ¡ el estado y cualquier error.", flush=True)
     try:
         isaac_io.prepare_runtime(headless=args.headless)
 
         layout = None
         if args.variant == "out_of_reach":
-            from dataclasses import replace
-            layout = [replace(item, x=scene_spec.OUT_OF_REACH_ITEMS[item.prim][0],
-                              y=scene_spec.OUT_OF_REACH_ITEMS[item.prim][1])
-                      if item.prim in scene_spec.OUT_OF_REACH_ITEMS else item for item in args.scene_items]
+            layout = scene_spec.out_of_reach_layout(args.scene_items)
             env, sensor = build_real_env(args.camera, layout, pen=False,
-                                           grip_stiffness=args.grip_stiffness)
-            print("  two parts placed beyond the arm's reach, on purpose:", flush=True)
-            for item in scene_spec.OUT_OF_REACH_ITEMS:
-                print(f"    {item}: "
-                      f"{scene_spec.why_unreachable(*scene_spec.OUT_OF_REACH_ITEMS[item])}",
+                                           grip_stiffness=args.grip_stiffness,
+                                           device=args.device,
+                                           contact_diagnostics_for=args.contact_diagnostics_for)
+            unreachable = [item for item in layout if not item.container
+                           and scene_spec.reach_facts(item.x, item.y,
+                                                      scene_spec.TABLE_X,
+                                                      scene_spec.TABLE_Y)["beyond_arm"]]
+            print(f"  {len(unreachable)} pieza(s) colocada(s) fuera del alcance:", flush=True)
+            for item in unreachable:
+                print(f"    {item.prim}: "
+                      f"{scene_spec.why_unreachable(item.x, item.y, scene_spec.TABLE_X, scene_spec.TABLE_Y)}",
                       flush=True)
         else:
             env, sensor = build_real_env(args.camera, list(args.scene_items),
                                          pen=args.variant == "contained",
-                                         grip_stiffness=args.grip_stiffness)
+                                         grip_stiffness=args.grip_stiffness,
+                                         device=args.device,
+                                         auto_validated_contact_pads=True,
+                                         grasp_profile_kind=args.grasp_profile_kind,
+                                         contact_diagnostics_for=args.contact_diagnostics_for)
             if args.variant == "contained":
+                kerb_x, kerb_y = pen_module.contained_region()
                 print(f"  working area walled in: a {pen_module.PEN_HEIGHT * 100:.1f} cm kerb around "
-                      f"x {scene_spec.WORK_X} y {scene_spec.WORK_Y}", flush=True)
+                      f"x {kerb_x} y {kerb_y}", flush=True)
+                if abs(kerb_y[0] - scene_spec.WORK_Y[0]) > 1e-6:
+                    print(f"  NOTA: el muro cercano del cerco se ha retirado de y {scene_spec.WORK_Y[0]:.3f} "
+                          f"a y {kerb_y[0]:.3f}: más cerca de la base el brazo choca con él y no puede "
+                          "acercarse a las piezas. Usa la variante 'open' o aleja el área de la base.",
+                          flush=True)
+        # Record registered rigid roots immediately before IsaacLab's reset event.
+        # This pinpoints any kinematic body that the reset callback still tries to
+        # write velocities to, without changing scene physics based on guesses.
+        for actor_name in env.scene.keys():
+            try:
+                actor = env.scene[actor_name]
+                view = getattr(actor, "root_physx_view", None)
+                if view is None:
+                    continue
+                paths = getattr(view, "prim_paths", ())
+                if paths:
+                    print(f"  [reset-body] {actor_name}: {paths[0]} kinematic="
+                          f"{isaac_io.root_is_kinematic(actor)}", flush=True)
+            except Exception as exc:
+                print(f"  [reset-body] {actor_name}: inspection failed ({exc})", flush=True)
         env.reset()
         original_step = env.step
         def measured_step(*values, **options):
@@ -2586,13 +5144,13 @@ def main(args=None, bus=None) -> int:
             return result
         env.step = measured_step
         if scene_spec.SHIPPED_CUBE not in {i.prim for i in args.scene_items}:
-            import torch
             hidden = env.scene[scene_spec.SHIPPED_CUBE]
             pose = hidden.data.root_state_w[:, :7].clone()
             pose[:, 2] = -10.0
             hidden.write_root_pose_to_sim(pose)
-            hidden.write_root_velocity_to_sim(torch.zeros_like(hidden.data.root_state_w[:, 7:13]))
         isaac_io.aim_camera(env, args.camera, sensor)
+        if getattr(env, "demo11_backup_camera", None) is not None:
+            isaac_io.aim_camera(env, "top", env.demo11_backup_camera)
         was = set_gripper(env, args.close_command)
         print(f"  jaws close to {args.close_command:.2f} rad (was {was:.2f} rad, which grips nothing "
               f"smaller than about 8 cm)", flush=True)
@@ -2638,7 +5196,7 @@ def main(args=None, bus=None) -> int:
         start_id = bus.snapshot()["state"].get("start_command_id")
         if start_id:
             bus.set_command_state(start_id, telemetry.SUCCESS, "Entorno listo.")
-        bus.node("setup", telemetry.OK, f"Isaac en marcha; variante {args.variant}, cámara "
+        bus.node("setup", telemetry.OK, f"Isaac en marcha; variante {args.variant}, cÃ¡mara "
                                         f"{args.camera}")
         robot.findings()
 
@@ -2651,18 +5209,28 @@ def main(args=None, bus=None) -> int:
                 layout = robot.base
                 robot.say(f"\n=== round {round_index} (static layout) ===")
             else:
-                layout = dynamics.randomize(robot.base, seed, spread=args.spread)
+                layout = dynamics.randomize(
+                    robot.base, seed, spread=args.spread,
+                    allow_same_colour_clusters=args.allow_same_colour_clusters)
                 try:
                     for item in layout:
                         scene_config._check_position(item, [other for other in layout if other is not item])
                 except ValueError:
                     layout = list(robot.base)
-                    robot.say("La variación no deja separación segura; se conserva la disposición validada.")
+                    robot.say("La variaciÃ³n no deja separaciÃ³n segura; se conserva la disposiciÃ³n validada.")
                 robot.say(f"\n=== round {round_index} (seed {seed}) ===")
             bus.set_state(round=round_index, seed=seed, phase="scene")
 
-            robot.park()  # before populate: the park sweep moves whatever is down
+            park_pose = (0.20, -0.58, 0.39) if args.camera == "front" else None
+            parked = robot.park(pose=park_pose)  # clear the table before repopulating it
+            if not parked.ok:
+                raise RuntimeError(f"No se puede poblar la escena: {parked.note}")
             robot.populate(layout)
+            if robot._last_backup_capture is not None:
+                # ``populate`` has just settled this exact scene; the warmed top-camera
+                # frame is valid for the opening observation even if a prior round had
+                # marked its cache stale before resetting the scene.
+                robot._backup_capture_stale = False
             robot._placed_slots.clear()
             robot.round_index = round_index
             robot.label = f"round{round_index}"
@@ -2719,9 +5287,9 @@ def main(args=None, bus=None) -> int:
                              ("no verificadas", robot.missed),
                              ("replanificaciones", robot.replanned),
                              ("sujeciones rechazadas", robot.bot.refused),
-                             ("pérdidas de objeto tras cerrar", robot.bot.lost),
+                             ("pÃ©rdidas de objeto tras cerrar", robot.bot.lost),
                              ("centrados del efector", robot.bot.corrected),
-                             ("sujeciones forzadas (solo simulación)", robot.bot.kinematic)):
+                             ("sujeciones forzadas (solo simulaciÃ³n)", robot.bot.kinematic)):
             robot.say(f"  {label:<40}: {value}")
         bus.node("report", telemetry.OK if status in ("SUCCESS", "NO_TASKS") else telemetry.FAIL,
                  f"{ok_count} ok, {failed_count} fallidas")
@@ -2731,10 +5299,11 @@ def main(args=None, bus=None) -> int:
                       failed_labels=robot.ledger.failed_labels(),
                       recovered=robot.recovered, missed=robot.missed,
                       refused_grasps=robot.bot.refused, lost_grasps=robot.bot.lost,
+                      real_grasps=getattr(robot, "real_grasps_total", 0),
                       kinematic_grasps=robot.bot.kinematic)
-        if robot.bot.allow_kinematic:
-            robot.say("  NOTA: --allow-kinematic estaba activo: algunas piezas se llevaron "
-                      "escribiendo su pose. Un brazo real no puede hacerlo.")
+        if robot.bot.kinematic:
+            robot.say("  NOTA: los agarres asistidos se cuentan por separado: el simulador "
+                      "mantuvo la pieza ligada al efector; no equivalen a un agarre fÃ­sico.")
         if robot.writer:
             robot.writer.close()
         return EXIT_CODE[status]

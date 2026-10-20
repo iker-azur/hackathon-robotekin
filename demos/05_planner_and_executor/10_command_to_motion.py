@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import random
 import sys
 from pathlib import Path
@@ -63,6 +64,7 @@ import isaac_io  # noqa: E402
 import perceive  # noqa: E402
 import planner  # noqa: E402
 import scene as scene_module  # noqa: E402
+import real_world  # noqa: E402
 import scene_spec  # noqa: E402
 import viewer as viewer_module  # noqa: E402
 from command_model_v2.command_model import CommandModel  # noqa: E402
@@ -192,7 +194,7 @@ class Robot:
 
     # -- the round -------------------------------------------------------------
 
-    def park(self) -> None:
+    def park(self, pose=None):
         """Get the arm out of the camera's view, and let go of anything it is holding.
 
         **Nothing on the table is put back.** An earlier version measured what the sweep
@@ -219,7 +221,25 @@ class Robot:
             self.bot.settle(20)
 
         before = {prim: self._xy(prim) for prim in loose}
-        self.bot.park()
+        result = self.bot.park(pose=pose)
+        # The IK drive to the park point ends in whatever configuration its starting posture led
+        # to (the wrist target runs past its limit, so the elbow, pan and roll all differ from
+        # the startup park). The next command's approach then started from that worse posture and
+        # failed ("pre-grasp hover did not converge"), every time in a second command of the same
+        # session. The first park is the posture the validated approaches start from: keep it, and
+        # put the arm back into exactly it after every later park.
+        canonical = getattr(self, "_park_joints", None)
+        if canonical is None or os.environ.get("DEMO11_DISABLE_PARK_RESTORE") == "1":
+            isaac_io.hold_arm_pose(self.env)
+            self._park_joints = self.env.scene["robot"].data.joint_pos.clone()
+        else:
+            isaac_io.hold_arm_pose(self.env, positions=canonical)
+        self.bot.current = self.bot._gripper_pos().clone()
+        height = float(self.bot.current[0, 2])
+        if height < 0.12:
+            return executor_module.StepResult(
+                action="park", ok=False,
+                note=f"arm remained too low to populate scene safely ({height:.3f} m)")
 
         moved = []
         for prim in sorted(loose):
@@ -229,6 +249,8 @@ class Robot:
         if moved:
             self.say(f"  the park sweep moved {', '.join(moved)}; leaving them where they are")
         self.park_swept = {prim: math.dist(before[prim], self._xy(prim)) for prim in loose}
+        return executor_module.StepResult(action="park", ok=result.ok,
+                                          note=f"arm held at measured pose ({height:.3f} m)")
 
     def _xy(self, prim: str) -> tuple[float, float]:
         where = self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy()
@@ -831,11 +853,7 @@ class Robot:
         if item is None or tray is None:
             return False
         where = self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy()
-        half_w, half_d = tray.inner[0] / 2.0, tray.inner[1] / 2.0
-        rest_z = scene_spec.TABLE_TOP_Z + tray.floor + item.height / 2.0
-        return (abs(float(where[0]) - tray.x) <= half_w
-                and abs(float(where[1]) - tray.y) <= half_d
-                and abs(float(where[2]) - rest_z) < 0.006)
+        return real_world.cavity_verdict(where, item.height, tray)[0]
 
     def _why_not_inside(self, prim: str) -> str:
         """Which of the containment tests failed, and by how much, in one clause.
@@ -852,22 +870,7 @@ class Robot:
         if item is None or tray is None:
             return "is not in the scene any more"
         where = self.env.scene[prim].data.root_pos_w[0].detach().cpu().numpy()
-        half_w, half_d = tray.inner[0] / 2.0, tray.inner[1] / 2.0
-        rest_z = scene_spec.TABLE_TOP_Z + tray.floor + item.height / 2.0
-        off_x = abs(float(where[0]) - tray.x) - half_w
-        off_y = abs(float(where[1]) - tray.y) - half_d
-        off_z = abs(float(where[2]) - rest_z)
-        if off_x > 0.0 or off_y > 0.0:
-            return (f"came to rest at ({where[0]:+.3f}, {where[1]:+.3f}), "
-                    f"{off_x * 1000:.0f} mm outside the cavity in x and "
-                    f"{off_y * 1000:.0f} mm in y")
-        # off_z rounds to 0 mm here more often than it should not: the miss is computed before
-        # the last settle and re-read after it, so an object balanced on the rim can have
-        # dropped the last millimetre into place in between. Saying "0 mm off" would be
-        # nonsense, so it says which way it went.
-        return (f"is at ({where[0]:+.3f}, {where[1]:+.3f}) and just inside the cavity, but "
-                f"settled {off_z * 1000:.1f} mm from the resting height - it was balanced on "
-                f"the rim")
+        return real_world.cavity_verdict(where, item.height, tray)[1]
 
     def _retry_one(self, prim: str) -> bool:
         """Pick one object up again and put it back where it was sent.
@@ -1140,7 +1143,9 @@ def main() -> int:
                 layout = dynamics.randomize(robot.base, seed, spread=args.spread)
                 robot.say(f"\n=== round {round_index} (seed {seed}) ===")
 
-            robot.park()  # before populate: the park sweep moves whatever is down
+            parked = robot.park()  # clear the table, then hold the arm still through population
+            if not parked.ok:
+                raise RuntimeError(f"Cannot populate scene: {parked.note}")
             robot.populate(layout)
             robot.round_index = round_index
             robot.label = f"round{round_index}"
