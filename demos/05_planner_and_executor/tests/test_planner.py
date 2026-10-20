@@ -12,8 +12,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import planner  # noqa: E402
+import real_world  # noqa: E402
 import scene_spec  # noqa: E402
-from scene import Scene  # noqa: E402
+from scene import Scene, Thing  # noqa: E402
 
 FIXTURES = sorted((Path(__file__).resolve().parent / "fixtures").glob("*.json"))
 
@@ -28,8 +29,36 @@ def check(condition, message: str) -> None:
         failures.append(message)
 
 
+def put_trays_in_test_workspace(s: Scene) -> None:
+    """Move recorded receptacles to where the arm can lower a part into them.
+
+    The fixtures were recorded with trays at y -0.51..-0.52, 0.14-0.16 m from the base, nearer
+    than ``scene_spec.MIN_PLACE_REACH_M``. These tests are about the planner's step structure, not
+    about reach (that has its own tests in test_demo11.py), so keep each tray's x and bring it out
+    to 0.19 m.
+    """
+    for tray in s.containers:
+        if tray.pos_m is None:
+            continue
+        x = tray.pos_m[0]
+        lateral = abs(x - scene_spec.ROBOT_XY[0])
+        y = scene_spec.ROBOT_XY[1] + (0.19 ** 2 - min(lateral, 0.18) ** 2) ** 0.5
+        if y > tray.pos_m[1]:
+            tray.pos_m = [x, y, tray.pos_m[2]]
+            tray.aim_xy = [x, y]
+
+
 def scene(name: str = "trial000") -> Scene:
-    return Scene.read(Path(__file__).resolve().parent / "fixtures" / f"{name}.json")
+    s = Scene.read(Path(__file__).resolve().parent / "fixtures" / f"{name}.json")
+    put_trays_in_test_workspace(s)
+    return s
+
+
+def put_red_ball_in_test_workspace(s: Scene) -> None:
+    """Keep planner behavior tests out of the robot's measured near-base dead zone."""
+    ball = next(t for t in s.objects if t.kind == "ball" and t.color == "red")
+    ball.pos_m = [0.38, -0.435, ball.pos_m[2]]
+    ball.aim_xy = [0.38, -0.435]
 
 
 def command(intent, items=None, place=None, sort_by="none") -> dict:
@@ -60,6 +89,7 @@ def test_no_motion_intents():
 
 def test_pick_only():
     s = scene()
+    put_red_ball_in_test_workspace(s)
     plan = planner.plan_command(command("pick", [item("ball", "red")]), s)
     check(plan.moves, "pick should move")
     check(len(plan.picks) == 1, f"one pick, got {plan.picks}")
@@ -69,6 +99,12 @@ def test_pick_only():
 
 def test_pick_and_place():
     s = scene()
+    # The recorded red ball at (0.357, -0.451) is inside the newly measured SO-101 inner
+    # dead zone. Put this planner-cycle test at the strict-physical validated central pose;
+    # the dead-zone refusal is covered separately in test_demo11.py.
+    ball = next(t for t in s.objects if t.kind == "ball" and t.color == "red")
+    ball.pos_m = [0.38, -0.435, ball.pos_m[2]]
+    ball.aim_xy = [0.38, -0.435]
     plan = planner.plan_command(
         command("pick_and_place", [item("ball", "red")], {"kind": "box", "color": "red"}), s)
     check(plan.moves, "pick_and_place should move")
@@ -80,6 +116,15 @@ def test_pick_and_place():
     check(plan.picks == reds, f"the red ball is {reds} in {s.source}, got {plan.picks}")
     check(len(plan.places) == 1, f"one destination, got {plan.places}")
     check(len(plan.steps) == 8, f"the pick-and-place cycle is 8 steps, got {len(plan.steps)}")
+    ball = next(t for t in s.objects if t.kind == "ball" and t.color == "red")
+    tray = next(t for t in s.containers if t.color == "red")
+    drop = next(step.pose for step in plan.steps if step.action == "lower"
+                and step.target == tray.id)
+    centre = planner.place_pose(tray)
+    compensation = real_world.jaw_sweep_approach_offset(ball.kind, ball.size_m)
+    check(abs(drop[0] - centre[0] - compensation[0]) < 1e-9
+          and abs(drop[1] - centre[1] - compensation[1]) < 1e-9,
+          "ball release pose compensates the measured off-centre physical grasp")
 
 
 def test_step_poses_are_sane():
@@ -98,8 +143,12 @@ def test_step_poses_are_sane():
               f"{step.action} x={x:.3f} outside the working area {scene_spec.WORK_X}")
         check(scene_spec.WORK_Y[0] - 0.01 < y < scene_spec.WORK_Y[1] + 0.01,
               f"{step.action} y={y:.3f} outside the working area {scene_spec.WORK_Y}")
-        check(scene_spec.TABLE_TOP_Z <= z <= planner.TRAVEL_Z + 1e-9,
-              f"{step.action} z={z:.3f} between the table and travel height")
+        step_high = planner.TRAVEL_Z
+        if step.action in ("above", "lift") and step.target in things:
+            step_high = max(step_high, planner.grasp_pose(things[step.target])[2]
+                            + planner.GRASP_APPROACH_CLEARANCE_M)
+        check(scene_spec.TABLE_TOP_Z <= z <= step_high + 1e-9,
+              f"{step.action} z={z:.3f} within its safe approach/travel height")
         check(planner.in_workspace(step.pose) is None,
               f"{step.action} pose {step.pose} flagged unreachable: {planner.in_workspace(step.pose)}")
     del things
@@ -152,6 +201,89 @@ def test_grasp_offset_is_applied():
     check(shifted[2] == base[2], "offset must not change z")
 
 
+def test_sim_assisted_cluster_offset_is_narrowly_scoped():
+    triangle = Thing(id=1, kind="triangular_prism", color="red", centroid_px=[0, 0],
+                     bbox_px=[0, 0, 10, 10], area_px=80, mean_hsv=[0, 0, 0],
+                     confidence=.8, source="test", pos_m=[.344, -.444, .049],
+                     size_m=[.020, .020, .016], aim_xy=[.345, -.445])
+    neighbor = Thing(id=2, kind="ball", color="green", centroid_px=[0, 0],
+                     bbox_px=[0, 0, 12, 12], area_px=100, mean_hsv=[0, 0, 0],
+                     confidence=.8, source="test", pos_m=[.390, -.440, .056],
+                     size_m=[.030, .030, .030], aim_xy=[.390, -.440])
+    other = Thing(id=3, kind="box", color="red", centroid_px=[0, 0],
+                  bbox_px=[0, 0, 20, 20], area_px=300, mean_hsv=[0, 0, 0],
+                  confidence=.8, source="test", pos_m=[.485, -.505, .066],
+                  aim_xy=[.485, -.505])
+    peers = [triangle, neighbor, other]
+    correction = planner.simulated_cluster_grasp_offset(
+        triangle, peers, enabled=True, camera="top")
+    check(correction == (-.013, .005),
+          f"tested assisted 20 mm cluster gets the measured correction: {correction}")
+    custom = planner.simulated_cluster_grasp_offset(
+        triangle, peers, offset=(.002, -.001), enabled=True, camera="top")
+    check(custom == (-.011, .004), "scene correction composes with the user's offset")
+    check(planner.simulated_cluster_grasp_offset(
+        triangle, peers, enabled=False, camera="top") == (0.0, 0.0),
+        "strict physical execution never receives the simulated correction")
+    for camera, supported in {
+            "top": {"triangular_prism"},
+            "front": {"cube", "cylinder", "triangular_prism", "hexagonal_prism"},
+            "side": {"cube", "hexagonal_prism"},
+    }.items():
+        for kind in {"cube", "ball", "cylinder", "triangular_prism", "hexagonal_prism"}:
+            triangle.kind = kind
+            expected = (-.013, .005) if kind in supported else (0.0, 0.0)
+            check(planner.simulated_cluster_grasp_offset(
+                triangle, peers, enabled=True, camera=camera) == expected,
+                f"{camera}/{kind} uses only its empirically tested assisted profile")
+    triangle.kind = "triangular_prism"
+    check(planner.simulated_cluster_grasp_offset(
+        triangle, [triangle, other], enabled=True, camera="top") == (0.0, 0.0),
+        "isolated triangles do not receive the cluster correction")
+    for kind in ("cube", "hexagonal_prism"):
+        triangle.kind = kind
+        check(planner.simulated_cluster_grasp_offset(
+            triangle, [triangle, other], enabled=True, camera="side") == (-.013, .005),
+            f"measured side-view {kind} single-object miss receives its E2E-checked correction")
+    triangle.kind = "ball"
+    check(planner.simulated_cluster_grasp_offset(
+        triangle, [triangle, other], enabled=True, camera="side") == (0.0, 0.0),
+        "side-view ball single-object baseline remains unchanged")
+    triangle.kind = "triangular_prism"
+    triangle.size_m = [.030, .030, .024]
+    check(planner.simulated_cluster_grasp_offset(
+        triangle, peers, enabled=True, camera="top") == (0.0, 0.0),
+        "other triangle sizes do not inherit the 20 mm assisted correction")
+
+
+def test_jaw_sweep_offsets_are_object_specific_and_measured():
+    s = scene()
+    ball = next(t for t in s.objects if t.kind == "ball")
+    base_xy = ball.aim_xy or scene_spec.aim_point(ball.pos_m)
+    pose = planner.grasp_pose(ball)
+    check(abs(pose[0] - base_xy[0]) < 1e-9
+          and abs(pose[1] - base_xy[1] - .008) < 1e-9,
+          "ball grasp aims 8 mm along the measured jaw-closing sweep")
+    check(real_world.jaw_sweep_approach_offset("cylinder", (0.03, 0.03, 0.024))
+          == (0.0, .008),
+          "cylinders use the validated sweep compensation")
+    check(real_world.jaw_sweep_approach_offset("ball", (0.02, 0.02, 0.02)) == (0.0, 0.0)
+          and real_world.jaw_sweep_approach_offset("cylinder", (0.02, 0.02, 0.016))
+          == (0.0, 0.0),
+          "20 mm round objects do not inherit the unvalidated 30 mm grasp profile")
+    check(real_world.jaw_sweep_approach_offset("triangular_prism") == (0.0, 0.0)
+          and real_world.jaw_sweep_approach_offset(
+              "hexagonal_prism", (.020, .020, .018)) == (0.0, 0.0)
+          and real_world.jaw_sweep_approach_offset(
+              "hexagonal_prism", (.030, .030, .024)) == (0.0, 0.0),
+          "unvalidated prism sizes remain at the calibrated centre")
+
+
+def test_grasp_lift_clearance_matches_strict_round_object_envelope():
+    check(abs(planner.GRASP_APPROACH_CLEARANCE_M - .09) < 1e-9,
+          "grasp lift stays at the 90 mm strict ball/cylinder carry height")
+
+
 def test_ambiguous_asks_rather_than_guessing():
     s = scene("trial000")
     # trial000 has two red things: #3 is a red ball and #5 a red cube, so "the red one" by
@@ -177,6 +309,7 @@ def test_no_destination_is_refused():
 
 def test_sequence_with_two_destinations():
     s = scene()
+    put_red_ball_in_test_workspace(s)
     plan = planner.plan_command(command("sequence", [
         item("ball", "red", place={"kind": "box", "color": "red"}),
         item("ball", "green", place={"kind": "box", "color": "blue"}),
@@ -207,6 +340,7 @@ def test_clear_everything():
 
 def test_clear_with_filter():
     s = scene()
+    put_red_ball_in_test_workspace(s)
     plan = planner.plan_command(
         command("clear", [item("ball", "red", quantity="all")], {"kind": "box", "color": "blue"}), s)
     check(plan.moves, "a filtered clear should move")
@@ -216,6 +350,7 @@ def test_clear_with_filter():
 def test_every_fixture():
     for path in FIXTURES:
         s = Scene.read(path)
+        put_trays_in_test_workspace(s)
         for intent in ("pick_and_place", "sort", "clear", "pick", "sequence"):
             plan = planner.plan_command(command(intent, [], {"kind": "box", "color": "red"}), s)
             check(plan.summary != "", f"{path.name} {intent}: no summary")
@@ -237,6 +372,7 @@ def test_missing_destination_color_never_chooses_another_box():
 def test_quantity_is_not_silently_reduced_and_clear_keeps_its_filter():
     import ground
     s=scene()
+    put_red_ball_in_test_workspace(s)
     result=ground.ground(s,item("ball","red",quantity=2))
     check(not result.ok, "asking for two red balls cannot select the only one")
     result=ground.ground(s,item("ball",None,quantity="all"))
