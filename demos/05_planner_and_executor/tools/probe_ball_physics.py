@@ -337,6 +337,47 @@ def clear_the_table(env, items) -> None:
     env.scene.update(dt=env.physics_dt)
 
 
+def surface(env, items) -> None:
+    """Read PhysX's actual table contact surface, including height and normal."""
+    import torch
+    from omni.physx import get_physx_scene_query_interface
+
+    clear_the_table(env, items)
+    query = get_physx_scene_query_interface()
+    print("section: surface  (PhysX downward rays; table hit position and world normal)")
+    xs = (.30, .34, .38, .42, .46)
+    ys = (-.47, -.435, -.40)
+    for y in ys:
+        row = []
+        for x in xs:
+            hit = query.raycast_closest((x, y, .30), (0.0, 0.0, -1.0), .6)
+            if not hit or not hit.get("hit"):
+                row.append("no-hit")
+                continue
+            point = hit.get("position", (0.0, 0.0, 0.0))
+            normal = hit.get("normal", (0.0, 0.0, 0.0))
+            path = str(hit.get("primPath", "?"))
+            row.append(f"z={float(point[2]):.5f} n=({float(normal[0]):+.4f},"
+                       f"{float(normal[1]):+.4f},{float(normal[2]):+.4f}) {path}")
+        print(f"  y={y:+.3f}: " + " | ".join(row))
+    # Also report the ball's exact pose and velocity immediately after one free-contact tick.
+    ball = next((item for item in items if item.kind == "ball" and not item.container), None)
+    if ball is not None:
+        actor = env.scene[ball.prim]
+        target = torch.tensor([[.38, -.435, scene_spec.TABLE_TOP_Z + ball.height / 2,
+                                1.0, 0.0, 0.0, 0.0]], device=env.device)
+        zeros = torch.zeros(1, 6, device=env.device)
+        actor.write_root_pose_to_sim(target)
+        actor.write_root_velocity_to_sim(zeros)
+        for step in range(1, 7):
+            env.sim.step(render=False)
+            env.scene.update(dt=env.physics_dt)
+            pos = actor.data.root_pos_w[0].detach().cpu().numpy()
+            vel = actor.data.root_lin_vel_w[0].detach().cpu().numpy()
+            print(f"  contact step {step}: pos=({pos[0]:.6f},{pos[1]:.6f},{pos[2]:.6f}) "
+                  f"v=({vel[0]:+.5f},{vel[1]:+.5f},{vel[2]:+.5f}) m/s")
+
+
 def reach(env) -> None:
     """Where does the arm actually get to, in free space? Commanded hold point, read back.
 
@@ -457,7 +498,8 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--section", default="all",
-                        choices=["all", "roll", "contact", "teleport", "frame", "reach"])
+                        choices=["all", "roll", "contact", "teleport", "frame", "reach",
+                                 "surface"])
     args = parser.parse_args()
 
     items = list(scene_spec.DEFAULT_SCENE)
@@ -477,6 +519,8 @@ def main() -> int:
             teleport(env, items)
         if args.section in ("all", "reach"):
             reach(env)
+        if args.section == "surface":
+            surface(env, items)
         return 0
     finally:
         env.close()
