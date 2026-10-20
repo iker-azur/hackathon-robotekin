@@ -95,7 +95,7 @@ RUBBER_PAD = Material("gripper rubber pad", 1100.0, 0.90, 0.75, 0.10,
 
 # Which material each declared part is made of. ``scene_spec`` decides kind and colour; this
 # decides what that part weighs and how it slides.
-PART_MATERIALS = {"cube": ABS, "ball": PET_BALL, "box": ABS, "tray": ABS}
+PART_MATERIALS = {"cube": ABS, "ball": PET_BALL, "cylinder": ABS, "box": ABS, "tray": ABS}
 
 # The receptacles are declared mass, not density: they are printed parts with ribs and fillets
 # whose volume is not the volume of their bounding box.
@@ -152,6 +152,36 @@ class Gripper:
 
 GRIPPER = Gripper()
 
+# The SO-101's moving jaw follows an arc. Strict no-assist tests found that a sphere or
+# cylinder placed at the tool midpoint is swept about 8 mm tangentially as the jaw closes.
+# Pre-offset the tool along the measured sweep so the 30 mm part settles back under the
+# midpoint. This is a grasp-point correction, not a change to the object's world pose. These
+# offsets remain limited to the round-object cases with integrated strict evidence. An isolated
+# 30 mm hexagon bench suggested a different offset, but the camera-driven clustered scene matrix
+# did not reproduce that gain across views, so hexagons stay centred until that interaction is
+# characterized.
+JAW_SWEEP_APPROACH_OFFSET_M = {
+    "ball": (0.0, 0.008),
+    "cylinder": (0.0, 0.008),
+}
+
+
+def jaw_sweep_approach_offset(kind: str, size_m=None) -> tuple[float, float]:
+    """Measured XY pre-offsets, restricted to object sizes tested in the grasp bench."""
+    offset = JAW_SWEEP_APPROACH_OFFSET_M.get(str(kind), (0.0, 0.0))
+    if offset == (0.0, 0.0):
+        return offset
+    if size_m is None:
+        return offset  # legacy callers without dimensions keep the validated default profile
+    if len(size_m) < 2:
+        return (0.0, 0.0)
+    footprint = tuple(float(value) for value in size_m[:2])
+    # Do not interpolate a jaw-contact calibration across object scales: 20 mm objects were
+    # expelled in every strict trial under both the offset and the centred control profile.
+    if any(abs(value - 0.030) > 0.001 for value in footprint):
+        return (0.0, 0.0)
+    return offset
+
 # The widest part that may go between the jaws: the aperture less this. It is not zero because
 # a part exactly filling the aperture cannot be centred - it binds on one side first, which on
 # a real arm is a 1-2 mm error you cannot see until the placement misses.
@@ -195,6 +225,14 @@ def volume_m3(item: scene_spec.Item) -> float:
     if item.kind == "ball":
         radius = item.size[0] / 2.0
         return 4.0 / 3.0 * math.pi * radius ** 3
+    if item.kind == "cylinder":
+        radius = item.size[0] / 2.0
+        return math.pi * radius ** 2 * float(item.size[2])
+    if item.kind in ("triangular_prism", "hexagonal_prism"):
+        sides = 3 if item.kind == "triangular_prism" else 6
+        radius = item.size[0] / 2.0
+        area = sides * radius ** 2 * math.sin(2.0 * math.pi / sides) / 2.0
+        return area * float(item.size[2])
     return float(item.size[0]) * float(item.size[1]) * float(item.size[2])
 
 
@@ -303,6 +341,43 @@ def placement_margin(item: scene_spec.Item, tray: scene_spec.Item,
 def rim_z(tray: scene_spec.Item) -> float:
     """The world height of a tray's rim, which is what the jaws have to get over."""
     return scene_spec.TABLE_TOP_Z + float(tray.height)
+
+
+# How far below the flat-resting height a part's centre may be and still count as on the floor:
+# the floor slab compresses a little under a falling part.
+CAVITY_Z_SLACK_BELOW_M = 0.006
+
+
+def cavity_verdict(position, part_height_m: float, tray: scene_spec.Item) -> tuple[bool, str]:
+    """Is a part that came to rest at ``position`` inside this tray's cavity, and why not if not.
+
+    Inside means its centre is within the cavity in x and y, and its height is between the
+    floor-rest height (less a little settling) and that height plus 0.4 of the part's height.
+    A part lying on the floor in any attitude has its centre at most half its 3-D diagonal above
+    the floor: +11 mm for a 30 mm cube standing on a corner, +6.2 mm on an edge. A part
+    balanced on the wall has its centre at least half a part above the rim, +24 mm for the same
+    cube. The bound sits between the two. It used to be the flat-rest height plus 6 mm, which
+    called a cube that settled on an edge or leaning against the cavity wall "balanced on the
+    rim" and failed the whole order (seed 24002: centre 6.2 mm above flat rest, inside the
+    cavity in x and y).
+    """
+    x, y, z = float(position[0]), float(position[1]), float(position[2])
+    half_w, half_d = tray.inner[0] / 2.0, tray.inner[1] / 2.0
+    rest_z = scene_spec.TABLE_TOP_Z + tray.floor + part_height_m / 2.0
+    off_x = abs(x - tray.x) - half_w
+    off_y = abs(y - tray.y) - half_d
+    if off_x > 0.0 or off_y > 0.0:
+        return False, (f"came to rest at ({x:+.3f}, {y:+.3f}), {max(off_x, 0.0) * 1000:.0f} mm "
+                       f"outside the cavity in x and {max(off_y, 0.0) * 1000:.0f} mm in y")
+    if z < rest_z - CAVITY_Z_SLACK_BELOW_M:
+        return False, (f"is at ({x:+.3f}, {y:+.3f}) over the cavity but {(rest_z - z) * 1000:.1f} "
+                       "mm below the floor-rest height - it is not on the cavity floor")
+    ceiling = rest_z + 0.4 * part_height_m
+    if z > ceiling + 1e-9:
+        return False, (f"is at ({x:+.3f}, {y:+.3f}) over the cavity but its centre is "
+                       f"{(z - rest_z) * 1000:.1f} mm above flat rest (a part on the floor tops "
+                       f"out at {(ceiling - rest_z) * 1000:.0f} mm) - it is balanced on the wall")
+    return True, "is in the cavity"
 
 
 def safe_release_z(tray: scene_spec.Item, gripper: Gripper = GRIPPER) -> float:
@@ -417,7 +492,9 @@ def preflight(items: list[scene_spec.Item], camera: str = "top",
                 f"lower and shorten it"))
 
     for item in items:
-        unreachable = scene_spec.why_unreachable(item.x, item.y)
+        unreachable = scene_spec.why_unreachable(
+            item.x, item.y, require_pick_envelope=not item.container,
+            require_place_envelope=item.container)
         if unreachable:
             problems.append(("fail", f"reach: {item.prim} - {unreachable}"))
 
@@ -470,11 +547,12 @@ def setup_sheet(items: list[scene_spec.Item], camera: str = "top",
         f"{tuple(round(v, 3) for v in scene_spec.camera_poses()[camera]['look_at'])}; measure "
         f"your own mount to those numbers and re-check with a ruler on the table",
         "",
-        "parts (all 30 mm, so they are told apart by shape and not by size)",
+        "parts (configured X x Y x Z dimensions in mm)",
     ]
     for item in loose:
+        dimensions_mm = " x ".join(f"{value * 1000:.0f}" for value in item.size)
         lines.append(
-            f"  {item.prim:<12} {item.color:<6} {item.kind:<5} "
+            f"  {item.prim:<12} {item.color:<6} {item.kind:<18} {dimensions_mm:>13} mm  "
             f"{material_of(item).name:<18} {mass_kg(item) * 1000:5.1f} g  "
             f"mu {material_of(item).static_friction:.2f}/{material_of(item).dynamic_friction:.2f}"
             f"  e {material_of(item).restitution:.2f}")

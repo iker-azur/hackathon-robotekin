@@ -234,7 +234,8 @@ def not_found_question(scene: Scene, item: dict) -> dict[str, str]:
     }
 
 
-def unreachable_question(points: list[tuple[float, float]], item: dict) -> dict[str, str]:
+def unreachable_question(points: list[tuple[float, float]], item: dict,
+                         place: bool = False) -> dict[str, str]:
     """Say that it is there and cannot be reached, and what would make it reachable.
 
     The advice is the useful part. "I cannot reach it" leaves the person with nothing to do;
@@ -256,21 +257,33 @@ def unreachable_question(points: list[tuple[float, float]], item: dict) -> dict[
     distance = facts["distance_m"] * 100.0
     limit = facts["limit_m"] * 100.0
     beyond_arm = facts["beyond_arm"]
+    # A receptacle has its own, farther, near limit: the arm can pick closer to its base than it
+    # can lower a part from.
+    inside_dead_zone = (facts["outside_place_envelope"] if place
+                        else facts.get("outside_pick_envelope", facts["inside_dead_zone"]))
 
     where = {
         "es": (f"esta a {distance:.0f} cm de la base y el brazo llega a {limit:.0f}"
                if beyond_arm
-               else f"está en ({x:+.3f}, {y:+.3f}), fuera del área de trabajo"),
+               else (f"está a {distance:.0f} cm de la base, dentro de la zona cercana "
+                     "que la pinza no alcanza con fiabilidad"
+                     if inside_dead_zone else
+                     f"está en ({x:+.3f}, {y:+.3f}), fuera del área de trabajo")),
         "en": (f"it is {distance:.0f} cm from the base and the arm reaches {limit:.0f}"
                if beyond_arm
-               else f"it is at ({x:+.3f}, {y:+.3f}), outside the working area"),
+               else (f"it is {distance:.0f} cm from the base, inside the near-base zone "
+                     "where the gripper cannot reliably reach"
+                     if inside_dead_zone else
+                     f"it is at ({x:+.3f}, {y:+.3f}), outside the working area")),
         "eu": (f"{distance:.0f} cm dago ohatik dago eta burua {limit:.0f} cm-rera iristen"
                if beyond_arm
                else f"({x:+.3f}, {y:+.3f}) dago, lanetik kanpoan"),
     }
     advice = {
-        "es": "Muévelo más cerca." if beyond_arm else "Muévelo dentro del área de trabajo.",
-        "en": "Move it closer." if beyond_arm else "Move it into the working area.",
+        "es": ("Aléjalo un poco de la base." if inside_dead_zone else
+               "Muévelo más cerca." if beyond_arm else "Muévelo dentro del área de trabajo."),
+        "en": ("Move it a little farther from the base." if inside_dead_zone else
+               "Move it closer." if beyond_arm else "Move it into the working area."),
         "eu": "Hurbildu gertuago." if beyond_arm else "Eman utzi zonalera eramanu.",
     }
     lead = {
@@ -314,7 +327,8 @@ def ground(scene: Scene, item: dict) -> Grounding:
     # only one is in reach, the one they can have is the obvious answer.
     reachable, unreachable = [], []
     for candidate in matches:
-        why = scene_spec.why_unreachable(candidate.pos_m[0], candidate.pos_m[1]) \
+        why = scene_spec.why_unreachable(candidate.pos_m[0], candidate.pos_m[1],
+                                         require_pick_envelope=True) \
             if candidate.pos_m else "its position was not measured"
         if candidate.pos_m and not why:
             reachable.append(candidate)
@@ -327,7 +341,7 @@ def ground(scene: Scene, item: dict) -> Grounding:
             status="not_reachable",
             candidates=unreachable,
             question=unreachable_question(points, item),
-            note=scene_spec.why_unreachable(*points[0]) if points
+            note=scene_spec.why_unreachable(*points[0], require_pick_envelope=True) if points
             else "its position was not measured")
 
     matches = reachable
@@ -379,7 +393,8 @@ def ground_place(scene: Scene, place: dict | None) -> Grounding:
         if len(matches) != 1:
             return Grounding(status="no_place", question={"es": "No identifico el recipiente solicitado."})
         tray = matches[0]
-        if not tray.pos_m or scene_spec.why_unreachable(*tray.pos_m[:2]):
+        if not tray.pos_m or scene_spec.why_unreachable(*tray.pos_m[:2],
+                                                        require_place_envelope=True):
             return Grounding(status="no_place", question={"es": "El recipiente solicitado no es alcanzable."})
         return Grounding(status="ok", place=tray)
     by_kind = scene.container(kind, color) if color else []
@@ -395,7 +410,8 @@ def ground_place(scene: Scene, place: dict | None) -> Grounding:
     # be a worse answer than naming the tray and the reason.
     usable, unusable = [], []
     for tray in by_kind:
-        why = scene_spec.why_unreachable(tray.pos_m[0], tray.pos_m[1]) \
+        why = scene_spec.why_unreachable(tray.pos_m[0], tray.pos_m[1],
+                                         require_place_envelope=True) \
             if tray.pos_m else "its position was not measured"
         if tray.pos_m and not why:
             usable.append(tray)
@@ -406,8 +422,9 @@ def ground_place(scene: Scene, place: dict | None) -> Grounding:
         return Grounding(
             status="not_reachable",
             candidates=unusable,
-            question=unreachable_question(points, {"kind": kind or "any", "color": color}),
-            note=scene_spec.why_unreachable(*points[0]) if points
+            question=unreachable_question(points, {"kind": kind or "any", "color": color},
+                                          place=True),
+            note=scene_spec.why_unreachable(*points[0], require_place_envelope=True) if points
             else "its position was not measured")
     by_kind = usable if usable else by_kind
     if len(by_kind) == 1:

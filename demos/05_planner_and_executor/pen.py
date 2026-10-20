@@ -61,11 +61,39 @@ def pen_parts(inner_w: float, inner_d: float, wall: float, height: float
     ]
 
 
+# How close to the robot's base axis the kerb's near (robot-side) face may be. The arm folds low
+# beside its base, and a wall nearer than this stops it: strict-physical pick-and-place of the
+# same cube passed with the near face 85 mm from the base axis (y = -0.555) and failed every
+# time at 75, 65, 55 and 45 mm ("pre-grasp hover did not converge ... la pose no es alcanzable"),
+# on the same part, in the open variant it passed. A saved scene whose working area reaches
+# closer to the base than this (the dashboard allows it) therefore got a kerb the arm could not
+# work beside, and nothing was ever picked up.
+PEN_NEAR_LIMIT_FROM_BASE_M = 0.090
+
+# Room the open jaws need between a part and the kerb on the far and side faces. With the
+# quarter-turn wrist (+90 degrees, which the controller picks for 30 mm cubes beyond 0.23 m) the
+# jaws span the y direction and reach about 33 mm from the part's centre. The same cube passed
+# in the contained variant with the far wall 45 mm from its centre and failed ("aperture ... the
+# jaws cannot reach it from here") with it 22 mm away, passing in the open variant in the same
+# scene. A part inside the working area is at least 15 mm from its edge, so 30 mm more keeps
+# every part at least 45 mm from the wall.
+PEN_JAW_CLEARANCE_M = 0.030
+
+
 def contained_region() -> tuple[tuple[float, float], tuple[float, float]]:
-    """The area the pen encloses, which is the working area exactly."""
+    """The area the pen encloses: the working area plus jaw room, but never nearer the robot than the arm allows.
+
+    The far and side walls stand ``PEN_JAW_CLEARANCE_M`` outside the working area so the jaws
+    never touch them; the near (robot-side) wall is only ever moved away from the robot. Objects
+    and trays nearer the base than the near wall simply stand outside the kerb, on open table.
+    """
     import scene_spec
 
-    return (scene_spec.WORK_X, scene_spec.WORK_Y)
+    work_x, work_y = scene_spec.WORK_X, scene_spec.WORK_Y
+    near_limit = scene_spec.ROBOT_XY[1] + PEN_NEAR_LIMIT_FROM_BASE_M
+    near = min(max(work_y[0], near_limit), work_y[1] - 0.05)
+    return ((work_x[0] - PEN_JAW_CLEARANCE_M, work_x[1] + PEN_JAW_CLEARANCE_M),
+            (near, work_y[1] + PEN_JAW_CLEARANCE_M))
 
 
 def make_pen_spawner_cfg():

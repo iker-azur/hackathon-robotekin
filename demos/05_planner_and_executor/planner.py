@@ -27,6 +27,7 @@ change to the tray geometry cannot leave this file disagreeing with the simulato
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 
 import ground
@@ -68,6 +69,55 @@ OPEN, CLOSE = 1.0, -1.0
 
 # Travel height above the tallest thing on the table, which is a tray rim.
 TRAVEL_Z = scene_spec.TABLE_TOP_Z + _TRAY.height + 0.04
+# Keep the regular pick lift at the experimentally validated 90 mm. The hover before a pick is
+# a separate pose: clustered 30 mm spheres were displaced during approach even though the
+# camera localized them within 5 mm. Raising only the approach hover gives the arm more clearance
+# without making the subsequent lift taller, which previously expelled a ball during carry.
+GRASP_APPROACH_CLEARANCE_M = 0.09
+GRASP_LIFT_M = 0.09
+
+# How high the grip point can hover above a part's centre before the arm can no longer put its
+# finger pads over the part. The SO-101 keeps its fingers vertical, so the higher the tool is
+# held the further the wrist folds back and the further the pads end up from the grip point the
+# executor models. Measured with ``tools/probe_hover_reach.py`` (aperture-centre error beyond
+# the open jaws' constant 32.7 mm offset, over 0.20-0.30 m from the base):
+#
+#     clearance      60 mm   90 mm   120 mm   150 mm
+#     worst excess    8 mm   28 mm    47 mm    68 mm
+#
+# At 0.20-0.215 m 90 mm is still clean (< 5 mm); from 0.23 m outwards it is not (7-24 mm), and
+# the ball's former 150 mm hover left the aperture 150 mm from the part in three independent
+# strict-physical runs ("pre-grasp hover did not converge"), so contact was never attempted.
+# Beyond ``HOVER_REACH_NEAR_M`` the hover is therefore limited to ``TRAVEL_Z`` height, which is
+# also where the arm already crosses the table, so it never needs a higher pose than it uses to
+# get there.
+HOVER_REACH_NEAR_M = 0.215
+# ``DEMO11_HOVER_FAR_M`` exists for A/B runs only (the far hover trades ball and cylinder
+# reach against a hexagon pose that needs the taller one - see results/demo11_grasp_fixes).
+HOVER_CLEARANCE_FAR_M = float(os.environ.get("DEMO11_HOVER_FAR_M", "0.075"))
+
+
+def hover_reach_limit_m(x: float, y: float) -> float:
+    """Highest pre-grasp clearance above the part centre the arm can hold at this table point."""
+    distance = math.hypot(x - scene_spec.ROBOT_XY[0], y - scene_spec.ROBOT_XY[1])
+    if distance <= HOVER_REACH_NEAR_M:
+        return GRASP_APPROACH_CLEARANCE_M
+    return HOVER_CLEARANCE_FAR_M
+
+
+def grasp_approach_clearance(kind: str, size_m: tuple[float, ...] | None,
+                             xy: tuple[float, float] | None = None) -> float:
+    """Hover clearance used before contact, independent of the post-grasp lift.
+
+    Every geometry hovers at the same height. A taller hover for the 30 mm ball was added so the
+    open fingers cleared clustered neighbours, but the travel plane already keeps the fingertips
+    above a 30 mm part's top, and the taller pose was one the arm could not reach (see
+    ``hover_reach_limit_m``). With ``xy`` the result is limited to what the arm can hold there.
+    """
+    del kind, size_m  # the same hover for every geometry
+    if xy is None:
+        return GRASP_APPROACH_CLEARANCE_M
+    return min(GRASP_APPROACH_CLEARANCE_M, hover_reach_limit_m(float(xy[0]), float(xy[1])))
 
 
 @dataclass(frozen=True)
@@ -149,9 +199,54 @@ def grasp_pose(thing: Thing, offset: tuple[float, float] = (0.0, 0.0)) -> tuple[
     ``offset`` is on top of that and is a user knob, for anything this bias cannot explain.
     """
     x, y = thing.aim_xy or scene_spec.aim_point(thing.pos_m)
-    x, y = x + offset[0], y + offset[1]
     height = thing.size_m[2] if thing.size_m else OBJECT_HEIGHT.get(thing.kind, DEFAULT_HEIGHT)
+    import real_world
+    sweep_size = thing.size_m or (height, height, height)
+    sweep = real_world.jaw_sweep_approach_offset(thing.kind, sweep_size)
+    x, y = x + offset[0] + sweep[0], y + offset[1] + sweep[1]
     return (x, y, scene_spec.TABLE_TOP_Z + height / 2.0)
+
+
+def simulated_cluster_grasp_offset(
+        thing: Thing, peers: list[Thing], offset: tuple[float, float] = (0.0, 0.0), *,
+        enabled: bool = False, camera: str = "top") -> tuple[float, float]:
+    """Apply measured 20 mm cluster corrections only in simulator-assisted runs.
+
+    Several clustered camera/geometry pairs repeatedly stopped 23.5-24.5 mm from the target and
+    were rejected by the close gate; side-view cube/hexagon singles had residuals of 22-32 mm.
+    The fixed world-frame correction (-13, +5) mm reduced the measured residual to 13.7-14.5 mm
+    in independent simulator processes. These measurements are specific to tested views and
+    geometries; they are not physical-grasp calibration.
+    """
+    result = (float(offset[0]), float(offset[1]))
+    tested_pairs = {
+        "top": {"triangular_prism"},
+        "front": {"cube", "cylinder", "triangular_prism", "hexagonal_prism"},
+        "side": {"cube", "hexagonal_prism"},
+    }
+    if not enabled or thing.kind not in tested_pairs.get(camera, set()):
+        return result
+    if thing.size_m is None or len(thing.size_m) < 2:
+        return result
+    if any(abs(float(value) - 0.020) > 0.001 for value in thing.size_m[:2]):
+        return result
+    point = thing.aim_xy or (thing.pos_m[:2] if thing.pos_m is not None else None)
+    if point is None:
+        return result
+    nearest = math.inf
+    for peer in peers:
+        if peer is thing or peer.kind in {"box", "tray"}:
+            continue
+        peer_point = peer.aim_xy or (peer.pos_m[:2] if peer.pos_m is not None else None)
+        if peer_point is None:
+            continue
+        nearest = min(nearest, math.dist(point[:2], peer_point[:2]))
+    tested_cluster = 0.035 <= nearest <= 0.055
+    tested_side_single = (camera == "side" and thing.kind in {"cube", "hexagonal_prism"}
+                          and math.isinf(nearest))
+    if tested_cluster or tested_side_single:
+        return (result[0] - 0.013, result[1] + 0.005)
+    return result
 
 
 def place_pose(thing: Thing) -> tuple[float, float, float]:
@@ -195,13 +290,29 @@ def _pick_and_place(plan: Plan, thing: Thing, tray: Thing, offset, tag: str) -> 
     """The eight-stage cycle demo 05 drives, pointed at measured poses instead of constants."""
     grasp = grasp_pose(thing, offset)
     drop = place_pose(tray)
-    above_grasp = (grasp[0], grasp[1], TRAVEL_Z)
-    above_drop = (drop[0], drop[1], TRAVEL_Z)
+    # The part remains offset from the tool centre by the inverse of the grasp pre-offset.
+    # Apply the same translation over the destination so the released part, rather than the
+    # gripper midpoint, lands at the requested receptacle centre.
+    import real_world
+    item_height = (thing.size_m[2] if thing.size_m
+                   else OBJECT_HEIGHT.get(thing.kind, DEFAULT_HEIGHT))
+    sweep_size = thing.size_m or (item_height, item_height, item_height)
+    placement_compensation = real_world.jaw_sweep_approach_offset(thing.kind, sweep_size)
+    drop = (drop[0] + placement_compensation[0],
+            drop[1] + placement_compensation[1], drop[2])
+    approach_grasp = (grasp[0], grasp[1], max(
+        TRAVEL_Z, grasp[2] + grasp_approach_clearance(
+            thing.kind, thing.size_m, (grasp[0], grasp[1]))))
+    lift_grasp = (grasp[0], grasp[1], max(TRAVEL_Z, grasp[2] + GRASP_LIFT_M))
+    # Do not dip below the measured pick-lift height while crossing the scene. The prior fixed
+    # tray-rim transit was 15 mm below a 90 mm ball lift, which left clustered distractors inside
+    # the robot's low forearm sweep and gave the payload less clearance than the validated lift.
+    above_drop = (drop[0], drop[1], max(TRAVEL_Z, grasp[2] + GRASP_LIFT_M))
 
-    _carry(plan, "above", above_grasp, OPEN, thing.id, f"{tag}: above #{thing.id}")
+    _carry(plan, "above", approach_grasp, OPEN, thing.id, f"{tag}: above #{thing.id}")
     _carry(plan, "down", grasp, OPEN, thing.id, f"{tag}: down onto #{thing.id}")
     _carry(plan, "close", grasp, CLOSE, thing.id, f"{tag}: close on #{thing.id}")
-    _carry(plan, "lift", above_grasp, CLOSE, thing.id, f"{tag}: lift #{thing.id}")
+    _carry(plan, "lift", lift_grasp, CLOSE, thing.id, f"{tag}: lift #{thing.id}")
     plan.picks.append(thing.id)
     _carry(plan, "carry", above_drop, CLOSE, thing.id, f"{tag}: carry to #{tray.id}")
     _carry(plan, "lower", drop, CLOSE, tray.id, f"{tag}: lower over #{tray.id}")
@@ -215,11 +326,14 @@ def _pick_and_place(plan: Plan, thing: Thing, tray: Thing, offset, tag: str) -> 
 def _grasp_and_hold(plan: Plan, thing: Thing, offset, tag: str) -> None:
     """Pick an object up and keep it. `pick` has no destination, so there is no carry."""
     grasp = grasp_pose(thing, offset)
-    above = (grasp[0], grasp[1], TRAVEL_Z)
-    _carry(plan, "above", above, OPEN, thing.id, f"{tag}: above #{thing.id}")
+    approach = (grasp[0], grasp[1], max(
+        TRAVEL_Z, grasp[2] + grasp_approach_clearance(
+            thing.kind, thing.size_m, (grasp[0], grasp[1]))))
+    lift = (grasp[0], grasp[1], max(TRAVEL_Z, grasp[2] + GRASP_LIFT_M))
+    _carry(plan, "above", approach, OPEN, thing.id, f"{tag}: above #{thing.id}")
     _carry(plan, "down", grasp, OPEN, thing.id, f"{tag}: down onto #{thing.id}")
     _carry(plan, "close", grasp, CLOSE, thing.id, f"{tag}: close on #{thing.id}")
-    _carry(plan, "lift", above, CLOSE, thing.id, f"{tag}: lift #{thing.id} and hold")
+    _carry(plan, "lift", lift, CLOSE, thing.id, f"{tag}: lift #{thing.id} and hold")
     plan.picks.append(thing.id)
     # `pick` has no destination, so neither has the task.
     plan.tasks.append(Task(tag, thing.id, thing.kind, thing.color))

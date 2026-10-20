@@ -31,12 +31,20 @@ import scene_spec
 # all (a hue gap of 5 from yellow, and of 11 from red).
 AVAILABLE_COLORS = ("red", "green", "blue", "yellow", "purple")
 COLOR_LABELS = {"red": "rojo", "green": "verde", "blue": "azul", "yellow": "amarillo", "purple": "morado"}
+DEFAULT_WORKING_AREA = {
+    "x_m": sum(scene_spec.WORK_X) / 2,
+    "y_m": sum(scene_spec.WORK_Y) / 2,
+    "width_mm": (scene_spec.WORK_X[1] - scene_spec.WORK_X[0]) * 1000,
+    "depth_mm": (scene_spec.WORK_Y[1] - scene_spec.WORK_Y[0]) * 1000,
+}
+# Every placed object is checked against the measured reach annulus. The editor rectangle may
+# include unreachable corners; those remain visible as unavailable area in the scene preview.
 
 
 def default_config():
     objects, containers = [], []
     for item in scene_spec.DEFAULT_SCENE:
-        entry = {"id": item.prim, "color": item.color, "x": item.x, "y": item.y}
+        entry = {"id": item.prim, "color": item.color, "x": item.x, "y": item.y, "yaw_deg": item.yaw_deg}
         if item.container:
             entry.update(name=f"{COLOR_LABELS[item.color].capitalize()} A", aliases=[],
                          size_mm=[round(x * 1000, 3) for x in item.size],
@@ -45,8 +53,11 @@ def default_config():
             containers.append(entry)
         else:
             entry.update(kind=item.kind, count=1, size_mm=item.size[0] * 1000)
+            if item.kind in ("cylinder", "triangular_prism", "hexagonal_prism"):
+                entry["height_mm"] = item.size[2] * 1000
             objects.append(entry)
-    return {"version": 1, "objects": objects, "containers": containers}
+    return {"version": 1, "working_area": copy.deepcopy(DEFAULT_WORKING_AREA),
+            "objects": objects, "containers": containers}
 
 
 def simple_config():
@@ -89,20 +100,22 @@ def demo_config():
             # segmentation keeps them separate at 640x480 (two reds within 8 mm is
             # what ``dynamics.randomize`` rejects for exactly this reason).
             {"id": "cube_red", "kind": "cube", "color": "red", "count": 1,
-             "size_mm": 30, "x": .38, "y": -.435},
+             "size_mm": 30, "x": .38, "y": -.380},
             {"id": "cube_blue", "kind": "cube", "color": "blue", "count": 1,
-             "size_mm": 30, "x": .43, "y": -.435},
+             "size_mm": 30, "x": .43, "y": -.380},
         ],
         "containers": [
-            # Behind the parts, at y -0.50, so the arm never reaches over a tray to
+            # Behind the parts, at y -0.46, so the arm never reaches over a tray to
             # get to a cube. Same 70 mm outer / 56 mm cavity as the recommended
             # tray in the setup sheet, which is what gives a 30 mm part its margin.
+            # y -0.46 puts them 0.18 and 0.20 m from the base; the previous -0.50
+            # (0.14 and 0.17 m) is nearer than the arm can lower a part from.
             {"id": "tray_blue", "name": "Azul A", "aliases": [], "color": "blue",
              "size_mm": [70, 70, 30], "cavity_mm": [56, 56], "wall_mm": 7,
-             "floor_mm": 6, "x": .32, "y": -.50},
+             "floor_mm": 6, "x": .32, "y": -.46},
             {"id": "box_red", "name": "Roja A", "aliases": [], "color": "red",
              "size_mm": [70, 70, 30], "cavity_mm": [56, 56], "wall_mm": 7,
-             "floor_mm": 6, "x": .44, "y": -.50},
+             "floor_mm": 6, "x": .44, "y": -.46},
         ],
     }
 
@@ -125,13 +138,41 @@ def number(value, label, low, high):
     return float(value)
 
 
+def working_area(config=None):
+    """Normalize the editable work rectangle and return it with world-coordinate bounds."""
+    raw = (config or {}).get("working_area")
+    raw = DEFAULT_WORKING_AREA if raw is None else raw
+    if not isinstance(raw, dict) or set(raw) != {"x_m", "y_m", "width_mm", "depth_mm"}:
+        raise ValueError("El área de trabajo necesita centro x/y y ancho/fondo en mm.")
+    x = number(raw["x_m"], "Centro X del área", *scene_spec.TABLE_X)
+    y = number(raw["y_m"], "Centro Y del área", *scene_spec.TABLE_Y)
+    width = number(raw["width_mm"], "Ancho del área", 50,
+                   (scene_spec.TABLE_X[1] - scene_spec.TABLE_X[0]) * 1000) / 1000
+    depth = number(raw["depth_mm"], "Fondo del área", 50,
+                   (scene_spec.TABLE_Y[1] - scene_spec.TABLE_Y[0]) * 1000) / 1000
+    work_x = (x - width / 2, x + width / 2)
+    work_y = (y - depth / 2, y + depth / 2)
+    if (work_x[0] < scene_spec.TABLE_X[0] or work_x[1] > scene_spec.TABLE_X[1]
+            or work_y[0] < scene_spec.TABLE_Y[0] or work_y[1] > scene_spec.TABLE_Y[1]):
+        raise ValueError("El área de trabajo debe quedar dentro de la superficie de la mesa.")
+    # The arm's reachable surface is an annular, non-rectangular region. Rejecting a whole
+    # editor rectangle because one unused corner lies outside that annulus made valid scenes
+    # impossible (for example, a forward tray plus objects nearer the base). Each actual object
+    # and container is checked against the reach envelope in _check_position below; keep the
+    # editable rectangle bounded by the table and show the unreachable portion in the editor.
+    canonical = {"x_m": x, "y_m": y, "width_mm": width * 1000, "depth_mm": depth * 1000}
+    return canonical, work_x, work_y
+
+
 def build(config):
     """Return canonical JSON and physical items; never silently drop an entry."""
     if not isinstance(config, dict) or config.get("version") != 1:
         raise ValueError("La configuración debe tener version: 1.")
-    if set(config) - {"version", "objects", "containers"}:
+    if set(config) - {"version", "working_area", "objects", "containers"}:
         raise ValueError("Hay campos desconocidos en la configuración.")
     cfg = copy.deepcopy(config)
+    area, work_x, work_y = working_area(cfg)
+    cfg["working_area"] = area
     identifiers, names, items, pending = set(), set(), [], []
     for container, group in ((True, "containers"), (False, "objects")):
         entries = cfg.get(group)
@@ -140,8 +181,8 @@ def build(config):
         for entry in entries:
             if not isinstance(entry, dict):
                 raise ValueError("Cada entrada debe ser un objeto JSON.")
-            allowed = ({"id", "color", "name", "aliases", "size_mm", "cavity_mm", "wall_mm", "floor_mm", "x", "y"}
-                       if container else {"id", "color", "kind", "count", "size_mm", "x", "y"})
+            allowed = ({"id", "color", "name", "aliases", "size_mm", "cavity_mm", "wall_mm", "floor_mm", "x", "y", "yaw_deg"}
+                       if container else {"id", "color", "kind", "count", "size_mm", "height_mm", "x", "y", "yaw_deg"})
             if set(entry) - allowed:
                 raise ValueError(f"Campos desconocidos en {entry.get('id', 'una entrada')}.")
             identifier, color = entry.get("id"), entry.get("color")
@@ -175,8 +216,8 @@ def build(config):
                 if any(abs(size[i] - cavity[i] - 2 * wall) > 1e-6 for i in (0, 1)) or floor >= size[2]:
                     raise ValueError("La cavidad, paredes y altura no coinciden con la geometría exterior.")
             else:
-                if entry.get("kind") not in ("cube", "ball"):
-                    raise ValueError("Las piezas deben ser cubos o bolas.")
+                if entry.get("kind") not in ("cube", "ball", "cylinder", "triangular_prism", "hexagonal_prism"):
+                    raise ValueError("Geometría no soportada: usa cubo, bola, cilindro, prisma triangular o prisma hexagonal.")
                 edge = number(entry.get("size_mm", 30), "Tamaño de pieza", 6, 36) / 1000
                 if identifier == scene_spec.SHIPPED_CUBE and (entry["kind"] != "cube" or color != "red" or edge != .03 or count != 1):
                     raise ValueError("El cubo de la escena original debe seguir siendo rojo de 30 mm; usa otro identificador para una pieza distinta.")
@@ -189,35 +230,48 @@ def build(config):
                     item = scene_spec.Item(prim=prim, kind="box", color=color, x=0, y=0,
                                            shape="cuboid", size=size, container=True, inner=cavity, wall=wall, floor=floor)
                 else:
-                    factory = scene_spec._cube if entry["kind"] == "cube" else scene_spec._ball
-                    item = factory(prim, color, 0, 0, edge)
+                    if entry["kind"] == "cube":
+                        item = scene_spec._cube(prim, color, 0, 0, edge)
+                    elif entry["kind"] == "ball":
+                        item = scene_spec._ball(prim, color, 0, 0, edge)
+                    elif entry["kind"] == "cylinder":
+                        height = number(entry.get("height_mm", 30), "Altura del cilindro", 6, 60) / 1000
+                        item = scene_spec.Item(prim=prim, kind="cylinder", color=color, x=0, y=0,
+                                               shape="cylinder", size=(edge, edge, height))
+                    else:
+                        height = number(entry.get("height_mm", 30), "Altura del prisma", 6, 60) / 1000
+                        sides = 3 if entry["kind"] == "triangular_prism" else 6
+                        item = scene_spec.Item(prim=prim, kind=entry["kind"], color=color, x=0, y=0,
+                                               shape=f"prism_{sides}", size=(edge, edge, height))
                     if not real_world.grasp(item).feasible:
                         raise ValueError(f"No se puede agarrar {prim}: {real_world.grasp(item).reason}")
+                item = replace(item, yaw_deg=number(entry.get("yaw_deg", 0), "giro", -180, 180))
                 positioned = "x" in entry or "y" in entry
                 if positioned:
                     if count != 1 or "x" not in entry or "y" not in entry:
                         raise ValueError("Las posiciones explícitas requieren x, y y cantidad uno.")
-                    item = replace(item, x=number(entry["x"], "x", *scene_spec.WORK_X),
-                                   y=number(entry["y"], "y", *scene_spec.WORK_Y))
+                    item = replace(item, x=number(entry["x"], "x", *work_x),
+                                   y=number(entry["y"], "y", *work_y))
                     items.append(item)
                 else:
                     pending.append(item)
     if len(items) + len(pending) > 64:
         raise ValueError("La escena supera el límite de piezas y recipientes.")
     for item in items:
-        _check_position(item, [other for other in items if other is not item])
+        _check_position(item, [other for other in items if other is not item], work_x, work_y)
     for item in pending:
         placed = None
         # Containers from the back; loose objects from the front. Fixed order is reproducible.
-        xs = _range(scene_spec.WORK_X[0] + item.size[0] / 2, scene_spec.WORK_X[1] - item.size[0] / 2)
-        ys = _range(scene_spec.WORK_Y[0] + item.size[1] / 2, scene_spec.WORK_Y[1] - item.size[1] / 2)
+        half_x, half_y = _aabb_half_extents(item)
+        xs = _range(work_x[0] + half_x, work_x[1] - half_x)
+        ys = _range(work_y[0] + half_y, work_y[1] - half_y)
         if not item.container:
             ys.reverse()
         for y in ys:
             for x in xs:
                 candidate = replace(item, x=x, y=y)
                 try:
-                    _check_position(candidate, items)
+                    _check_position(candidate, items, work_x, work_y)
                 except ValueError:
                     continue
                 placed = candidate
@@ -232,19 +286,41 @@ def build(config):
     return cfg, items
 
 
+def _aabb_half_extents(item):
+    """XY half extents of the rotated footprint, conservatively axis-aligned."""
+    angle = math.radians(float(getattr(item, "yaw_deg", 0.0)))
+    c, s = abs(math.cos(angle)), abs(math.sin(angle))
+    return ((c * item.size[0] + s * item.size[1]) / 2,
+            (s * item.size[0] + c * item.size[1]) / 2)
+
+
 def _range(low, high):
     return [round(low + i * .005, 6) for i in range(max(0, int((high - low) / .005) + 1))]
 
 
-def _check_position(item, others):
-    for value, extent, bounds in ((item.x, item.size[0], scene_spec.WORK_X), (item.y, item.size[1], scene_spec.WORK_Y)):
+def _check_position(item, others, work_x=None, work_y=None):
+    work_x = scene_spec.WORK_X if work_x is None else work_x
+    work_y = scene_spec.WORK_Y if work_y is None else work_y
+    hx, hy = _aabb_half_extents(item)
+    for value, extent, bounds in ((item.x, 2 * hx, work_x), (item.y, 2 * hy, work_y)):
         if value - extent / 2 < bounds[0] - 1e-8 or value + extent / 2 > bounds[1] + 1e-8:
             raise ValueError(f"{item.prim} sobresale del área de trabajo.")
-    if scene_spec.why_unreachable(item.x, item.y):
-        raise ValueError(f"{item.prim} está fuera del alcance del brazo.")
+    unreachable = scene_spec.why_unreachable(item.x, item.y, work_x, work_y,
+                                             require_pick_envelope=not item.container,
+                                             require_place_envelope=item.container)
+    if unreachable:
+        raise ValueError(f"{item.prim} no es accesible: {unreachable}.")
     for other in others:
-        if abs(item.x - other.x) < (item.size[0] + other.size[0]) / 2 + .003 and abs(item.y - other.y) < (item.size[1] + other.size[1]) / 2 + .003:
+        ox, oy = _aabb_half_extents(other)
+        if abs(item.x - other.x) < hx + ox + .003 and abs(item.y - other.y) < hy + oy + .003:
             raise ValueError(f"{item.prim} está demasiado cerca de {other.prim}.")
+
+        if (item.color == other.color and item.container != other.container
+                and math.hypot(item.x - other.x, item.y - other.y)
+                < scene_spec.MIN_OBJECT_CONTAINER_VISUAL_GAP_M):
+            raise ValueError(
+                f"{item.prim} y {other.prim} comparten color y estan demasiado cerca "
+                "para distinguirlos con fiabilidad; separalos al menos 75 mm.")
 
 
 # Where the dashboard saves a scene, and where a script that was not told anything else
@@ -263,9 +339,26 @@ def load(path=None):
     parts - two of them balls - on the table. For a live demo that is the difference
     between the scene that was measured and one that was not.
     """
-    if path is None and SAVED_SCENE.exists():
-        path = SAVED_SCENE
+    global LAST_LOAD_NOTICE
+    LAST_LOAD_NOTICE = ""
+    if ((path is None or Path(path).resolve() == SAVED_SCENE.resolve())
+            and SAVED_SCENE.exists()):
+        try:
+            return build(json.loads(SAVED_SCENE.read_text(encoding="utf-8")))
+        except ValueError as error:
+            # A scene saved before a reach rule existed (or edited by hand) can place a tray
+            # where the arm cannot lower a part into it. Say so and run the shipped demo scene,
+            # rather than start a session in which no order can ever finish.
+            LAST_LOAD_NOTICE = (f"La escena guardada ({SAVED_SCENE}) no es válida: {error} "
+                                "Se usa la escena 'demo'; corrígela en el panel y guárdala "
+                                "de nuevo.")
+            print(f"  {LAST_LOAD_NOTICE}", flush=True)
+            return build(demo_config())
     return build(json.loads(Path(path).read_text(encoding="utf-8")) if path else default_config())
+
+
+# Why the last ``load`` ran something other than the scene that was asked for, or "".
+LAST_LOAD_NOTICE = ""
 
 
 def catalog(config, items):
@@ -277,15 +370,58 @@ def catalog(config, items):
              # Where the builder put it. The dashboard's table map draws from these, so a scene
              # can be seen instead of read: a part that would not fit is a position, and a
              # position is the one thing a JSON form does not show.
-             "x": item.x, "y": item.y}
+             "x": item.x, "y": item.y, "yaw_deg": item.yaw_deg}
             for item in items]
 
 
-def layout():
+def suppress_unlinked_fragments(things, container_ids, mapping, items):
+    """Drop nearby duplicate blobs left by over-segmentation of a catalogued part.
+
+    Identity linking is one-to-one, but a front view can split the red faces of one
+    cube into two blobs. The second blob then remains unlinked and looks like a false
+    object. Suppress only same-colour, same-category unlinked blobs inside 90% of the
+    linked item's configured width; valid separated objects retain their own catalog
+    association and are never removed by this check.
+
+    Returns ``(kept_things, suppressed_ids)`` so callers can report the correction.
+    """
+    by_id = {item.prim: item for item in items}
+    linked = [(thing, by_id[mapping[thing.id]]) for thing in things
+              if thing.id in mapping and mapping[thing.id] in by_id]
+    kept, suppressed = [], []
+    for thing in things:
+        if thing.id in mapping:
+            kept.append(thing)
+            continue
+        is_container = thing.id in container_ids
+        xy = thing.aim_xy or thing.pos_m
+        duplicate = False
+        if xy is not None:
+            for linked_thing, item in linked:
+                linked_xy = linked_thing.aim_xy or linked_thing.pos_m
+                linked_is_container = linked_thing.id in container_ids
+                if (linked_xy is None or thing.color != item.color
+                        or is_container != item.container
+                        or linked_is_container != item.container):
+                    continue
+                width = min(float(item.size[0]), float(item.size[1]))
+                if math.dist(xy[:2], linked_xy[:2]) < 0.90 * width:
+                    duplicate = True
+                    break
+        if duplicate:
+            suppressed.append(thing.id)
+        else:
+            kept.append(thing)
+    return kept, suppressed
+
+
+def layout(config=None):
     """The two numbers a table map needs and must not invent: the working area, and where the arm is.
 
     The dashboard draws the working area as a rectangle and the robot behind it. Hard-coding either
     in JavaScript would make the map a picture of a table that is not the one on the bench.
     """
-    return {"work_x": list(scene_spec.WORK_X), "work_y": list(scene_spec.WORK_Y),
+    _, work_x, work_y = working_area(config)
+    return {"work_x": list(work_x), "work_y": list(work_y),
+            "table_x": list(scene_spec.TABLE_X), "table_y": list(scene_spec.TABLE_Y),
             "robot": list(scene_spec.ROBOT_XY), "reach": scene_spec.MAX_REACH_M}

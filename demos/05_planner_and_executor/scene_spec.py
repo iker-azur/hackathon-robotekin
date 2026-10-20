@@ -68,8 +68,30 @@ TABLE_Y = (-0.6768, -0.0268)
 # **So the working area did not get bigger, and it cannot.** It got the shape the arm and the
 # camera can actually cover, which is 50% wider than before. Anyone who wants more room needs
 # the robot further back from the table or a longer arm, not a larger constant here.
+#
+# **CHANGED AGAIN: y -0.54..-0.38 becomes -0.555..-0.355.** The shipped receptacles sat at
+# y = -0.50, 0.14-0.17 m from the base, and strict-physical trials showed the arm cannot lower a
+# part into a tray nearer than ``MIN_PLACE_REACH_M`` (0.17 m): every order ended with the part
+# gripped and the carry stopped short. The trays are now at y = -0.46, and the loose parts move
+# out to y = -0.38 to keep 30 mm between them and the trays. The 20 mm of extra depth is the
+# band the strict benchmark matrix has worked in all along (y -0.555..-0.355).
 WORK_X = (0.27, 0.52)
-WORK_Y = (-0.54, -0.42)
+WORK_Y = (-0.555, -0.355)
+
+# Minimum center distance for a same-colour object and its destination tray. A measured
+# mixed scene lost the object's color-segmentation identity on reobservation at 63.6 mm.
+MIN_OBJECT_CONTAINER_VISUAL_GAP_M = 0.075
+
+
+def set_work_area(work_x, work_y) -> None:
+    """Apply the configured operating rectangle to runtime consumers.
+
+    Validation passes bounds explicitly and never mutates these module defaults. The real
+    session applies its saved bounds once, before perception, grounding and scene dynamics run.
+    """
+    global WORK_X, WORK_Y
+    WORK_X = tuple(float(value) for value in work_x)
+    WORK_Y = tuple(float(value) for value in work_y)
 
 # The SO-101's base, from LiftCubeEnvCfg.__post_init__. Needed because "left" is the
 # robot's left, and a scene that does not say where the robot is cannot answer that.
@@ -82,8 +104,31 @@ ROBOT_XY = (0.35, -0.64)
 # number to move.
 MAX_REACH_M = 0.33
 
+# The SO-101 also has a near-base dead zone. A pose can be inside the published maximum reach
+# and still be impossible because the links cannot fold far enough to put the gripper over the
+# table point. Strict-physical trials found a 30 mm ball at 0.191 m from the base can leave a
+# 36 mm IK/servo residual and be pushed on retreat, while a nearby trial at 0.198 m completed.
+# Keep a 5 mm margin beyond that failed sample. This is a conservative *tested workspace*
+# bound, not a claim about the robot's theoretical kinematic envelope.
+MIN_REACH_M = 0.195
+# Keep scene editing, command grounding, and randomization inside the same tested pick region.
+# A 10 mm radial buffer covers the observed camera/servo residual near the SO-101 folded limit;
+# without it, valid JSON could place a part at 198 mm, where the pick controller had no reliable
+# convergence margin even though it was technically outside the 195 mm dead-zone estimate.
+PICK_REACH_MARGIN_M = 0.010
 
-def reach_facts(x: float, y: float) -> dict:
+# The nearest a receptacle's centre may be to the base axis for the arm to lower a part into it.
+# Picking and placing are different limits: with the release pose held over the tray the arm
+# needs its wrist further from the base than a pick does. Strict-physical pick-and-place of one
+# cube with the tray moved inward: 0.21, 0.18, 0.175 and 0.165 m placed and verified, 0.15 m
+# gripped the cube and then stopped the carry 20.3 mm short of a 20 mm tolerance (with and
+# without the narrower jaw opening), and 0.12 m never gripped it. The shipped presets and a
+# dashboard-saved scene had trays at 0.12-0.17 m, so no order could ever finish. 0.17 keeps 5 mm
+# beyond the closest tested pass.
+MIN_PLACE_REACH_M = 0.170
+
+
+def reach_facts(x: float, y: float, work_x=None, work_y=None) -> dict:
     """The numbers behind "can the arm work here", so callers can say it in their own language.
 
     ``why_unreachable`` renders these as an English sentence, which is fine for a log line and
@@ -91,18 +136,27 @@ def reach_facts(x: float, y: float) -> dict:
     the base, past the 33 cm the arm can reach". A measurement should be a number plus a limit,
     and the sentence around it belongs to whoever is speaking.
     """
+    work_x = WORK_X if work_x is None else work_x
+    work_y = WORK_Y if work_y is None else work_y
     distance = math.hypot(x - ROBOT_XY[0], y - ROBOT_XY[1])
     return {
         "distance_m": distance,
         "limit_m": MAX_REACH_M,
         "beyond_arm": distance > MAX_REACH_M,
-        "in_area": (WORK_X[0] <= x <= WORK_X[1] and WORK_Y[0] <= y <= WORK_Y[1]),
+        "inside_dead_zone": distance < MIN_REACH_M,
+        "pick_limit_m": MIN_REACH_M + PICK_REACH_MARGIN_M,
+        "outside_pick_envelope": distance < MIN_REACH_M + PICK_REACH_MARGIN_M,
+        "place_limit_m": MIN_PLACE_REACH_M,
+        "outside_place_envelope": distance < MIN_PLACE_REACH_M,
+        "in_area": (work_x[0] <= x <= work_x[1] and work_y[0] <= y <= work_y[1]),
         "x": x,
         "y": y,
     }
 
 
-def why_unreachable(x: float, y: float) -> str | None:
+def why_unreachable(x: float, y: float, work_x=None, work_y=None,
+                    require_pick_envelope: bool = False,
+                    require_place_envelope: bool = False) -> str | None:
     """Why the arm cannot work at this point, or None if it can.
 
     Lives here rather than in ``planner`` because ``ground`` needs it too and ``planner``
@@ -116,12 +170,23 @@ def why_unreachable(x: float, y: float) -> str | None:
     * outside ``WORK_X``/``WORK_Y`` - the declared operating region. The arm may well be able
       to reach it; the demo has decided that region is where it works, which is a policy.
     """
-    facts = reach_facts(x, y)
+    work_x = WORK_X if work_x is None else work_x
+    work_y = WORK_Y if work_y is None else work_y
+    facts = reach_facts(x, y, work_x, work_y)
+    if require_pick_envelope and facts["outside_pick_envelope"]:
+        return (f"{facts['distance_m'] * 1000:.0f} mm from the base, inside the tested "
+                f"minimum reach pick envelope of {facts['pick_limit_m'] * 1000:.0f} mm "
+                f"(including "
+                f"{PICK_REACH_MARGIN_M * 1000:.0f} mm clearance)")
+    if require_place_envelope and facts["outside_place_envelope"]:
+        return (f"{facts['distance_m'] * 1000:.0f} mm from the base, nearer than the "
+                f"{facts['place_limit_m'] * 1000:.0f} mm the arm can lower a part into a "
+                "receptacle from")
     if facts["beyond_arm"]:
         return (f"{facts['distance_m'] * 100:.0f} cm from the base, past the "
                 f"{MAX_REACH_M * 100:.0f} cm the arm can reach")
     if not facts["in_area"]:
-        return f"({x:+.3f}, {y:+.3f}) is outside the working area {WORK_X} {WORK_Y}"
+        return f"({x:+.3f}, {y:+.3f}) is outside the working area {work_x} {work_y}"
     return None
 
 
@@ -139,6 +204,7 @@ class Item:
     color: str
     x: float
     y: float
+    yaw_deg: float = 0.0
     shape: str | None = "cuboid"
     size: tuple[float, float, float] = (0.03, 0.03, 0.03)
     container: bool = False
@@ -323,13 +389,15 @@ DEFAULT_SCENE: list[Item] = [
     # two tidy columns instead and the red ball ends up 10 mm from the red box, which is a
     # single blob and a missing object. An earlier version of this very list did that and
     # recorded 2 of 4 objects per frame.
-    _cube("cube", "red", 0.290, -0.435),
-    _ball("ball_red", "red", 0.360, -0.435),
-    _cube("cube_blue", "blue", 0.430, -0.435),
-    _ball("ball_green", "green", 0.500, -0.435),
-    # far row: the hollow receptacles, 120 mm apart so their 7 cm footprints leave 5 cm between
-    _tray("tray_blue", "blue", 0.320, -0.500),
-    _box("box_red", "red", 0.440, -0.500),
+    _cube("cube", "red", 0.290, -0.380),
+    _ball("ball_red", "red", 0.360, -0.380),
+    _cube("cube_blue", "blue", 0.430, -0.380),
+    _ball("ball_green", "green", 0.500, -0.380),
+    # far row: the hollow receptacles, 120 mm apart so their 7 cm footprints leave 5 cm between.
+    # At y = -0.46 they are 0.18 and 0.20 m from the base: the arm cannot lower a part into a
+    # receptacle nearer than ``MIN_PLACE_REACH_M`` (the old y = -0.50 was 0.14 and 0.17 m).
+    _tray("tray_blue", "blue", 0.320, -0.460),
+    _box("box_red", "red", 0.440, -0.460),
 ]
 
 # The shipped cube is the only rigid body inside the scene USD, so
@@ -375,6 +443,69 @@ OUT_OF_REACH_ITEMS = {
 }
 
 
+def _footprint_half_extents(item: Item) -> tuple[float, float]:
+    """Conservative XY half extents, including the configured yaw."""
+    angle = math.radians(float(item.yaw_deg))
+    c, s = abs(math.cos(angle)), abs(math.sin(angle))
+    return ((c * item.size[0] + s * item.size[1]) / 2,
+            (s * item.size[0] + c * item.size[1]) / 2)
+
+
+def out_of_reach_layout(items: list[Item]) -> list[Item]:
+    """Move the legacy targets and any custom loose parts to visible unreachable table poses.
+
+    The named default targets keep their measured positions. New object IDs (including custom
+    geometries created by the scene editor) are assigned deterministic, collision-free points
+    beyond the physical reach radius. Receptacles and unrelated default objects keep their pose.
+    This makes the negative-reachability variant describe the scene the user configured instead
+    of silently leaving newly added objects reachable.
+    """
+    default_objects = {(item.prim, item.kind, item.container) for item in DEFAULT_SCENE}
+    complete_default_scene = ({item.prim for item in items}
+                              >= {item.prim for item in DEFAULT_SCENE})
+    out = [replace(item, x=OUT_OF_REACH_ITEMS[item.prim][0],
+                   y=OUT_OF_REACH_ITEMS[item.prim][1])
+           if not item.container and item.prim in OUT_OF_REACH_ITEMS else item
+           for item in items]
+    custom = [item for item in out if not item.container
+              and item.prim not in OUT_OF_REACH_ITEMS
+              and (not complete_default_scene
+                   or (item.prim, item.kind, item.container) not in default_objects)]
+    if not custom:
+        return out
+
+    reserved = [item for item in out if item not in custom]
+    candidates = list(dict.fromkeys(OUT_OF_REACH_ITEMS.values()))
+    x_values = [round(TABLE_X[0] + 0.025 + .05 * index, 6)
+                for index in range(int((TABLE_X[1] - TABLE_X[0] - .05) / .05) + 1)]
+    for y in (-.325, -.275, -.225, -.175, -.125, -.075):
+        candidates.extend((x, y) for x in x_values)
+
+    placed: dict[str, Item] = {}
+    for item in sorted(custom, key=lambda part: part.prim):
+        hx, hy = _footprint_half_extents(item)
+        target = None
+        for x, y in candidates:
+            if (x - hx < TABLE_X[0] or x + hx > TABLE_X[1]
+                    or y - hy < TABLE_Y[0] or y + hy > TABLE_Y[1]
+                    or math.hypot(x - ROBOT_XY[0], y - ROBOT_XY[1]) <= MAX_REACH_M + .005):
+                continue
+            collision = False
+            for other in [*reserved, *placed.values()]:
+                ox, oy = _footprint_half_extents(other)
+                if abs(x - other.x) < hx + ox + .003 and abs(y - other.y) < hy + oy + .003:
+                    collision = True
+                    break
+            if not collision:
+                target = replace(item, x=x, y=y)
+                break
+        if target is None:
+            raise ValueError(f"No hay una pose visible y fuera del alcance para {item.prim}.")
+        placed[item.prim] = target
+
+    return [placed.get(item.prim, item) for item in out]
+
+
 def out_of_reach_scene() -> list[Item]:
     """The static scene for the ``out_of_reach`` variant.
 
@@ -385,14 +516,7 @@ def out_of_reach_scene() -> list[Item]:
     Two objects are moved out of reach; everything else is the normal scene, so the robot has
     to tell them apart from memory and say which is which.
     """
-    out = []
-    for item in DEFAULT_SCENE:
-        if item.prim in OUT_OF_REACH_ITEMS:
-            x, y = OUT_OF_REACH_ITEMS[item.prim]
-            out.append(replace(item, x=x, y=y))
-        else:
-            out.append(item)
-    return out
+    return out_of_reach_layout(DEFAULT_SCENE)
 
 
 def jittered(items: list[Item], trial: int) -> list[Item]:
@@ -538,17 +662,24 @@ def camera_poses() -> dict[str, dict]:
     is about 30 px. The ``side`` camera is deliberately on the robot's other side so that
     it too never looks through the arm.
 
-    ``front`` is the robot's own side of the table, kept as a comparison: it looks through
-    the arm, which is the failure the ``top`` camera exists to avoid. See
-    ``CAMERA_CHOICES``.
+    ``front`` is an oblique view from the robot's front-left. A straight-on view from
+    y = -0.86 looks through the shoulder and hides the target, so the x offset moves the
+    sight line around the arm while keeping the front-side perspective distinct from both
+    the top and side views. The arm also starts folded clear of the table.
     """
     return {
         "top": {"pos": (0.375, -0.22, 0.55), "look_at": (0.36, -0.43, 0.045),
-                "focal_length": 24.0, "width": 640, "height": 480},
-        "side": {"pos": (0.68, -0.50, 0.28), "look_at": (0.36, -0.43, 0.05),
-                 "focal_length": 24.0, "width": 640, "height": 480},
-        "front": {"pos": (0.35, -0.86, 0.42), "look_at": (0.33, -0.45, 0.05),
-                  "focal_length": 24.0, "width": 640, "height": 480},
+                "focal_length": 24.0, "width": 1280, "height": 960},
+        # The low side view looks through the red receptacle and the arm at the target; it
+        # produced a clean tray mask and no object detections. Raise this view so its line of
+        # sight clears both, and narrow the lens to retain useful pixels on a 3 cm part.
+        "side": {"pos": (0.02, -0.50, 0.80), "look_at": (0.36, -0.43, 0.05),
+                 "focal_length": 40.0, "width": 1280, "height": 960},
+        # The straight-on front-left ray crossed the SO-101 shoulder and wrist, masking the
+        # target in most captures. Move laterally around the arm and use a tighter lens so
+        # the 3 cm prisms still occupy enough pixels for shape moments.
+        "front": {"pos": (-0.50, -0.86, 1.50), "look_at": (0.36, -0.45, 0.05),
+                  "focal_length": 85.0, "width": 1280, "height": 960},
     }
 
 
@@ -557,9 +688,7 @@ def camera_poses() -> dict[str, dict]:
 # removed in build_env together with the observation term that read it, so reusing that
 # name for our own camera replaces nothing and collides with nothing.
 #
-# `front` is the deliberate worst case. From y = -0.86 it is behind the robot, so the arm
-# rises into the middle of the frame and the far objects hide behind it. It is kept so the
-# README's claim that `top` is not an arbitrary choice can be checked by running both.
+# `front` is an oblique front-left view, chosen to keep the arm out of the target line of sight.
 CAMERA_CHOICES = {
     "top": ("top", True),
     "side": ("side", True),
