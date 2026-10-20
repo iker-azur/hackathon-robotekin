@@ -35,7 +35,7 @@ import numpy as np
 
 # Names used by demo 03's command model for the kind of an item, kept identical so
 # that grounding is a lookup and not a translation. See vocabulary.yaml `objects`.
-KINDS = ("ball", "cube", "any", "other")
+KINDS = ("ball", "cube", "cylinder", "triangular_prism", "hexagonal_prism", "any", "other")
 
 # The words demo 03 puts in an item's `position` field, which decide which of
 # several matching objects is meant.
@@ -277,6 +277,8 @@ class Thing:
     size_m: list[float] | None = None
     cavity_m: list[float] | None = None
     aim_xy: list[float] | None = None
+    ambiguous: bool = False
+    ambiguity_reason: str | None = None
 
     def anchor(self, width: int, height: int) -> np.ndarray:
         """A 2D position in the scene's space: metres if known, else the pixel."""
@@ -291,17 +293,19 @@ class Thing:
         call a ball or a cube, which is how a named thing that only an open-vocabulary
         detector could name is handled without changing this code.
         """
+        if self.ambiguous:
+            return False
         if kind in (None, "", "any"):
             kind_ok = True
-        elif kind in ("ball", "cube"):
+        elif kind in ("ball", "cube", "cylinder", "triangular_prism", "hexagonal_prism"):
             kind_ok = self.kind == kind
         else:  # "other", and anything unexpected from the model
-            kind_ok = self.kind not in ("ball", "cube")
+            kind_ok = self.kind not in ("ball", "cube", "cylinder", "triangular_prism", "hexagonal_prism")
         return kind_ok and (color in (None, "") or self.color == color)
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        for optional in ("inner_rect_m", "track_id", "pos_m", "pos_m_depth", "elongation", "fill", "hollow", "footprint_m", "base_centre_m", "entity_id", "display_name", "size_m", "cavity_m", "aim_xy"):
+        for optional in ("inner_rect_m", "track_id", "pos_m", "pos_m_depth", "elongation", "fill", "hollow", "footprint_m", "base_centre_m", "entity_id", "display_name", "size_m", "cavity_m", "aim_xy", "ambiguity_reason"):
             if getattr(self, optional) is None:
                 del data[optional]
         return data
@@ -309,8 +313,9 @@ class Thing:
     @classmethod
     def from_dict(cls, data: dict) -> Thing:
         data = dict(data)
-        for optional in ("inner_rect_m", "track_id", "pos_m", "pos_m_depth", "elongation", "fill", "hollow", "footprint_m", "base_centre_m", "entity_id", "display_name", "size_m", "cavity_m", "aim_xy"):
+        for optional in ("inner_rect_m", "track_id", "pos_m", "pos_m_depth", "elongation", "fill", "hollow", "footprint_m", "base_centre_m", "entity_id", "display_name", "size_m", "cavity_m", "aim_xy", "ambiguity_reason"):
             data.setdefault(optional, None)
+        data.setdefault("ambiguous", False)
         return cls(**data)
 
 
@@ -328,6 +333,7 @@ class Scene:
     ground_px_per_m: float | None = None
     plane_z: float | None = None
     notes: list[str] = field(default_factory=list)
+    captured_at: float | None = None
 
     @property
     def everything(self) -> list[Thing]:
@@ -451,6 +457,7 @@ class Scene:
             "containers": [c.to_dict() for c in self.containers],
             "relations": self.relations(),
             "notes": self.notes,
+            "captured_at": self.captured_at,
         }
 
     def to_json(self, indent: int | None = 2) -> str:
@@ -475,6 +482,7 @@ class Scene:
             ground_px_per_m=data.get("ground_px_per_m"),
             plane_z=data.get("plane_z"),
             notes=data.get("notes", []),
+            captured_at=data.get("captured_at"),
         )
 
     @classmethod
