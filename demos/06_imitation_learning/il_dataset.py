@@ -13,9 +13,15 @@ key                        contents                                       shape
 ``observation.state``      the 6 SO-101 joint positions, motor degrees      ``(6,)``
 ``observation.images.front``  the front camera, RGB                         ``(480, 640, 3)``
 ``observation.phase``      which phase of the plan this step belongs to      ``(1,)``
+``observation.plan_clock`` where in the 640-step plan this step is, [-1, 1]  ``(1,)``
+``observation.cube_uv``    the cube's pixel position at the start, [-1, 1]   ``(2,)``
 ``action``                 the teacher's 8-number IK command               ``(8,)``
 ``timestamp``              seconds since the episode start                ``(1,)``
 =========================  =============================================  ===============
+
+``plan_clock`` and ``cube_uv`` exist only in datasets recorded with
+``features(with_perception=True)`` (demo 13 does). ``plan_clock`` is privileged;
+``cube_uv`` comes from the colour detector, not from the simulator's state.
 
 The state is in motor degrees, matching LeIsaac's own export
 (``leisaac.utils.robot_utils``), so it is interchangeable with LeIsaac's
@@ -29,37 +35,22 @@ Why there is a phase, stated plainly
 ------------------------------------
 
 ``observation.phase`` says which of the eight steps of the teacher's plan the
-robot is in. A real robot is not told this, and that is the honest limitation of
-the demo: **it is imitation learning with the plan handed over, not imitation
-learning from observation alone.** It is here because the alternative was
-measured and does not work.
+robot is in, and ``observation.plan_clock`` says how far through the whole plan it
+is. A real robot is not told either, and that is the honest limitation of the
+demo: **it is imitation learning with the plan's clock handed over, not imitation
+learning from observation alone.**
 
-The expert's action is not a function of the joint angles. The arm passes
-through the same configuration in different phases of the plan - frames 299 and
-300 of a demonstration are identical to 8e-6 degrees while the plan switches from
-``lift`` to ``carry`` - and across 8 demonstrations there are **2675 frame pairs
-per episode** that share a pose within 1 degree while demanding targets more than
-1 cm apart. For those, the best any single-observation policy can do is average
-the two options, and the average is a target that goes nowhere. That is what the
-ACT rollout did: it sat still.
+Why they are here. The arm passes through the same configuration in different
+phases of the plan - frames 299 and 300 of a demonstration are identical to 8e-6
+degrees while the plan switches from ``lift`` to ``carry`` - so from joint angles
+alone the expert's action is ambiguous, and ACT (one observation per prediction,
+``configuration_act.py:149``) cannot be given a history. A clock settles that.
 
-Two things were tried that do *not* need the phase, and both were measured:
-
-* **Removing the revisits from the plan.** Giving every phase its own altitude:
-  283 ambiguous pairs per episode, worse than the 153 it started from. Offsetting
-  the carry sideways in y: 214, also worse. Both are recorded in ``expert.py``.
-* **The cube's position, from ``cube_detect.py``.** Removes at most 15% of the
-  pairs, and the count plateaus - 17056 down to 12544 even at a 20 px threshold
-  the detector cannot deliver. The reason is simple: from ``close`` onward the
-  cube is held and the gripper occludes it, so the detector only finds it during
-  the two phases where it is already redundant with the arm.
-
-A policy that saw a history instead of a single frame would resolve this
-properly - rising and descending at one and the same configuration are told apart
-by which way the arm came from. LeRobot's ACT refuses to be given one
-(``configuration_act.py:149``) and ``PI0Config`` accepts it but cannot run here
-(``results/diagnosis.md``). So this dataset records the phase, and the limitation
-is documented rather than hidden.
+What it did *not* fix on its own, measured in ``results/diagnosis.md``: a camera +
+joint-state policy given the phase still failed 0/5, because it learned to copy
+the arm's own pose instead of reading the cube. The clock + cube policy is given
+the clock and the cube's position and nothing else, so that shortcut is closed;
+``results/`` says how well it does.
 
 Why the action is the command and not the joints it produced
 -----------------------------------------------------------
@@ -109,6 +100,76 @@ ACTION_KEY = "action"
 # without it - see the module docstring below and ``results/diagnosis.md``.
 PHASE_DIM = 1
 
+# Two inputs added for the clock + cube policy (see ``results/diagnosis.md``):
+#
+# ``observation.plan_clock``  where in the 640-step plan this step is, scaled to
+#                             [-1, 1]. PRIVILEGED in the same way the phase is: a
+#                             real robot is not told what time it is in the plan.
+#                             Unlike the phase it is continuous, so it also says
+#                             *how far into* a phase the plan is, which is what the
+#                             arm's own joint angles were being used for - and that
+#                             is the shortcut that made the earlier policies drift.
+# ``observation.cube_uv``     the cube's pixel centroid from ``cube_detect``, seen
+#                             once at the start of the episode (averaged over a few
+#                             renders) and repeated on every frame, scaled to
+#                             [-1, 1]. Perception, not privileged.
+PLAN_CLOCK_KEY = "observation.plan_clock"
+CUBE_UV_KEY = "observation.cube_uv"
+
+# A small file next to a dataset or checkpoint saying what its environment-state
+# input holds. ACT gives that input no name - only a width - so without this the
+# evaluator would have to guess.
+INPUTS_FILE = "il_inputs.json"
+ENV_KINDS = {
+    "phase": ["phase"],
+    "detector": ["cube_u_normalized", "cube_v_normalized", "visible"],
+    "clock_cube": ["plan_clock", "cube_u_normalized", "cube_v_normalized"],
+}
+LEGACY_ENV_KIND_BY_WIDTH = {1: "phase", 3: "detector"}
+
+
+def plan_steps() -> int:
+    """Length of the teacher's plan in steps (640)."""
+    return phase_bounds()[-1][1]
+
+
+def plan_clock(step: int) -> float:
+    """The plan clock for ``step``, in [-1, 1]; stays at 1 once the plan is over."""
+    last = plan_steps() - 1
+    return 2.0 * min(max(step, 0), last) / last - 1.0
+
+
+def normalised_uv(detection, image_shape) -> tuple[float, float]:
+    """A detection's pixel centroid scaled to [-1, 1] (``image_shape`` is (H, W, C))."""
+    return (
+        2.0 * detection.u / (image_shape[1] - 1) - 1.0,
+        2.0 * detection.v / (image_shape[0] - 1) - 1.0,
+    )
+
+
+def resolve_env_state_kind(policy_path, width: int) -> str | None:
+    """What a checkpoint's environment-state input holds, or ``None`` if unknowable.
+
+    Looks for ``il_inputs.json`` in the checkpoint folder and up to three folders
+    above it (``outputs/<run>/checkpoints/<step>/pretrained_model``), then falls back
+    on the two widths the earlier checkpoints used: 1 is the phase, 3 the detector.
+    """
+    folder = Path(policy_path).resolve()
+    if folder.is_file():
+        folder = folder.parent
+    for candidate in [folder, *list(folder.parents)[:3]]:
+        sidecar = candidate / INPUTS_FILE
+        if sidecar.is_file():
+            kind = json.loads(sidecar.read_text(encoding="utf-8")).get("env_state")
+            if kind in ENV_KINDS and len(ENV_KINDS[kind]) == width:
+                return kind
+            raise ValueError(
+                f"{sidecar} says the environment state is {kind!r}, which does not match the "
+                f"checkpoint's width {width}"
+            )
+    return LEGACY_ENV_KIND_BY_WIDTH.get(width)
+
+
 # The demo's task description, written into every frame of the dataset. LeRobot
 # uses it to build the language annotation of a policy, and it is the one string
 # a human reads to know what the robot was being taught.
@@ -151,9 +212,14 @@ def convert_to_sim_radians(motor_degrees):
     return convert_lerobot_action_to_leisaac(tensor).astype(np.float32).reshape(-1)
 
 
-def features() -> dict:
-    """The feature dictionary ``LeRobotDataset.create`` expects."""
-    return {
+def features(with_perception: bool = False) -> dict:
+    """The feature dictionary ``LeRobotDataset.create`` expects.
+
+    ``with_perception`` adds the plan clock and the cube's pixel position, which
+    the clock + cube policy is trained on. Off by default so a dataset recorded
+    before they existed keeps the layout it was written with.
+    """
+    layout = {
         STATE_KEY: {
             "dtype": "float32",
             "shape": (env_cfg.STATE_DIM,),
@@ -185,6 +251,12 @@ def features() -> dict:
             },
         },
     }
+    if with_perception:
+        layout[PLAN_CLOCK_KEY] = {"dtype": "float32", "shape": (1,), "names": ["plan_clock"]}
+        layout[CUBE_UV_KEY] = {
+            "dtype": "float32", "shape": (2,), "names": ["cube_u_normalized", "cube_v_normalized"],
+        }
+    return layout
 
 
 def observation_from_env(obs) -> tuple:
@@ -291,19 +363,19 @@ def action_from_joint_pos(joint_pos) -> "np.ndarray":
     return convert_to_motor_degrees(raw[0] if raw.ndim == 2 else raw).astype(np.float32)
 
 
-def default_dataset_dir(name: str = "so101_lift_cube_demos") -> Path:
+def default_dataset_dir(name: str = "so101_lift_cube_physical") -> Path:
     """Where datasets live. Under the demo folder, and outside git."""
     return Path(__file__).resolve().parent / "data" / name
 
 
-def create_dataset(repo_id: str, root: Path):
+def create_dataset(repo_id: str, root: Path, with_perception: bool = False):
     """Create an empty LeRobot dataset on disk, ready for ``add_frame``."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     dataset = LeRobotDataset.create(
         repo_id=repo_id,
         fps=FPS,
-        features=features(),
+        features=features(with_perception=with_perception),
         root=str(root),
         robot_type=ROBOT_TYPE,
         use_videos=True,

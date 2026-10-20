@@ -127,7 +127,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--dataset", default="so101_lift_cube_demos",
+    parser.add_argument("--dataset", default="so101_lift_cube_physical",
                         help="dataset directory name under data/, or a hub repo id")
     parser.add_argument("--episodes", type=int, default=3, help="episodes to summarise")
     parser.add_argument("--verbose", action="store_true", help="print feature names too")

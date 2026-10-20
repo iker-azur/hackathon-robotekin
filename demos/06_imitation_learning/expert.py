@@ -11,10 +11,13 @@ episode where the operator fumbles the grasp is enough to teach the policy to
 fumble. A script gives the same grasp every time, which is exactly the property
 imitation learning needs, and it needs no leader arm plugged in.
 
-Why the cube is held kinematically: real friction grasping of the 3 cm cube was
-unreliable in this simulator (demo 05's note). Once the gripper is closed, the
-cube's pose is written directly every step, which keeps the demonstration about
-moving the cube rather than about tuning contacts.
+The kinematic hold is optional, and off by default in demo 13. Demo 05 found
+friction grasping of the 3 cm cube unreliable, so this expert was written to pin
+the cube to the gripper once the jaw closes (``pin_cube``). Measured later, with
+the pin left out and the grasp point where ``GRASP_BIAS_M`` puts it, the same plan
+lifts, carries and places the cube by friction alone; the dataset is recorded that
+way, and ``il_metrics`` judges it that way. ``after_step`` is still here for
+``13_collect_demonstrations.py --pin``, which reproduces the first recordings.
 """
 
 from __future__ import annotations
@@ -91,11 +94,14 @@ class Phase:
 # Separating those would mean the arm never passes through the same pose twice,
 # which for a plan that has to approach, grasp, carry and release means giving up
 # on the natural shape of the task. The information that actually distinguishes
-# them is **which way the arm is moving**, and that is not in a single
-# observation - it is in the difference between this frame and the last one. So
-# the fix is a policy that sees a history, which LeRobot's ACT refuses
-# (``configuration_act.py:149``) and PI0Config accepts. This plan is left as the
-# simplest one that works, and the ambiguity is documented rather than hidden.
+# them is **which way the arm is moving** - not in a single observation, but in
+# the difference between this frame and the last one - or simply how far through
+# the plan the episode is. LeRobot's ACT refuses a history
+# (``configuration_act.py:149``), so the demo gives its policy the plan clock
+# instead (``il_dataset.plan_clock``). This plan is left as the simplest one that
+# works, and the ambiguity is documented rather than hidden. Note that it was
+# *not* what made the camera + joint-state policies fail in closed loop: they
+# still did with the phase supplied (``results/diagnosis.md``, section 4).
 PLAN = [
     Phase("go above cube", 0.0, 0.0, env_cfg.ABOVE, env_cfg.OPEN, 100),
     Phase("go down", 0.0, 0.0, 0.0, env_cfg.OPEN, 100),
@@ -106,6 +112,23 @@ PLAN = [
     Phase("open", 0.10, 0.0, 0.0, env_cfg.OPEN, 40),
     Phase("retract", 0.10, 0.0, env_cfg.ABOVE, env_cfg.OPEN, 100),
 ]
+
+# Where, relative to the cube's centre, the gripper is aimed, in world x, y, z metres.
+#
+# Measured, not chosen: with the cube held by friction alone, the expert was run
+# with its grasp point moved off the cube centre (``results/diagnosis.md``). The
+# grasp succeeds over a window of roughly 25 mm in x and 15 mm in y - but the
+# window is not centred on the cube. At the nominal (0, 0) the expert sat within
+# ~5 mm of its +x edge: +6 mm in x already failed, +10 mm in x or y failed at every
+# yaw tried, while -18 mm in x and +8 mm in y still lifted at both yaws tested. A
+# policy that locates the cube to a few millimetres cannot use a target that close
+# to the edge, so the whole plan is shifted to the middle of the window. (The
+# unshifted expert still lifted on all 10 held-out spots it was run on - the
+# shift is margin against perception error, not a repair for a failing teacher:
+# ``results/runs/scripted_original_grasp_point_heldout_10ep``.) The
+# shift applies to the demonstrations too, so a policy that reproduces them
+# reproduces the shift.
+GRASP_BIAS_M = (-0.010, 0.002, 0.0)
 
 # Where the plan puts the cube down, relative to where it started. The carry
 # phase above matches this, so the two are deliberately kept apart in one place.
@@ -219,8 +242,11 @@ class Expert:
         # the world's axes, which would read as a jump in the recorded images.
         self.quat_at_grasp = cube.data.root_quat_w.clone()
         # The gripper body sits one HOLD offset away from the cube centre, so the
-        # grasp point is simply the cube minus that offset.
-        self.grasp = cube_start - self.hold
+        # grasp point is simply the cube minus that offset - moved to the middle
+        # of the window the fingers can close on (see ``GRASP_BIAS_M``).
+        self.grasp = cube_start - self.hold + torch.tensor(
+            [GRASP_BIAS_M], dtype=cube_start.dtype, device=self.env.device
+        )
         self.current = robot.data.body_pos_w[:, gripper_id].clone()
 
         # Let the cube settle on its spot, otherwise the first waypoints are aimed

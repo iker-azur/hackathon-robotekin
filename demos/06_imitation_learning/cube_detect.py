@@ -45,6 +45,14 @@ residual                   <= 5.3 px  (<= 10 mm)
 The scene is bright and low saturation overall (mean saturation 0.11), and the
 table itself is orange at hue 40-60, so a naive "is it reddish" test fires on
 61 % of the frame. The saturation gate below is what makes it work.
+
+A correction to the table above. Its "<= 5.3 px, <= 10 mm" residual was measured
+on recordings made while the simulator re-drew the camera's pose at every reset
+(+-5 mm, +-0.05 degrees; ``il_env.set_cube_randomization`` did not freeze it), so
+most of that residual was the camera moving, not the detector. With the camera
+frozen, the centroid predicts the cube's table position to **0.5 mm on average
+(2.3 mm worst case)** over 30 episodes with a reset between each. The detector's
+own repeatability - the same scene rendered again - is 0.1 px.
 """
 
 from __future__ import annotations

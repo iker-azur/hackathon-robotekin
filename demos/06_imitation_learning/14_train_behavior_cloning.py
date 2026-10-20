@@ -128,7 +128,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--dataset", default="so101_lift_cube_demos",
+    parser.add_argument("--dataset", default="so101_lift_cube_physical",
                         help="dataset directory name under data/")
     parser.add_argument("--steps", type=int, default=DEFAULT_STEPS)
     parser.add_argument("--batch", type=int, default=DEFAULT_BATCH)

@@ -147,6 +147,84 @@ def sample_cube_yaw(episode: int, total: int) -> float:
     del total
     return -CUBE_MAX_YAW + 2.0 * _halton(episode + 1, 5) * CUBE_MAX_YAW
 
+# Held-out evaluation. The demonstrations use Halton indices ``0 .. TRAIN_SPOT_COUNT-1``
+# (demo 13 asks for ``sample_cube_spot(episode, ...)``), and the old evaluation asked
+# for the *same* indices - its "episode 0" was the demonstration's episode 0, cube
+# position and yaw included - so it measured memory, not generalisation. Evaluation
+# episodes start this far along the same sequence instead: still deterministic, still
+# spread over the same box, and none of them is a training spot.
+TRAIN_SPOT_COUNT = 40
+EVAL_EPISODE_OFFSET = 1000
+
+
+def sample_eval_spot(episode: int) -> tuple[float, float]:
+    """Cube spot for held-out evaluation episode ``episode`` (0, 1, 2, ...)."""
+    return sample_cube_spot(EVAL_EPISODE_OFFSET + episode, 0)
+
+
+def sample_eval_yaw(episode: int) -> float:
+    """Cube yaw, in radians, for held-out evaluation episode ``episode``."""
+    return sample_cube_yaw(EVAL_EPISODE_OFFSET + episode, 0)
+
+
+# A stricter test than "a spot nobody trained on". The held-out spots above are
+# interleaved with the 40-48 demonstrations (4-7 mm from the nearest one), so passing
+# them shows the policy interpolates. These are positions *outside* the box the
+# demonstrations covered, in the 1 cm ring around it, so the policy has to
+# extrapolate. (A first version drew from the whole widened box and only 2 of 10
+# positions landed outside the training box, by under 3 mm: the Halton sequence
+# rarely visits the margin. This one rejects the interior.) The worst corner is
+# still inside the arm's measured reach (0.33 m) with the 10 cm carry.
+OUTSIDE_EPISODE_OFFSET = 2000
+OUTSIDE_MARGIN_M = 0.01
+
+
+def _inside_training_box(x: float, y: float) -> bool:
+    return CUBE_BOX_X[0] <= x <= CUBE_BOX_X[1] and CUBE_BOX_Y[0] <= y <= CUBE_BOX_Y[1]
+
+
+def _outside_index(episode: int) -> int:
+    """Halton index of the ``episode``-th point of the widened box that is outside the training box."""
+    index, found = OUTSIDE_EPISODE_OFFSET, -1
+    while True:
+        x_low, x_high = CUBE_BOX_X[0] - OUTSIDE_MARGIN_M, CUBE_BOX_X[1] + OUTSIDE_MARGIN_M
+        y_low, y_high = CUBE_BOX_Y[0] - OUTSIDE_MARGIN_M, CUBE_BOX_Y[1] + OUTSIDE_MARGIN_M
+        x = x_low + _halton(index + 1, 2) * (x_high - x_low)
+        y = y_low + _halton(index + 1, 3) * (y_high - y_low)
+        if not _inside_training_box(x, y):
+            found += 1
+            if found == episode:
+                return index
+        index += 1
+
+
+def sample_outside_spot(episode: int) -> tuple[float, float]:
+    """Cube spot for extrapolation episode ``episode``: in the ring around the training box."""
+    index = _outside_index(episode)
+    x_low, x_high = CUBE_BOX_X[0] - OUTSIDE_MARGIN_M, CUBE_BOX_X[1] + OUTSIDE_MARGIN_M
+    y_low, y_high = CUBE_BOX_Y[0] - OUTSIDE_MARGIN_M, CUBE_BOX_Y[1] + OUTSIDE_MARGIN_M
+    return (
+        x_low + _halton(index + 1, 2) * (x_high - x_low),
+        y_low + _halton(index + 1, 3) * (y_high - y_low),
+    )
+
+
+def sample_outside_yaw(episode: int) -> float:
+    """Cube yaw, in radians, for extrapolation episode ``episode`` (same +-30 degrees)."""
+    return sample_cube_yaw(_outside_index(episode), 0)
+
+
+def nearest_training_spot_m(spot: tuple[float, float]) -> float:
+    """Distance in metres from ``spot`` to the closest demonstration spot.
+
+    Reported next to every held-out episode so "held out" is a number, not a claim.
+    """
+    return min(
+        ((spot[0] - tx) ** 2 + (spot[1] - ty) ** 2) ** 0.5
+        for tx, ty in (sample_cube_spot(i, TRAIN_SPOT_COUNT) for i in range(TRAIN_SPOT_COUNT))
+    )
+
+
 ACTION_DIM = 8
 STATE_DIM = 6
 
@@ -250,11 +328,21 @@ def set_cube_randomization(cfg, cube_pose_range: dict | None = None) -> None:
     ``EventTermCfg`` objects are mutable and the manager builds from them when it
     is constructed, so a range written here is the range that is used.
 
-    The term that carries the cube is told by its own parameters - a ``yaw`` key -
-    so the loop does not depend on which index LeIsaac happened to assign.
-    """
-    import dataclasses
+    The term that carries the cube is told by the asset it acts on (``cube``), not
+    by its index, which LeIsaac assigns.
 
+    A bug worth recording, because it hid for the life of this demo: these terms
+    are plain attributes LeIsaac sets on the event config, **not dataclass
+    fields**, so the first version of this function - which looped over
+    ``dataclasses.fields(cfg.events)`` - matched nothing and froze nothing. The
+    cube's +-75 mm range did no harm (the demos place the cube themselves) but the
+    camera's did: its pose (+-5 mm, +-0.05 degrees) was re-drawn at every
+    ``env.reset()``, so the same cube position landed on different pixels in
+    different episodes. Measured: with the camera moving, the cube's pixel
+    centroid predicts its table position to 5 mm on average (14 mm worst); with
+    it frozen, to 0.55 mm (1.7 mm worst). Every dataset recorded before this
+    fix has the jitter in its images.
+    """
     if cube_pose_range is None:
         # Nothing randomised: the demos place the cube themselves.
         cube_pose_range = {
@@ -264,20 +352,29 @@ def set_cube_randomization(cfg, cube_pose_range: dict | None = None) -> None:
             "yaw": (0.0, 0.0),
         }
 
-    for field in dataclasses.fields(cfg.events):
-        if not field.name.startswith("domain_randomize_"):
+    frozen = 0
+    for name, term in vars(cfg.events).items():
+        if not name.startswith("domain_randomize_"):
             continue
-        pose_range = getattr(cfg.events, field.name).params.get("pose_range")
+        pose_range = (term.params or {}).get("pose_range")
         if pose_range is None:
             continue
 
-        if "yaw" in pose_range:
+        asset = getattr(term.params.get("asset_cfg"), "name", None)
+        if asset == "cube":
             pose_range.update(cube_pose_range)
         else:
             # The camera. Frozen instead of tuned: it changes the image the policy
             # must read, not the physics of the pick.
             for axis in pose_range:
                 pose_range[axis] = (0.0, 0.0)
+        frozen += 1
+
+    if frozen == 0:
+        raise RuntimeError(
+            "found no domain-randomisation terms to freeze on the event config; "
+            "LeIsaac changed how it registers them"
+        )
 
 
 def _prepare_cfg(record: bool, device: str, num_envs: int = 1):
@@ -388,6 +485,95 @@ def step_obs(env, action):
     difference is not worth repeating in every script.
     """
     return env.step(action)[0]
+
+
+def refresh_camera(env, renders: int = 2) -> None:
+    """Make the next ``observation_manager.compute()`` show the scene as it is now.
+
+    Two separate effects make the front camera lie right after a reset, both
+    measured on the recorded dataset and in the simulator:
+
+    * ``reset_arm`` and the cube placement advance the physics with
+      ``render=False``, so nothing has been rendered since ``env.reset()``. The
+      first observation is the *previous* episode's last picture - arm and cube
+      where that episode left them. In the 40-episode dataset the cube detector
+      returns the previous episode's drop point on frame 0 of every episode but the
+      first.
+    * the tiled camera hands back the render *before* the one just requested, so a
+      single render is not enough: the second call returns the new scene. Calling
+      it with the same cube pose twice returned the same pixels to 0.1 px for the
+      first call of the next episode.
+
+    Two renders flush both. It costs two frames of GPU time per episode.
+    """
+    camera = env.scene["front"]
+    for _ in range(renders):
+        env.sim.render()
+        camera.update(dt=1.0 / 30.0, force_recompute=True)
+
+
+def cube_hold_distance(env) -> float:
+    """Distance in metres from the cube's centre to the point between the fingers.
+
+    Small (a few millimetres) while the cube is held, large when it is not. It is
+    what ``il_metrics`` uses to tell a carried cube from a flung one.
+    """
+    import torch
+
+    from isaaclab.utils.math import combine_frame_transforms
+
+    robot = env.scene["robot"]
+    gripper_id = getattr(env, "_il_gripper_id", None)
+    if gripper_id is None:
+        gripper_id = robot.find_bodies("gripper")[0][0]
+        env._il_gripper_id = gripper_id
+    hold = torch.tensor([HOLD], device=env.device)
+    point, _ = combine_frame_transforms(
+        robot.data.body_pos_w[:, gripper_id], robot.data.body_quat_w[:, gripper_id], hold
+    )
+    return float(torch.linalg.norm(env.scene["cube"].data.root_pos_w[0] - point[0]))
+
+
+# How many renders are averaged when the cube is located. Rendering the same scene
+# again moves the detected centroid by a pixel or two, which is 2-3 mm on the
+# table; the grasp tolerates roughly +-10 mm, so the noise is worth averaging out.
+PERCEPTION_SAMPLES = 4
+
+
+def perceive_cube(env, samples: int = PERCEPTION_SAMPLES, info: dict | None = None):
+    """Locate the cube in the front camera, as the colour detector sees it.
+
+    Returns the cube's pixel centroid scaled to [-1, 1] as ``(u, v)``, averaged
+    over ``samples`` renders of the same physical state (the simulator is not
+    stepped in between), or ``None`` if the detector finds no cube-shaped blob.
+
+    This is the only thing the clock + cube policy ever learns about the world, so
+    the recorder and the evaluator both call this one function: the number the
+    network was trained on and the number it is given cannot differ in how they
+    were made.
+
+    Pass a dict as ``info`` to get ``spread_px``, the largest distance in pixels
+    between one render's centroid and the average: how much the renders disagree.
+    """
+    import numpy as np
+
+    import cube_detect
+    from il_dataset import normalised_uv, observation_from_env
+
+    points, pixels = [], []
+    for _ in range(samples):
+        refresh_camera(env)
+        _, image = observation_from_env(env.observation_manager.compute())
+        detection = cube_detect.detect_cube(image)
+        if detection is None or not detection.plausible:
+            return None
+        points.append(normalised_uv(detection, image.shape))
+        pixels.append((detection.u, detection.v))
+    if info is not None:
+        pixels = np.asarray(pixels)
+        info["spread_px"] = float(np.linalg.norm(pixels - pixels.mean(axis=0), axis=1).max())
+    u, v = np.mean(points, axis=0)
+    return float(u), float(v)
 
 
 def assert_joint_order(env) -> None:
