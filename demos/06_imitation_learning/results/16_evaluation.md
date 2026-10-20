@@ -53,7 +53,8 @@ puntos); da margen a una política que estima la posición del cubo.
 ## Políticas anteriores con cámara + estado articular, con el protocolo nuevo
 
 5 posiciones nuevas cada una, mismo juicio físico. Son los checkpoints de la evaluación original,
-sin reentrenar; se evalúan ahora con la cámara congelada.
+sin reentrenar; se evalúan ahora con la cámara congelada. **Esos checkpoints y sus datasets se borraron el
+2026-10-20** al limpiar la carpeta: estas filas son el registro, ya no se pueden repetir.
 
 | ejecución | entradas | éxitos | fallos |
 |---|---|---|---|

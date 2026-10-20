@@ -162,7 +162,7 @@ brazo, esa reproducción coincide con lo que haría en el simulador. Para usarla
 sin los últimos 8 episodios:
 
 ```powershell
-python .\demos\06_imitation_learning\15_train_act.py --episodes 0-39 --steps 10000 --batch 64 --no-vae --lr 1e-4 --output 15_act_clock_val
+python .\demos\06_imitation_learning\15_train_act.py --episodes 0-39 --steps 10000 --batch 64 --no-vae --lr 1e-4 --output 15_act_clock_val   # se regenera con este comando; no se conserva en disco
 python .\demos\06_imitation_learning\tools\22_validate_offline.py `
     --policy .\demos\06_imitation_learning\outputs\15_act_clock_val\checkpoints\last\pretrained_model --episodes 40-47
 ```
@@ -293,7 +293,7 @@ El registro curado y comentado es [`results/16_evaluation.md`](results/16_evalua
 | tiempo | ≈ 14 min (GPU compartida con otros procesos) |
 | pérdida final | 0,022 (L1 normalizada; sigue bajando lentamente) |
 | tamaño del modelo | ≈ 90 MB |
-| tamaño de `outputs/15_act_clock/` | 2,8 GB (por el estado del optimizador de cada checkpoint) |
+| tamaño de `outputs/15_act_clock/` | 2,8 GB al entrenar (estado del optimizador de cada checkpoint); tras la limpieza solo se conserva `pretrained_model`, ≈ 90 MB |
 
 ### Sin simulador (`tools/22_validate_offline.py`)
 
@@ -363,9 +363,11 @@ arranca en esta máquina (falta el fork de `siglip`).
   `16_evaluate_policy.py` guarda cada episodio según termina (`.partial.jsonl`) y, si no avanza ningún paso
   en `--stall-seconds` (300 por defecto), escribe lo terminado y sale con código 3. Esa salvaguarda **no se ha
   llegado a disparar** y está sin probar.
-* **Las grabaciones anteriores están desactualizadas.** Los datasets `so101_lift_cube_demos`,
-  `_demos_v2`, `_phase` y `_cube_detect` se grabaron con la cámara moviéndose y el cubo fijado
-  cinemáticamente; se conservan para poder reproducir los fallos, no para entrenar.
+* **Las pruebas anteriores ya no están en disco.** Los datasets (`so101_lift_cube_demos`,
+  `_demos_v2`, `_phase`, `_cube_detect`; cámara moviéndose y cubo fijado cinemáticamente) y los
+  checkpoints ACT con cámara (`15_act`, `15_act_v2`, `15_act_phase*`, `15_act_cube_detect`) se
+  borraron el 2026-10-20 al limpiar la carpeta. Sus cifras siguen en `results/`, pero ya no se
+  pueden reevaluar, y `tools/17`, `18` y `20`, que leían esos datasets, no se pueden ejecutar tal cual.
 * **No se ha validado con datasets del Hub.** La compatibilidad se razona sobre los parámetros
   publicados, no sobre una ejecución.
 
@@ -408,11 +410,7 @@ checkpoints.**
 |---|---|---|
 | `data/so101_lift_cube_physical/` | las 48 demostraciones con vídeo (dataset LeRobot v3), cubo sujeto por fricción | no (`.gitignore`) |
 | `data/so101_lift_cube_clock_cube/` | copia sin vídeo con la entrada reloj + cubo (1 MB) | no |
-| `data/so101_lift_cube_physical.replaced-*/` | la grabación anterior (con la cámara moviéndose), apartada, no borrada | no |
-| `data/so101_lift_cube_{demos,demos_v2,phase,cube_detect}/` | grabaciones de las pruebas anteriores | no |
-| `outputs/15_act_clock/` | **el modelo del demo** | no |
-| `outputs/15_act_clock_val/` | el mismo, entrenado sin los episodios 40–47 | no |
-| `outputs/15_act*`, `15_act_phase*`, `15_act_cube_detect`, `15_act_v2` | los checkpoints de las pruebas anteriores | no |
+| `outputs/15_act_clock/checkpoints/last/pretrained_model/` | **el modelo del demo** (≈ 90 MB); es lo único que queda de `outputs/` | no |
 | `results/runs/`, `results/offline/` | un informe por ejecución, sin sobrescribir | **sí** |
 | `results/diagnosis.md`, `results/16_evaluation.md`, `results/SUMMARY.md` | diagnóstico, registro y resumen | **sí** |
 

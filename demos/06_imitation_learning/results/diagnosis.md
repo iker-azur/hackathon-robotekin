@@ -3,6 +3,10 @@
 Fecha: 2026-10-19. Entorno `hackathon-robotekin`, Windows 11, Isaac Sim 5.1, RTX 5060 Ti.
 Parte del commit `a3db19f` ("add phase and detector inputs to imitation demo").
 
+Los checkpoints y datasets con los que se hicieron estas mediciones (`15_act_phase`, `15_act_cube_detect`,
+`so101_lift_cube_phase`…) se borraron el 2026-10-20 al limpiar la carpeta; los números se conservan aquí
+y en `runs/`, pero las mediciones ya no se pueden repetir sin reentrenar.
+
 Todo lo de este documento sale de una medición hecha sobre los artefactos que hay en
 disco (parquet, vídeo, checkpoints) o en el simulador, y cada apartado dice cómo se
 volvió a medir. La versión anterior de este archivo contenía conclusiones que estas
