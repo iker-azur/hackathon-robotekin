@@ -173,6 +173,29 @@ Non-strict results (contained, demo preset, spread 0.004): order alone 4/4 (2440
 4/4 (24300-24303); order then separa in one session 6/6 (24200-24205; it was 0/6 before fix 4, 4/6
 before fix 5). Strict colour sort after these changes (window 8): 8/8 on 25100-25107, all physical grasps.
 
+## Part 4 (2026-10-21): the triangular prism now grips (0/12 -> 12/12)
+
+Cause, measured with the new `DEMO11_TRACE_PART=1` trace (`[part]` lines: clearance to each pad, offset
+along/across the jaw axis, tilt, jaw angle): the **V45 insert tips the 24 mm-tall triangle while the jaw
+closes** (tilt 5-11 degrees, part lifted off the table) and the vertex never seats against the fixed pad;
+with the 0.15 rad close the pads end ~29.8 mm apart at the surfaces against a ~24 mm part, so the jaw
+reaches its target without squeezing. Tighter closes (0.0 / 0.04 / 0.08 rad) only made the jaw drag the
+part 12-15 mm (drift guard abort): 0/3 each. Stock wide opening: 1/3. **Flat pads: 3/3.**
+
+Fix: `gripper_contact_pads.flat_profile_for` / `automatic_scene_pad_shape` select **flat pads** for the 30 mm
+triangular prism (stiffness 700, 45-step ramp, 400-step carry unchanged). The 20 mm triangle keeps V45.
+
+| strict, top camera, central | before | after |
+|---|---|---|
+| triangular prism, open+contained x single+crowded, 3 reps (seed 21500) | 0/12 | **12/12** |
+| all five shapes, open, single+crowded, 2 reps (seed 24000, default path, no env overrides) | triangle 0 | **20/20** |
+| triangle, front camera, open, 2 reps (seed 24500) | - | 2/4 |
+| triangle, default (non-strict) contained, 2 reps (seed 24700) | - | 4/4 tasks SUCCESS (simulator assist) |
+
+Hexagon 12/12 strict in the same baseline run. **Still open:** front-camera triangle 2/4 - both misses are
+reach failures before any grasp ("pre-grasp hover did not converge", wrist -30 degrees at scene yaw 30 and one
+crowded layout), not pad/grip. Side camera, 20 mm parts and the contained variant on other cameras not run.
+
 ## Reproduce
 
 ```
@@ -183,4 +206,5 @@ python tools/benchmark_scene_matrix.py --headless --strict-physical --cameras to
 ```
 
 Use a fresh `--seed` per run: log names are `<seed>_<camera>_...` and older campaigns reuse them.
-`DEMO11_HOVER_FAR_M` and `DEMO11_DISABLE_NARROW_OPEN=1` exist for A/B runs.
+`DEMO11_HOVER_FAR_M` and `DEMO11_DISABLE_NARROW_OPEN=1` exist for A/B runs; `DEMO11_TRACE_PART=1` logs the
+prism's position between the pads during close/lift/carry.
