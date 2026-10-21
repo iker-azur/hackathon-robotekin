@@ -430,7 +430,14 @@ def tool_yaw_for(kind: str, size_m: tuple[float, ...], object_yaw_deg: float) ->
             # repeat the policy every 120 degrees (triangle symmetry).
             yaw = float(object_yaw_deg) % 120.0
             return 60.0 if 45.0 <= yaw <= 90.0 else 0.0
-        return (60.0 - float(object_yaw_deg)) % 120.0 - 60.0
+        if os.environ.get("DEMO11_TRIANGLE30_YAW_MODE") == "legacy":
+            # The V-groove pose: -30 and -60 degree wrists were often unreachable at the front
+            # camera ("pre-grasp hover did not converge"), 9/12 there.
+            return (60.0 - float(object_yaw_deg)) % 120.0 - 60.0
+        # Flat pads close an edge and the opposite vertex flat at any yaw (24 mm part, the
+        # jaws settle it), so no wrist turn is needed: neutral wrist, 35/36 over top/front/side
+        # (front 11/12 against 9/12 with the V-groove yaw).
+        return 0.0
     return 0.0
 
 

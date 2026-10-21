@@ -806,9 +806,9 @@ def test_experimental_gripper_pads_are_opt_in_and_radius_bounded():
           and gripper_contact_pads.tool_yaw_for(
               "triangular_prism", (.030, .030, .024), 0) == 0
           and gripper_contact_pads.tool_yaw_for(
-              "triangular_prism", (.030, .030, .024), 30) == -30
+              "triangular_prism", (.030, .030, .024), 30) == 0
           and gripper_contact_pads.tool_yaw_for(
-              "triangular_prism", (.030, .030, .024), 60) == -60
+              "triangular_prism", (.030, .030, .024), 60) == 0
           and gripper_contact_pads.tool_yaw_for(
               "triangular_prism", (.020, .020, .018), 0) == 0
           and gripper_contact_pads.tool_yaw_for(
@@ -822,7 +822,7 @@ def test_experimental_gripper_pads_are_opt_in_and_radius_bounded():
     check(gripper_contact_pads.alternate_tool_yaw_for(
               "triangular_prism", (.030, .030, .024), 0) == 60
           and gripper_contact_pads.alternate_tool_yaw_for(
-              "triangular_prism", (.030, .030, .024), 30) == 30
+              "triangular_prism", (.030, .030, .024), 30) == 60
           and gripper_contact_pads.alternate_tool_yaw_for(
               "hexagonal_prism", (.030, .030, .024), 0) == 0
           and gripper_contact_pads.alternate_tool_yaw_for(
