@@ -649,7 +649,7 @@ def test_experimental_gripper_pads_are_opt_in_and_radius_bounded():
                               yaw_deg=0.0, container=False)]) is None
           and gripper_contact_pads.automatic_scene_pad_shape([
               SimpleNamespace(prim="tri", kind="triangular_prism", size=(.03, .03, .024),
-                              yaw_deg=0.0, container=False)]) == "vee"
+                              yaw_deg=0.0, container=False)]) == "flat"
           and gripper_contact_pads.automatic_scene_pad_shape([
               SimpleNamespace(prim="tri", kind="triangular_prism", size=(.03, .03, .024),
                               yaw_deg=30.0, container=False),
@@ -669,8 +669,13 @@ def test_experimental_gripper_pads_are_opt_in_and_radius_bounded():
     ]
     check(gripper_contact_pads.automatic_scene_pad_shape(mixed_cluster) is None
           and gripper_contact_pads.automatic_scene_pad_shape(
-              mixed_cluster, target_kind="triangular_prism") == "vee",
+              mixed_cluster, target_kind="triangular_prism") == "flat",
           "a validated target profile may ignore distant distractors only when target geometry is explicit")
+    check(gripper_contact_pads.flat_profile_for("triangular_prism", (.030, .030, .024))
+          and not gripper_contact_pads.flat_profile_for("triangular_prism", (.020, .020, .018))
+          and not gripper_contact_pads.flat_profile_for("hexagonal_prism", (.030, .030, .024))
+          and not gripper_contact_pads.flat_profile_for("cube", (.030, .030, .030)),
+          "only the 30 mm triangular prism uses flat pads; the 20 mm triangle keeps its V45 profile")
     mixed_ball_sizes = [
         SimpleNamespace(prim="target_ball20", kind="ball", size=(.02, .02, .02),
                         yaw_deg=0.0, container=False),

@@ -102,17 +102,33 @@ def validated_profile_items(items, target_kind: str | None = None):
                                      getattr(item, "yaw_deg", 0.0))))]
 
 
+def flat_profile_for(kind: str, size_m: tuple[float, ...]) -> bool:
+    """Profiles that hold best on flat inward-facing pads instead of the V-groove.
+
+    The 30 mm triangular prism: strict trials on the same 12 scenes (open and contained,
+    single and crowded, 3 repetitions) gave 0/12 with the V45 insert and 12/12 with flat pads.
+    A trace showed the V slabs tip the 24 mm-tall triangle on the close (tilt 5-11 degrees,
+    part lifted off the table) and the vertex never seats against the fixed pad.
+    """
+    return bool(kind == "triangular_prism" and size_m
+                and round(float(size_m[0]) * 1000) == 30)
+
+
 def automatic_scene_pad_shape(items, target_kind: str | None = None) -> str | None:
-    """Select V pads for a validated target profile, optionally amid non-target clutter.
+    """Select flat or V pads for a validated target profile, optionally amid non-target clutter.
 
     Without ``target_kind`` the safe default remains scene-wide: every movable object must
-    have a validated V profile. A caller that has resolved one specific grasp may scope the
+    have a validated profile. A caller that has resolved one specific grasp may scope the
     decision to that target; this is useful for mixed scenes with distant, untouched
     distractors and must not be used for an unfiltered multi-object command.
     """
-    profiles = [(item.kind, item.size, getattr(item, "yaw_deg", 0.0))
-                for item in validated_profile_items(items, target_kind)]
-    return "vee" if scene_uses_only_vee_profiles(profiles) else None
+    selected = validated_profile_items(items, target_kind)
+    profiles = [(item.kind, item.size, getattr(item, "yaw_deg", 0.0)) for item in selected]
+    if not scene_uses_only_vee_profiles(profiles):
+        return None
+    if all(flat_profile_for(item.kind, item.size) for item in selected):
+        return "flat"
+    return "vee"
 
 
 def vee_angle_for(kind: str, size_m: tuple[float, ...], default: float,

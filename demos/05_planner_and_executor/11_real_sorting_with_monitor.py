@@ -487,10 +487,15 @@ def build_real_env(camera: str, items: list[scene_spec.Item], pen: bool = False,
                 grip_stiffness = tested_stiffness
             scope = (f"target geometry {grasp_profile_kind}" if grasp_profile_kind
                      else "every movable shape and orientation in this scene")
-            print("  V-groove contact profile selected automatically: " + scope +
-                  " has a validated physical profile "
-                  f"(V angle {experimental_contact_pad_angle_deg:.0f} deg, "
-                  f"gripper stiffness {grip_stiffness:.0f})", flush=True)
+            if automatic_shape == "flat":
+                print("  flat contact pads selected automatically: " + scope +
+                      " has a validated physical profile "
+                      f"(gripper stiffness {grip_stiffness:.0f})", flush=True)
+            else:
+                print("  V-groove contact profile selected automatically: " + scope +
+                      " has a validated physical profile "
+                      f"(V angle {experimental_contact_pad_angle_deg:.0f} deg, "
+                      f"gripper stiffness {grip_stiffness:.0f})", flush=True)
         if not automatic_shape:
             tested_stiffness = gripper_contact_pads.automatic_scene_grip_stiffness(
                 items, grip_stiffness, target_kind=grasp_profile_kind)
@@ -1435,6 +1440,63 @@ class StrictExecutor(executor_module.Executor):
             self.log(f"      jaws open to {opening:.3f} rad for {prim} "
                      f"(stock {float(stock[0]):.3f} rad)")
 
+    def _install_part_trace(self, action, prim) -> None:
+        """Opt-in (``DEMO11_TRACE_PART=1``): log where a prism sits between the pads each few ticks.
+
+        Reports clearance from each pad face to the nearest vertex along the jaw axis, the part
+        centre's offset from the pad midpoint (along the jaw axis ``u`` and across it ``v``), its
+        height relative to the midpoint, its tilt and the jaw angle. It never changes a decision.
+        """
+        if os.environ.get("DEMO11_TRACE_PART") != "1" or not prim:
+            return
+        self._trace_label = (action, prim)
+        if getattr(self, "_part_trace_installed", False):
+            return
+        self._part_trace_installed = True
+        original_step = self.env.step
+        counter = {"n": 0}
+
+        def traced_step(*step_args, **step_kwargs):
+            result = original_step(*step_args, **step_kwargs)
+            counter["n"] += 1
+            label = getattr(self, "_trace_label", None)
+            if not label or label[0] not in ("down", "close", "lift", "carry") or counter["n"] % 12:
+                return result
+            try:
+                phase, part_prim = label
+                part = self.env.scene[part_prim]
+                where = part.data.root_pos_w[0].detach().cpu().numpy()
+                quat = part.data.root_quat_w[0].detach().cpu().numpy()
+                points = self.finger_contact_points()
+                size = self.item_sizes.get(part_prim, (0.03, 0.03, 0.03))
+                sides = 3 if self.item_kinds.get(part_prim) == "triangular_prism" else 6
+                axis = points["jaw"][:2] - points["gripper"][:2]
+                separation = float(np.linalg.norm(axis))
+                axis = axis / max(separation, 1e-9)
+                across = np.array((-axis[1], axis[0]))
+                mid = (points["jaw"] + points["gripper"]) / 2.0
+                radius = size[0] / 2.0
+                corners = [_rotate_local_offset(quat, (radius * math.cos(2 * math.pi * i / sides),
+                                                       radius * math.sin(2 * math.pi * i / sides), 0.0))[:2]
+                           for i in range(sides)]
+                along = [float((where[:2] + c - points["gripper"][:2]) @ axis) for c in corners]
+                gap_fixed = min(along)
+                gap_jaw = separation - max(along)
+                delta = where[:2] - mid[:2]
+                up_z = 1.0 - 2.0 * (quat[1] ** 2 + quat[2] ** 2)
+                tilt = math.degrees(math.acos(max(-1.0, min(1.0, abs(up_z)))))
+                joint = float(self.robot.data.joint_pos[0, self.robot.find_joints(["gripper"])[0][0]])
+                self.log(f"      [part] {phase} n={counter['n']} gap_fixed={gap_fixed * 1000:+.1f} "
+                         f"gap_jaw={gap_jaw * 1000:+.1f} sep={separation * 1000:.1f} "
+                         f"u={float(delta @ axis) * 1000:+.1f} v={float(delta @ across) * 1000:+.1f} "
+                         f"dz={(where[2] - mid[2]) * 1000:+.1f} tilt={tilt:.0f} jaw={joint:.3f} "
+                         f"z={where[2]:.4f}")
+            except Exception as exc:  # noqa: BLE001 - diagnostic only
+                self.log(f"      [part] trace unavailable: {type(exc).__name__}: {exc}")
+            return result
+
+        self.env.step = traced_step
+
     def do(self, *args, **kwargs):
         # The close step gets its own duration, for the reason in CLOSE_SETTLE_STEPS. Only when the
         # caller did not ask for a specific count: the retry path drives its own lift with an
@@ -1443,6 +1505,7 @@ class StrictExecutor(executor_module.Executor):
             kwargs["steps"] = CLOSE_SETTLE_STEPS
         action = args[0] if args else kwargs.get("action")
         prim = kwargs.get("prim")
+        self._install_part_trace(action, prim)
         self._set_pick_open_width(action, prim)
         carry_override = os.environ.get("DEMO11_EXPERIMENTAL_CARRY_STEPS")
         if action == "carry" and carry_override is not None:
