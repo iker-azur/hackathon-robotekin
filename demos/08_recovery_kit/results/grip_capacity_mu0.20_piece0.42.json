@@ -1,0 +1,28 @@
+{
+  "mu_jaw": 0.2,
+  "mu_combined": 0.31,
+  "squeeze_estimate_n": 6.631944444444445,
+  "predicted_2muN_n": 4.111805555555556,
+  "trials": [
+    {
+      "pose": [
+        0.17,
+        -0.07,
+        0.0
+      ],
+      "slip_force_n": 2.0,
+      "gripper_q": 0.14855815470218658
+    },
+    {
+      "pose": [
+        0.18,
+        -0.12,
+        0.3
+      ],
+      "slip_force_n": 2.1041666666666665,
+      "gripper_q": 0.14859087765216827
+    }
+  ],
+  "median_slip_force_n": 2.052083333333333,
+  "mu_piece": 0.42
+}

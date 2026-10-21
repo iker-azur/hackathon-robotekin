@@ -1,0 +1,218 @@
+{
+  "generated_at": "2026-10-17T13:56:20",
+  "config": {
+    "dt": 0.004166666666666667,
+    "render_interval": 8,
+    "solver_type": 1,
+    "robot_position_iterations": 32,
+    "robot_velocity_iterations": 4,
+    "piece_position_iterations": 16,
+    "piece_velocity_iterations": 4,
+    "contact_offset_m": 0.002,
+    "rest_offset_m": 0.0,
+    "bounce_threshold_m_s": 0.2,
+    "friction_correlation_m": 0.005,
+    "friction_offset_threshold_m": 0.01,
+    "piece_material": {
+      "static_friction": 0.42,
+      "dynamic_friction": 0.34,
+      "restitution": 0.15
+    },
+    "piece_linear_damping": 0.0,
+    "piece_angular_damping": 0.02,
+    "max_depenetration_m_s": 0.5,
+    "enable_ccd": false,
+    "device": "cpu"
+  },
+  "servo_cfg": {
+    "stall_torque_nm": 1.91,
+    "no_load_speed_rad_s": 4.71,
+    "stiffness": 30.0,
+    "damping": 1.0,
+    "armature": 0.005,
+    "friction": 0.02
+  },
+  "drop": {
+    "height_m": 0.1,
+    "rest_time_s": 0.175,
+    "penetration_m": 2.1457672083613488e-08,
+    "rebound_m": 0.0011681103706360219,
+    "expected_rebound_m": 0.0015625,
+    "restitution_combined": 0.125,
+    "final_quat": [
+      1.0,
+      -2.4799874154268764e-07,
+      3.0227079150790814e-07,
+      3.7289137253537774e-05
+    ]
+  },
+  "friction": {
+    "mass_kg": 0.012,
+    "onset_force_n": 0.046695600000000004,
+    "mu_static_measured": 0.39666666666666667,
+    "mu_static_expected": 0.435,
+    "constant_force_n": 0.06657066,
+    "acceleration_m_s2": 2.0159446185743306,
+    "mu_dynamic_measured": 0.36000105824930373,
+    "mu_dynamic_expected": 0.36
+  },
+  "rest_drift": {
+    "seconds": 10.0,
+    "drift_m": {
+      "rojo_1": 6.705522537231445e-08,
+      "azul_1": 1.1367973229425843e-10,
+      "verde_1": 7.450580596923828e-09
+    }
+  },
+  "servo": {
+    "trajectory_s": 0.7333333333333334,
+    "peak_joint_speed_rad_s": [
+      0.7719748020172119,
+      1.2497307062149048,
+      1.3074774742126465,
+      0.9961723685264587,
+      1.9677764177322388
+    ],
+    "trajectory_speed_limit": 2.0,
+    "max_tracking_error_rad": 0.5301400184631349,
+    "steady_error_servo_only_rad": [
+      0.5301400184631349,
+      -0.003197789192199707,
+      -0.0145721435546875,
+      -0.003594481945037864,
+      0.0002642041813329943
+    ],
+    "final_error_closed_loop_rad": 0.5301400184631349,
+    "closed_loop_settle_s": 1.1958333333333333
+  },
+  "servo_step": {
+    "step_rad": 0.3,
+    "t90_s": 0.07083333333333333,
+    "overshoot_rad": 0.018744540214538585,
+    "steady_error_rad": 0.013970923423767101
+  },
+  "gravity_hold": {
+    "pose": [
+      0.0,
+      0.9,
+      -0.9,
+      0.0,
+      0.0
+    ],
+    "error_rad": [
+      -0.00039831234607845545,
+      -0.003530001640319802,
+      -0.0013842225074768288,
+      -0.00012939264706801623,
+      -0.00010683845175663009
+    ],
+    "effort_nm": [
+      0.006019194610416889,
+      -0.7759798765182495,
+      -0.4354096055030823,
+      -0.11035903543233871,
+      -0.01576591469347477
+    ],
+    "stall_torque_nm": 1.91
+  },
+  "performance": {
+    "dt": 0.004166666666666667,
+    "ms_per_step_physics": 1.9863404166668868,
+    "ms_per_step_with_camera_20hz": 3.4496073333320965,
+    "real_time_factor_physics": 2.0976599135300305,
+    "real_time_factor_with_camera": 1.20786694369702
+  },
+  "watchdog": {
+    "steps": 8045,
+    "violations": 0,
+    "by_kind": {},
+    "first": []
+  },
+  "checks": [
+    {
+      "name": "ca\u00edda: reposo en < 1 s",
+      "value": 0.175,
+      "limit": 1.0,
+      "pass": true
+    },
+    {
+      "name": "ca\u00edda: penetraci\u00f3n < 1 mm",
+      "value": 0.0,
+      "limit": 1.0,
+      "pass": true
+    },
+    {
+      "name": "ca\u00edda: rebote \u2264 e\u00b2\u00b7h + 2 mm",
+      "value": 1.17,
+      "limit": 3.56,
+      "pass": true
+    },
+    {
+      "name": "fricci\u00f3n est\u00e1tica medida \u2248 configurada (\u00b115 %)",
+      "value": 0.397,
+      "limit": 0.435,
+      "pass": true
+    },
+    {
+      "name": "fricci\u00f3n din\u00e1mica medida \u2248 configurada (\u00b115 %)",
+      "value": 0.36,
+      "limit": 0.36,
+      "pass": true
+    },
+    {
+      "name": "deriva en reposo 10 s < 0.5 mm",
+      "value": 0.0001,
+      "limit": 0.5,
+      "pass": true
+    },
+    {
+      "name": "velocidad articular \u2264 l\u00edmite del servo (4.71 rad/s)",
+      "value": 1.968,
+      "limit": 4.71,
+      "pass": true
+    },
+    {
+      "name": "error de seguimiento < 0.1 rad",
+      "value": 0.5301,
+      "limit": 0.1,
+      "pass": false
+    },
+    {
+      "name": "error estacionario del servo solo < 0.03 rad (servo P con carga)",
+      "value": 0.5301,
+      "limit": 0.03,
+      "pass": false
+    },
+    {
+      "name": "error final con correcci\u00f3n < 0.005 rad",
+      "value": 0.5301,
+      "limit": 0.005,
+      "pass": false
+    },
+    {
+      "name": "escal\u00f3n de 0.3 rad: sobreoscilaci\u00f3n < 0.03 rad",
+      "value": 0.0187,
+      "limit": 0.03,
+      "pass": true
+    },
+    {
+      "name": "brazo extendido: ca\u00edda por gravedad < 0.05 rad",
+      "value": 0.0035,
+      "limit": 0.05,
+      "pass": true
+    },
+    {
+      "name": "factor de tiempo real (f\u00edsica + c\u00e1mara 20 Hz)",
+      "value": 1.208,
+      "limit": 0.5,
+      "pass": true
+    },
+    {
+      "name": "vigilante: 0 violaciones tras reinicio",
+      "value": 0,
+      "limit": 0,
+      "pass": true
+    }
+  ],
+  "passed": false
+}
