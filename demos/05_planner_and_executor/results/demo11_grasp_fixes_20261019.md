@@ -196,6 +196,35 @@ Hexagon 12/12 strict in the same baseline run. **Still open:** front-camera tria
 reach failures before any grasp ("pre-grasp hover did not converge", wrist -30 degrees at scene yaw 30 and one
 crowded layout), not pad/grip. Side camera, 20 mm parts and the contained variant on other cameras not run.
 
+## Part 5 (2026-10-21): coverage of the flat-pad triangle, front camera and 20 mm parts
+
+Measured after Part 4 (strict, no env overrides unless noted):
+
+| scenario | result |
+|---|---|
+| 30 mm triangle, side camera, open+contained x single+crowded, 3 reps | **12/12** |
+| 30 mm triangle, front camera, same matrix (V-groove wrist yaw) | 9/12 |
+| all five shapes, 20 mm, top, open, single+crowded, 2 reps | 18/20 (cube, ball, cylinder, hexagon 2/2 each layout; 20 mm triangle 2/4) |
+
+The three front-camera misses all chose a **-30 / -60 degree wrist** ("pre-grasp hover did not converge",
+"la pose no es alcanzable"). That yaw only existed to seat the vertex in the V-groove. Flat pads close an
+edge and the opposite vertex at any yaw, so `tool_yaw_for` now returns a **neutral wrist (0)** for the
+30 mm triangle (`DEMO11_TRIANGLE30_YAW_MODE=legacy` restores the old angles). A/B on the three failing
+scenes: 2/3; then the whole 30 mm triangle matrix on top, front and side (seed 28000): **35/36**
+(top 12/12, side 12/12, front 11/12). `forward_pick` region, top+front (seed 29000): 14/16.
+
+Still failing, with causes from the logs:
+* **front camera, ~1 in 8:** the part is only partly seen (occlusion) and the arm cannot reach the
+  pre-grasp pose (seeds 26002, 28013, 29008). Flaky: the same pose passes on other seeds.
+* **top, forward_pick, contained crowded, 1 of 2:** closed 3.9 mm off-centre (outside the 3.1 mm slack),
+  the flat pads did not hold it (seed 29007).
+* **20 mm triangle on V45 pads, yaw 0 (2 of 3 yaw-0 scenes):** `executor` aborts the close with "cierre
+  desplazo la pieza 13-15 mm" although the trace shows the pads centred on the part (0.7 mm, no tilt).
+  The reference is the camera's pre-close target, which is ~13 mm off for this part. Not fixed
+  (relaxing the other drift guard in `11_real_sorting_with_monitor.py` had no effect, so it was reverted).
+  Flat pads cannot hold a 20 mm triangle (about 15 mm across, narrower than the closed pads).
+* Not run: 20 mm parts on front/side cameras, the contained variant on 20 mm parts.
+
 ## Reproduce
 
 ```
