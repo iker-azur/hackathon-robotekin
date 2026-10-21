@@ -44,3 +44,8 @@ demos/05_planner_and_executor/out11/
 demos/07_multi_robot_orchestration/out12/
 demos/07_multi_robot_orchestration/demo12/web/node_modules/
 demos/07_multi_robot_orchestration/demo12/web/dist/
+
+# Demo 17 (demos/08_recovery_kit): generated .kit experience files (machine-specific
+# absolute paths) and raw perception frames (15 MB, re-captured by tools/capture_perception.py).
+demos/08_recovery_kit/out/
+demos/08_recovery_kit/results/perception_frames/
