@@ -225,6 +225,41 @@ Still failing, with causes from the logs:
   Flat pads cannot hold a 20 mm triangle (about 15 mm across, narrower than the closed pads).
 * Not run: 20 mm parts on front/side cameras, the contained variant on 20 mm parts.
 
+## Part 6 (2026-10-22): 20 mm triangle close, front-camera reach
+
+**Correction to Part 5.** The 20 mm triangle's "cierre desplazo la pieza 13-15 mm" is *not* a camera
+offset: `executor` compares the part's true position at the end of the descent with its position during
+the close, so the jaws really do move it. A per-step trace (`DEMO11_TRACE_PART_EVERY=1`) shows a
+vertex catching the V45 pad within a few ticks of the close.
+
+Baseline on 12 fresh scenes (top, open, single+crowded, seed 31000): **7/12** - three closes shoved the
+part 9-14 mm, two had the part centred and untilted (16 mm across the jaws) but not held. Same scenes:
+
+| variant | result |
+|---|---|
+| ramp 20 steps, close 0.10 rad (old default) | 7/12 |
+| ramp 45 steps | 10/12 |
+| close 0.06 rad | 10/12 |
+| **ramp 45 steps + close 0.07 rad** | **12/12** |
+
+Both are now the default for the 20 mm triangle on V pads (`TRIANGLE_CLOSE_RAMP_STEPS = 45`,
+`close_command_for` -> 0.07). Independent check on 24 new scenes (seeds 32000/33000, top, front, side x
+open, contained x single, crowded): **18/24** - side 8/8, top 7/8, front 3/8.
+
+**Front camera, 20 mm triangle (5 of 8 fail), cause established, not fixed.** All five end before any
+close with "pre-grasp hover did not converge". The part is hidden from the front camera by the arm, but
+that is not the cause: raising the occlusion budgets to 1000 (`TRACK_MAX_OCCLUDED`,
+`TRACK_MAX_SCENE_LINKED_MISSES`) and letting the hover correct without a sighting changed nothing. The
+hover trace shows the jaws start 31 mm from the target in a different arm configuration (shoulder_lift
+0.42 / elbow -0.63 against 0.26 / -0.39 in a passing run of the same scene), `wrist_flex` pinned at its
+1.658 rad limit, and the corrections move the body the wrong way. It is a path-dependent IK branch, so the
+same scene passes or fails from run to run. Those experiments were reverted. The 30 mm triangle shows the
+same failure at about 1 in 8.
+
+Still open: the front-camera reach (a different approach path or hover height is the lead), seed 29007
+(first attempt 3.9 mm off-centre after a wrist-clipped mask, retry slipped 81 mm during carry), top 33000
+(close shove on a retry), and 20 mm cube/ball/cylinder/hexagon on the front and side cameras.
+
 ## Reproduce
 
 ```
@@ -236,4 +271,4 @@ python tools/benchmark_scene_matrix.py --headless --strict-physical --cameras to
 
 Use a fresh `--seed` per run: log names are `<seed>_<camera>_...` and older campaigns reuse them.
 `DEMO11_HOVER_FAR_M` and `DEMO11_DISABLE_NARROW_OPEN=1` exist for A/B runs; `DEMO11_TRACE_PART=1` logs the
-prism's position between the pads during close/lift/carry.
+prism's position between the pads during close/lift/carry (`DEMO11_TRACE_PART_EVERY=1` for every tick).
