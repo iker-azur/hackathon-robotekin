@@ -5286,7 +5286,15 @@ def main(args=None, bus=None) -> int:
                 robot.say(f"\n=== round {round_index} (seed {seed}) ===")
             bus.set_state(round=round_index, seed=seed, phase="scene")
 
-            park_pose = (0.20, -0.58, 0.39) if args.camera == "front" else None
+            # The front camera needs a park pose out of its sight line, but x = 0.20 was too close
+            # to the base: the vertical move down to the hover height stopped at 0.26 m instead of
+            # 0.223 m, the long lateral slide then ran at that height in an extended arm
+            # configuration (wrist_flex at its limit) and the pre-grasp hover never converged.
+            # 20 mm triangle, front camera, 8 strict scenes: 3/8 at x = 0.20, 8/8 at x = 0.28.
+            park_pose = (0.28, -0.58, 0.39) if args.camera == "front" else None
+            if park_pose is not None and os.environ.get("DEMO11_FRONT_PARK_POSE"):
+                # A/B only: "x,y,z" hold-point park pose for the front camera.
+                park_pose = tuple(float(v) for v in os.environ["DEMO11_FRONT_PARK_POSE"].split(","))
             parked = robot.park(pose=park_pose)  # clear the table before repopulating it
             if not parked.ok:
                 raise RuntimeError(f"No se puede poblar la escena: {parked.note}")
