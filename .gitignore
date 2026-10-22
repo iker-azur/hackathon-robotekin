@@ -49,3 +49,13 @@ demos/07_multi_robot_orchestration/demo12/web/dist/
 # absolute paths) and raw perception frames (15 MB, re-captured by tools/capture_perception.py).
 demos/08_recovery_kit/out/
 demos/08_recovery_kit/results/perception_frames/
+
+# Pytest caches (every demo has one)
+.pytest_cache/
+
+# Demo 11 sweep runs: transient stdout (*.out) and "finished" markers (*.done); the JSON reports are what matter
+demos/05_planner_and_executor/results/*.out
+demos/05_planner_and_executor/results/*.done
+
+# Demo 18 (demos/09_voice_bin_picking): recorded datasets, checkpoints and run output are
+# ignored by that folder's own .gitignore; its measured reports in results/ are kept.
