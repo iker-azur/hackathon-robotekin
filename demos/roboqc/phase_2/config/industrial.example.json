@@ -1,0 +1,13 @@
+{
+  "camera": {"index": 0, "width": 640, "height": 480, "display_fps": 12},
+  "roi": null,
+  "calibration_path": null,
+  "industrial": {
+    "enabled": true,
+    "model_dir": "../artifacts/vision_bundle",
+    "prefer_onnx": true,
+    "confidence": 0.35,
+    "source_region": null,
+    "destinations": {"red": null, "green": null, "blue": null}
+  }
+}

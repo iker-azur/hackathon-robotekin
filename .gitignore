@@ -63,3 +63,104 @@ demos/results/
 
 # Demo 18 (demos/09_voice_bin_picking): recorded datasets, checkpoints and run output are
 # ignored by that folder's own .gitignore; its measured reports in results/ are kept.
+
+# Local credentials (never embed these values in source or notebook outputs)
+.env
+.env.*
+*.env
+!.env.example
+!*.env.example
+HF_TOKEN
+HF_TOKEN.*
+hf_token
+hf_token.*
+credentials.json
+credentials*.json
+secrets.json
+secrets.toml
+*.pem
+*.key
+.aws/
+.ssh/
+.huggingface/
+.hf/
+
+# Additional environments, caches, build artifacts and local tools
+.venv*/
+venv-*/
+env/
+ENV/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+.vs/
+.agents/
+.codex/
+node_modules/
+Desktop.ini
+*.tmp
+*.bak
+*~
+
+# Workspace-private files; preserve the original ignore backup locally
+/.gitignore.local-backup
+/local/
+/data/
+/train_*/
+/val_*/
+
+# RoboQC datasets, proposal banks, review projects and generated runs
+/demos/roboqc/**/data/
+/demos/roboqc/**/datasets/
+/demos/roboqc/**/inputs/
+/demos/roboqc/**/review_bundle_*/
+/demos/roboqc/**/reviewed_dataset_*/
+/demos/roboqc/**/reviewed_masks/
+/demos/roboqc/**/revisions/
+/demos/roboqc/**/project.json
+/demos/roboqc/**/checkpoints/
+/demos/roboqc/**/model_cache/
+/demos/roboqc/**/runs/
+/demos/roboqc/**/outputs/
+/demos/roboqc/**/exports/
+/demos/roboqc/**/train_*/
+/demos/roboqc/**/val_*/
+/demos/roboqc/**/wandb/
+/demos/roboqc/**/mlruns/
+/demos/roboqc/**/lightning_logs/
+/demos/roboqc/**/verification/
+/demos/roboqc/**/build/
+/demos/roboqc/**/dist/
+/demos/roboqc/**/*.zip
+/demos/roboqc/**/*.tar
+/demos/roboqc/**/*.tar.gz
+/demos/roboqc/**/*.tgz
+/demos/roboqc/**/*.7z
+/demos/roboqc/**/*.rar
+/demos/roboqc/**/*.partial_*
+/demos/roboqc/**/*.export.json
+/demos/roboqc/**/*.inventory.jsonl
+/demos/roboqc/**/*.job.json
+
+# Downloaded/trained model binaries, not architecture source directories
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.tflite
+*.engine
+*.joblib
+*.pkl
+*.pickle
+
+# Reference-photo redistribution rights have not been established.
+# These exclusions do NOT remove photos embedded inside notebooks.
+/demos/roboqc/colab/assets/stamped_parts/part_*.png

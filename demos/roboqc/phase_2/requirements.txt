@@ -1,0 +1,3 @@
+-r ../phase_1/requirements.txt
+opencv-python>=4.8  # Phase 2 vision (CPU only)
+mujoco>=3.1  # physics and rendering for the sim3d source (optional, CPU/OpenGL)

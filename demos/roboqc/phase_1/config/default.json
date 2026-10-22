@@ -1,0 +1,7 @@
+{
+  "model_dir": "models",
+  "preferred_model": null,
+  "vosk_model_path": "models/vosk-model-small-es",
+  "cpu_threads": 2,
+  "seed": 42
+}

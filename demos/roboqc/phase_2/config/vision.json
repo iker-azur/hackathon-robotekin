@@ -1,0 +1,60 @@
+{
+  "camera": {
+    "index": "sim:demo",
+    "width": 640,
+    "height": 480,
+    "display_fps": 12
+  },
+  "roi": null,
+  "foreground": {
+    "min_saturation": 70,
+    "min_value": 60,
+    "detect_dark": false,
+    "dark_value_max": 50,
+    "detect_bright_achromatic": false,
+    "bright_value_min": 190,
+    "achromatic_saturation_max": 40
+  },
+  "morphology": {
+    "kernel_size": 5,
+    "open_iterations": 1,
+    "close_iterations": 2
+  },
+  "shape": {
+    "min_area_px": 400,
+    "max_area_px": 60000,
+    "approx_epsilon_ratio": 0.03,
+    "circularity_min": 0.85,
+    "square_aspect_tolerance": 0.15
+  },
+  "color": {
+    "min_pixel_fraction": 0.6,
+    "ranges": {
+      "rojo": [[0, 8, 90, 255, 60, 255], [170, 179, 90, 255, 60, 255]],
+      "naranja": [[9, 20, 120, 255, 80, 255]],
+      "amarillo": [[21, 34, 90, 255, 80, 255]],
+      "verde": [[35, 85, 70, 255, 40, 255]],
+      "azul": [[86, 130, 70, 255, 40, 255]],
+      "morado": [[131, 160, 50, 255, 40, 255]],
+      "blanco": [[0, 179, 0, 40, 190, 255]],
+      "gris": [[0, 179, 0, 40, 60, 189]],
+      "negro": [[0, 179, 0, 255, 0, 50]]
+    }
+  },
+  "tracking": {
+    "max_distance_px": 60,
+    "max_missed_frames": 8,
+    "motion_threshold_px": 6,
+    "min_hits": 2,
+    "history_length": 7
+  },
+  "quality": {
+    "min_solidity": 0.88,
+    "expected_colors": null,
+    "expected_types": null,
+    "expected_area_px": null,
+    "expected_area_tolerance": 0.35,
+    "min_color_confidence": 0.6
+  },
+  "calibration_path": null
+}

@@ -1,0 +1,6 @@
+PySide6>=6.8,<7
+numpy>=1.26,<3
+opencv-python>=4.10,<5
+PyYAML>=6,<7
+# Install a suitable CPU/CUDA PyTorch build first; see README.md.
+ultralytics>=8.4.182,<9
