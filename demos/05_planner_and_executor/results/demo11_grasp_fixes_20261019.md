@@ -260,6 +260,37 @@ Still open: the front-camera reach (a different approach path or hover height is
 (first attempt 3.9 mm off-centre after a wrist-clipped mask, retry slipped 81 mm during carry), top 33000
 (close shove on a retry), and 20 mm cube/ball/cylinder/hexagon on the front and side cameras.
 
+## Part 7 (2026-10-22): front-camera reach fixed - the front park pose
+
+**Supersedes the "front camera reach" item in Part 6.** The path-dependent failure was real but its
+cause was the *starting pose*, not occlusion, hover height or the IK. `main` parks the arm for the front
+camera at hold point `(0.20, -0.58, 0.39)` (a pose out of the camera's sight line). From there the
+first vertical move to the hover height stops at body z 0.26 m instead of 0.223 m, so the whole lateral
+slide to the part runs 37 mm too high. At that height the arm can only reach x >= 0.44, takes an
+extended configuration (shoulder_lift 0.42, elbow -0.63, `wrist_flex` pinned at 1.658 rad) and the
+pre-grasp hover then never converges. The top camera starts from the standard park pose and reaches
+0.224 m directly (shoulder_lift 0.05, elbow -0.12). Found by diffing the `DEMO11_TRACE_TRACK=1` /
+`DEMO11_TRACE_MOTION=1` traces of a passing and a failing front run of the same scene.
+
+Fix: front park pose `(0.28, -0.58, 0.39)`. Same 8 scenes (20 mm triangle, front, seeds 32004-7 and
+33004-7): 3/8 at x = 0.20, **8/8** at x = 0.28, 8/8 at the standard `(0.35, -0.58, 0.46)`.
+Regression check, front camera, every shape x 20/30 mm x open/contained x single/crowded (40 scenes,
+seed 34000, strict, 0 simulator-assisted grasps):
+
+| park pose | pass | per shape (20 mm / 30 mm) |
+|---|---|---|
+| **new, x = 0.28** | **40/40** | ball, cube, cylinder, hexagon, triangle all 4/4 at both sizes |
+| old, x = 0.20 | 25/40 | ball 2/4 and 1/4, cube 3/4 and 4/4, cylinder 4/4 and 1/4, hexagon 4/4 and 3/4, triangle 0/4 and 3/4 |
+
+`DEMO11_FRONT_PARK_POSE=x,y,z` overrides the pose for A/B runs. Ruled out on the way, all reverted:
+bigger occlusion budgets (`TRACK_MAX_OCCLUDED`, `TRACK_MAX_SCENE_LINKED_MISSES`) and a blind pre-grasp
+hover (no change), a lower hover via a `DEMO11_HOVER_FAR_M` sweep (no effect, the plan is floored at
+`TRAVEL_Z`) and a lowered pick approach (2/8 and 1/8, worse).
+
+Still open: seed 29007 (30 mm triangle, forward_pick, crowded tray: first attempt 3.9 mm off-centre
+after a wrist-clipped mask, retry slipped 81 mm in the carry); top 33000 (20 mm triangle, close shove
+on a retry); front camera with `forward_pick`; side camera for the other shapes at 20 mm.
+
 ## Reproduce
 
 ```
