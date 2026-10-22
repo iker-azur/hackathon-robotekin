@@ -1,0 +1,444 @@
+{
+  "date": "2026-10-08",
+  "environment": "Windows / hackathon-robotekin / Isaac Sim 5.1 / RTX 5060 Ti",
+  "baseline_git": "979fd5b^",
+  "limitations": [
+    "perception includes calibration scenes and digitally darkened variants",
+    "DOM shim is not browser rendering",
+    "language hold-out excludes normalized text duplicates only",
+    "runtime commands differ from initial baseline; no total speedup claimed"
+  ],
+  "perception": {
+    "baseline": {
+      "truth": 92,
+      "detections": 92,
+      "matched": 88,
+      "correct_kind": 64,
+      "frames": 18,
+      "by_category": {
+        "objects": {
+          "truth": 56,
+          "detections": 56,
+          "matched": 52,
+          "correct_kind": 33
+        },
+        "containers": {
+          "truth": 36,
+          "detections": 36,
+          "matched": 36,
+          "correct_kind": 31
+        }
+      },
+      "mean_ms": 17.331726669605512,
+      "mean_xy_error_mm": 5.5016569007644165
+    },
+    "legacy": {
+      "truth": 92,
+      "detections": 92,
+      "matched": 88,
+      "correct_kind": 64,
+      "frames": 18,
+      "by_category": {
+        "objects": {
+          "truth": 56,
+          "detections": 56,
+          "matched": 52,
+          "correct_kind": 33
+        },
+        "containers": {
+          "truth": 36,
+          "detections": 36,
+          "matched": 36,
+          "correct_kind": 31
+        }
+      },
+      "mean_ms": 15.150953333876613,
+      "mean_xy_error_mm": 5.5016569007644165
+    },
+    "robust": {
+      "truth": 92,
+      "detections": 90,
+      "matched": 90,
+      "correct_kind": 87,
+      "frames": 18,
+      "by_category": {
+        "objects": {
+          "truth": 56,
+          "detections": 54,
+          "matched": 54,
+          "correct_kind": 53
+        },
+        "containers": {
+          "truth": 36,
+          "detections": 36,
+          "matched": 36,
+          "correct_kind": 34
+        }
+      },
+      "mean_ms": 16.572475553645443,
+      "mean_xy_error_mm": 4.164462162432239
+    }
+  },
+  "intent": {
+    "count": 87,
+    "excluded_exact_train_overlaps": 49,
+    "load_s": 22.2839819000219,
+    "backends": {
+      "model": {
+        "exact": 63,
+        "intent": 80,
+        "mean_ms": 76.03306321617238,
+        "p50_ms": 69.12579998606816,
+        "p95_ms": 134.4087299949024
+      },
+      "rules": {
+        "exact": 14,
+        "intent": 15,
+        "mean_ms": 0.28948620732488306,
+        "p50_ms": 0.17210000078193843,
+        "p95_ms": 1.0535299923503771
+      },
+      "hybrid": {
+        "exact": 62,
+        "intent": 80,
+        "mean_ms": 68.29659425320328,
+        "p50_ms": 71.3636000000406,
+        "p95_ms": 115.68045999156311
+      }
+    }
+  },
+  "scene_extensions": {
+    "model": {
+      "correct": 3,
+      "total": 30,
+      "safe_refusals": 3,
+      "refusal_cases": 12,
+      "mean_ms": 67.50602000101935
+    },
+    "rules": {
+      "correct": 30,
+      "total": 30,
+      "safe_refusals": 12,
+      "refusal_cases": 12,
+      "mean_ms": 0.3231599985156208
+    },
+    "hybrid": {
+      "correct": 30,
+      "total": 30,
+      "safe_refusals": 12,
+      "refusal_cases": 12,
+      "mean_ms": 15.217436667686949
+    }
+  },
+  "monitor": {
+    "websocket": {
+      "initial_snapshot_ms": 0.5949999904260039,
+      "burst_first_snapshot_ms": 12.597399996593595,
+      "writes": 100,
+      "extra_messages_in_half_second": 0
+    },
+    "dom_shim": {
+      "baseline": {
+        "runs": 5,
+        "mean_ms": 256.17568,
+        "html_writes": 12013
+      },
+      "updated": {
+        "runs": 5,
+        "mean_ms": 84.88554,
+        "html_writes": 1016
+      }
+    }
+  },
+  "http_sessions": [
+    {
+      "cycle": 0,
+      "start_s": 45.579943599994294,
+      "start": {
+        "id": "cmd_00001",
+        "type": "start",
+        "state": "SUCCESS",
+        "text": "",
+        "source": "dashboard",
+        "note": "Escena y cámara listas.",
+        "params": {
+          "seed": 110
+        },
+        "t": 1791479886.3604293,
+        "t_state": 1791479931.8240755
+      },
+      "invalid": {
+        "id": "cmd_00002",
+        "type": "command",
+        "state": "NEEDS_CLARIFICATION",
+        "text": "pon la bola magenta en la caja roja",
+        "source": "dashboard",
+        "note": "Hay palabras o referencias no reconocidas: magenta. Reformula la orden.",
+        "params": {},
+        "t": 1791479931.9415605,
+        "t_state": 1791479932.1131718
+      },
+      "command_s": 18.89458660001401,
+      "command": {
+        "id": "cmd_00003",
+        "type": "command",
+        "state": "FAILED",
+        "text": "pon la bola roja en la caja roja",
+        "source": "dashboard",
+        "note": "0/1 tareas verificadas. No se ha confirmado el agarre o la colocación de todas las piezas; consulta la lista de tareas.",
+        "params": {},
+        "t": 1791479932.1717663,
+        "t_state": 1791479951.041967
+      },
+      "metrics": {
+        "command_queue_depth": 0,
+        "control_queue_depth": 0,
+        "physics_step_ms": 31.75,
+        "live_capture_ms": 21.2,
+        "jpeg_ms": 0.82,
+        "physics_per_s": 31.0,
+        "camera_per_s": 1.5,
+        "capture_ms": 23.2,
+        "segmentation_ms": 14.9,
+        "annotation_ms": 0.5,
+        "perception_ms": 38.7,
+        "command_latency_ms": 4.0,
+        "parse_ms": 0.879,
+        "command_total_ms": 18849.6,
+        "control_poll_per_s": 1.0,
+        "command_to_task_motion_ms": 40.3,
+        "camera_reused_frames": 11
+      },
+      "stop_s": 2.986178999999538,
+      "phase": "stopped",
+      "health_samples": 15,
+      "health_mean_ms": 6.646493333391845
+    },
+    {
+      "cycle": 1,
+      "start_s": 45.44702459999826,
+      "start": {
+        "id": "cmd_00005",
+        "type": "start",
+        "state": "SUCCESS",
+        "text": "",
+        "source": "dashboard",
+        "note": "Escena y cámara listas.",
+        "params": {
+          "seed": 111
+        },
+        "t": 1791479954.0835626,
+        "t_state": 1791479999.458274
+      },
+      "invalid": {
+        "id": "cmd_00006",
+        "type": "command",
+        "state": "NEEDS_CLARIFICATION",
+        "text": "pon la bola magenta en la caja roja",
+        "source": "dashboard",
+        "note": "Hay palabras o referencias no reconocidas: magenta. Reformula la orden.",
+        "params": {},
+        "t": 1791479999.5289085,
+        "t_state": 1791479999.706526
+      },
+      "command_s": 31.586328900011722,
+      "command": {
+        "id": "cmd_00007",
+        "type": "command",
+        "state": "SUCCESS",
+        "text": "pon el cubo azul en Azul A",
+        "source": "dashboard",
+        "note": "1/1 tareas verificadas.",
+        "params": {},
+        "t": 1791479999.7619755,
+        "t_state": 1791480031.2480128
+      },
+      "metrics": {
+        "command_queue_depth": 0,
+        "control_queue_depth": 0,
+        "physics_step_ms": 32.31,
+        "live_capture_ms": 23.5,
+        "jpeg_ms": 0.56,
+        "physics_per_s": 30.0,
+        "camera_per_s": 1.5,
+        "capture_ms": 24.0,
+        "segmentation_ms": 13.5,
+        "annotation_ms": 0.5,
+        "perception_ms": 38.0,
+        "command_latency_ms": 6.5,
+        "parse_ms": 0.643,
+        "command_total_ms": 31478.5,
+        "camera_reused_frames": 14,
+        "control_poll_per_s": 0.5,
+        "command_to_task_motion_ms": 38.9
+      },
+      "stop_s": 2.4507254000054672,
+      "phase": "stopped",
+      "health_samples": 15,
+      "health_mean_ms": 7.090786669868976
+    }
+  ],
+  "isaac_runs": {
+    "106": {
+      "elapsed_until_report_s": 126.47949860000517,
+      "timings": {
+        "capture_rgb": {
+          "calls": 96,
+          "total_ms": 2627.4582999758422
+        },
+        "capture": {
+          "calls": 40,
+          "total_ms": 1121.3611999701243
+        },
+        "look": {
+          "calls": 40,
+          "total_ms": 2080.761700111907
+        }
+      },
+      "metrics": {
+        "physics_step_ms": 44.96,
+        "live_capture_ms": 31.1,
+        "jpeg_ms": 1.29,
+        "capture_ms": 31.0,
+        "segmentation_ms": 10.6,
+        "annotation_ms": 0.5,
+        "perception_ms": 42.1,
+        "parse_ms": 186.387,
+        "command_to_task_motion_ms": 291.3,
+        "camera_reused_frames": 35,
+        "command_total_ms": 82914.8,
+        "command_queue_depth": 0,
+        "control_queue_depth": 0,
+        "physics_per_s": 26.0,
+        "camera_per_s": 1.0,
+        "control_poll_per_s": 1.0
+      },
+      "result": {
+        "status": "PARTIAL_SUCCESS",
+        "verified": 1,
+        "missed": 1,
+        "recovered": 0,
+        "refused_grasps": 2,
+        "kinematic_grasps": 0,
+        "completed_tasks": 1,
+        "failed_tasks": 1,
+        "command_result": {
+          "id": "cmd_00001",
+          "status": "PARTIAL_SUCCESS",
+          "reason": "1/2 tareas verificadas. No se ha confirmado el agarre o la colocación de todas las piezas; consulta la lista de tareas."
+        }
+      }
+    },
+    "107": {
+      "elapsed_until_report_s": 146.54689289999078,
+      "timings": {
+        "capture_rgb": {
+          "calls": 116,
+          "total_ms": 2614.0558998158667
+        },
+        "capture": {
+          "calls": 52,
+          "total_ms": 1220.5156000563875
+        },
+        "look": {
+          "calls": 52,
+          "total_ms": 2306.7584999953397
+        }
+      },
+      "metrics": {
+        "physics_step_ms": 32.27,
+        "live_capture_ms": 22.8,
+        "jpeg_ms": 0.6,
+        "capture_ms": 26.4,
+        "segmentation_ms": 14.1,
+        "annotation_ms": 1.0,
+        "perception_ms": 41.6,
+        "parse_ms": 154.714,
+        "command_to_task_motion_ms": 257.3,
+        "camera_reused_frames": 47,
+        "command_total_ms": 103649.8,
+        "command_queue_depth": 0,
+        "control_queue_depth": 0,
+        "physics_per_s": 29.0,
+        "camera_per_s": 0.5,
+        "control_poll_per_s": 0.5
+      },
+      "result": {
+        "status": "SUCCESS",
+        "verified": 2,
+        "missed": 0,
+        "recovered": 0,
+        "refused_grasps": 2,
+        "kinematic_grasps": 0,
+        "completed_tasks": 2,
+        "failed_tasks": 0,
+        "command_result": {
+          "id": "cmd_00001",
+          "status": "SUCCESS",
+          "reason": "2/2 tareas verificadas."
+        }
+      }
+    },
+    "108": {
+      "elapsed_until_report_s": 106.46334660000866,
+      "timings": {
+        "capture_rgb": {
+          "calls": 60,
+          "total_ms": 1300.7885001134127
+        },
+        "capture": {
+          "calls": 28,
+          "total_ms": 634.4463000132237
+        },
+        "look": {
+          "calls": 28,
+          "total_ms": 1386.0833001381252
+        }
+      },
+      "metrics": {
+        "physics_step_ms": 32.75,
+        "live_capture_ms": 21.9,
+        "jpeg_ms": 0.53,
+        "capture_ms": 23.0,
+        "segmentation_ms": 11.9,
+        "annotation_ms": 0.5,
+        "perception_ms": 35.5,
+        "parse_ms": 138.766,
+        "command_to_task_motion_ms": 231.4,
+        "camera_reused_frames": 25,
+        "command_total_ms": 61864.0,
+        "command_queue_depth": 0,
+        "control_queue_depth": 0,
+        "physics_per_s": 32.0,
+        "camera_per_s": 1.0,
+        "control_poll_per_s": 0.5
+      },
+      "result": {
+        "status": "SUCCESS",
+        "verified": 2,
+        "missed": 0,
+        "recovered": 0,
+        "refused_grasps": 0,
+        "kinematic_grasps": 0,
+        "completed_tasks": 2,
+        "failed_tasks": 0,
+        "command_result": {
+          "id": "cmd_00001",
+          "status": "SUCCESS",
+          "reason": "2/2 tareas verificadas."
+        }
+      }
+    }
+  },
+  "final_tests": {
+    "demo11": {
+      "checks": 537,
+      "result": "SUCCESS"
+    },
+    "planner": {
+      "checks": 839,
+      "recorded_scenes": 20,
+      "result": "SUCCESS"
+    }
+  }
+}

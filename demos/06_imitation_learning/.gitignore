@@ -1,0 +1,14 @@
+# Datasets and checkpoints are recreated by the demos themselves
+data/
+outputs/
+out/
+
+# The reports under results/ ARE kept: they are the measured numbers the README
+# quotes, and they cannot be regenerated without re-running the simulator.
+!results/
+
+# ...except raw by-products of those reports: the .partial.jsonl written episode by
+# episode duplicates each run's .json, and smoke-test runs only check the scripts fit
+# together (their policy is not meant to work).
+results/runs/*.partial.jsonl
+results/runs/smoke*

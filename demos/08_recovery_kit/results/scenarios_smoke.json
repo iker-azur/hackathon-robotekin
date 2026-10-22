@@ -1,0 +1,176 @@
+{
+  "generated_at": "2026-10-17T13:10:45",
+  "seed": 17000,
+  "suite": "basico,kit",
+  "runs": [
+    {
+      "scenario": "basico",
+      "seed": 17000,
+      "command": "una pieza roja",
+      "perturbation": null,
+      "status": "completado",
+      "duration_s": 21.7,
+      "metrics": {
+        "grasp_attempts": 2,
+        "grasps_ok": 2,
+        "places": 1,
+        "places_verified": 1,
+        "failures": {
+          "inalcanzable": 1
+        },
+        "recoveries": 1,
+        "recovered": 0,
+        "looks": 13,
+        "duration_s": 21.7
+      },
+      "audit": {
+        "contents": [
+          {
+            "piece": "rojo_2",
+            "color": "red",
+            "shape": "cube",
+            "box": "caja"
+          }
+        ],
+        "missing": [],
+        "extra": [],
+        "satisfied": true
+      },
+      "agent_agrees_with_audit": true,
+      "perturbation_log": [],
+      "recoveries": [
+        {
+          "t": 7.4,
+          "failure": {
+            "kind": "inalcanzable",
+            "detail": "la caja no es alcanzable desde arriba",
+            "task": "pieza roja 1/1"
+          },
+          "decision": {
+            "action": "otra_pieza",
+            "reason": "la caja no es alcanzable desde arriba; uso otra pieza igual",
+            "strategy": {}
+          }
+        }
+      ],
+      "events": [
+        "Kit pedido: 1 pieza roja",
+        "Veo una cubo roja (roja_1)",
+        "Veo una cubo roja (roja_2)",
+        "Veo una cubo azul (azul_1)",
+        "Veo una cubo azul (azul_2)",
+        "Veo una cubo azul (azul_3)",
+        "Voy a por la cubo roja (roja_1) (pieza roja 1/1)",
+        "Agarre confirmado: la pinza se ha bloqueado sobre la pieza (0.15 rad)",
+        "la caja no es alcanzable desde arriba; uso otra pieza igual",
+        "La cubo roja (roja_1) se ha movido 15 mm",
+        "Voy a por la cubo roja (roja_2) (pieza roja 1/1)",
+        "Agarre confirmado: la pinza se ha bloqueado sobre la pieza (0.15 rad)",
+        "La cubo roja (roja_2) está dentro de la caja",
+        "Verificado con la cámara: la cubo roja (roja_2) está dentro de la caja",
+        "Kit completo y verificado con la cámara: 1 pieza roja"
+      ],
+      "physics_violations": 0,
+      "wall_s": 25.4,
+      "real_time_factor": 0.85
+    },
+    {
+      "scenario": "kit",
+      "seed": 17000,
+      "command": "Prepara un kit con una pieza roja y dos piezas azules",
+      "perturbation": null,
+      "status": "completado",
+      "duration_s": 39.39,
+      "metrics": {
+        "grasp_attempts": 3,
+        "grasps_ok": 3,
+        "places": 3,
+        "places_verified": 3,
+        "failures": {},
+        "recoveries": 0,
+        "recovered": 0,
+        "looks": 19,
+        "duration_s": 39.39
+      },
+      "audit": {
+        "contents": [
+          {
+            "piece": "rojo_1",
+            "color": "red",
+            "shape": "cube",
+            "box": "caja"
+          },
+          {
+            "piece": "azul_2",
+            "color": "blue",
+            "shape": "cube",
+            "box": "caja"
+          },
+          {
+            "piece": "azul_3",
+            "color": "blue",
+            "shape": "cube",
+            "box": "caja"
+          }
+        ],
+        "missing": [],
+        "extra": [],
+        "satisfied": true
+      },
+      "agent_agrees_with_audit": true,
+      "perturbation_log": [],
+      "recoveries": [],
+      "events": [
+        "Kit pedido: 1 pieza roja y 2 piezas azules",
+        "Veo una cubo roja (roja_1)",
+        "Veo una cubo roja (roja_2)",
+        "Veo una cubo azul (azul_1)",
+        "Veo una cubo azul (azul_2)",
+        "Veo una cubo azul (azul_3)",
+        "Voy a por la cubo roja (roja_1) (pieza roja 1/1)",
+        "Agarre confirmado: la pinza se ha bloqueado sobre la pieza (0.15 rad)",
+        "La cubo roja (roja_1) está dentro de la caja",
+        "Verificado con la cámara: la cubo roja (roja_1) está dentro de la caja",
+        "Voy a por la cubo azul (azul_1) (pieza azul 1/2)",
+        "Ya no veo la prisma roja (roja_3)",
+        "Agarre confirmado: la pinza se ha bloqueado sobre la pieza (0.15 rad)",
+        "La cubo azul (azul_1) está dentro de la caja",
+        "Verificado con la cámara: la cubo azul (azul_1) está dentro de la caja",
+        "Voy a por la cubo azul (azul_2) (pieza azul 2/2)",
+        "Agarre confirmado: la pinza se ha bloqueado sobre la pieza (0.15 rad)",
+        "La cubo azul (azul_2) está dentro de la caja",
+        "Ya no veo la cilindro roja (roja_4)",
+        "Verificado con la cámara: la cubo azul (azul_2) está dentro de la caja",
+        "Kit completo y verificado con la cámara: 1 pieza roja y 2 piezas azules"
+      ],
+      "physics_violations": 0,
+      "wall_s": 29.7,
+      "real_time_factor": 1.33
+    }
+  ],
+  "summary": {
+    "runs": 2,
+    "task_completion_rate": 1.0,
+    "agent_claims_complete_rate": 1.0,
+    "false_success": 0,
+    "grasp_success_rate": 1.0,
+    "runs_with_failures": 1,
+    "recovery_success_rate": 1.0,
+    "mean_duration_s": 30.55,
+    "physics_violations": 0,
+    "agent_audit_agreement": 1.0,
+    "mean_real_time_factor": 1.09,
+    "by_scenario": {
+      "basico": {
+        "runs": 1,
+        "completed": 1.0,
+        "mean_s": 21.7
+      },
+      "kit": {
+        "runs": 1,
+        "completed": 1.0,
+        "mean_s": 39.4
+      }
+    }
+  }
+}

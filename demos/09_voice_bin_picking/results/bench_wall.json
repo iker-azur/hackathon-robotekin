@@ -1,0 +1,273 @@
+{
+ "variantes": {
+  "pared_sin_modelo": {
+   "n": 9,
+   "ok": 6,
+   "estados": {
+    "deslizada": 2,
+    "ok": 6,
+    "vacío": 1
+   },
+   "sin_candidata": 31,
+   "err_pos_mm_medio": 1.06,
+   "err_yaw_deg_medio": 0.1,
+   "desplazamiento_mm_medio_si_falla": 9.9
+  }
+ },
+ "intentos": [
+  {
+   "seed": 320000,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320001,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320002,
+   "variante": "pared_sin_modelo",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 10.1
+  },
+  {
+   "seed": 320003,
+   "variante": "pared_sin_modelo",
+   "pieza": "rojo_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.2,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 320004,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320005,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320006,
+   "variante": "pared_sin_modelo",
+   "pieza": "azul_c3",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 1.3,
+   "err_yaw_deg": 0.3,
+   "desplazada_mm": 11.5
+  },
+  {
+   "seed": 320007,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320008,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320009,
+   "variante": "pared_sin_modelo",
+   "pieza": "azul_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.6,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 320010,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320011,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320012,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320013,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320014,
+   "variante": "pared_sin_modelo",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.1,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 320015,
+   "variante": "pared_sin_modelo",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.1,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 320016,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320017,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320018,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320019,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320020,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320021,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320022,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320023,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320024,
+   "variante": "pared_sin_modelo",
+   "pieza": "azul_c3",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.3,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 320025,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320026,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320027,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320028,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320029,
+   "variante": "pared_sin_modelo",
+   "pieza": "rojo_c1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 8.2
+  },
+  {
+   "seed": 320030,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320031,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320032,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320033,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320034,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320035,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320036,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320037,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320038,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 320039,
+   "variante": "pared_sin_modelo",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.3,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  }
+ ]
+}

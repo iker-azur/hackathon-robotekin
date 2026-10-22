@@ -1,0 +1,281 @@
+{
+  "run": {
+    "name": "scripted_outside_10ep",
+    "utc": "2026-10-20T15:52:05Z",
+    "git": {
+      "commit": "a3db19f",
+      "branch": "prepare-demos",
+      "dirty": true
+    },
+    "policy": "scripted teacher",
+    "type": "scripted",
+    "inputs": "SCRIPTED teacher with the cube's true pose (privileged) - NOT a learned policy",
+    "spots": "outside",
+    "spots_description": "fuera de la caja de entrenamiento, en el anillo de 1 cm que la rodea (la política tiene que extrapolar)",
+    "seed": 0,
+    "steps": 720,
+    "action_steps": null,
+    "scripted_grasp_bias_mm": [
+      -10.0,
+      2.0
+    ],
+    "interrupted": false,
+    "status": "complete",
+    "episodes_requested": 10,
+    "criteria": {
+      "lift_min_m": 0.04,
+      "carry_z_m": 0.03,
+      "carry_min_steps": 60,
+      "held_max_dist_m": 0.03,
+      "place_tol_m": 0.03
+    }
+  },
+  "episodes": [
+    {
+      "episode": 0,
+      "spot": [
+        0.3264,
+        -0.3641
+      ],
+      "yaw_deg": -15.4,
+      "nearest_train_cm": 0.69,
+      "cube_uv": null,
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.15,
+        "longest_carry_steps": 162,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.71,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 23.3
+    },
+    {
+      "episode": 1,
+      "spot": [
+        0.3814,
+        -0.4578
+      ],
+      "yaw_deg": -3.4,
+      "nearest_train_cm": 1.59,
+      "cube_uv": null,
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 5.9,
+        "longest_carry_steps": 161,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.67,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 23.2
+    },
+    {
+      "episode": 2,
+      "spot": [
+        0.3882,
+        -0.36
+      ],
+      "yaw_deg": -22.6,
+      "nearest_train_cm": 2.48,
+      "cube_uv": null,
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.35,
+        "longest_carry_steps": 161,
+        "held_fraction": 1.0,
+        "final_error_cm": 1.65,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 23.2
+    },
+    {
+      "episode": 3,
+      "spot": [
+        0.2834,
+        -0.4537
+      ],
+      "yaw_deg": -10.6,
+      "nearest_train_cm": 1.95,
+      "cube_uv": null,
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.12,
+        "longest_carry_steps": 161,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.68,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 23.1
+    },
+    {
+      "episode": 4,
+      "spot": [
+        0.2903,
+        -0.356
+      ],
+      "yaw_deg": 27.8,
+      "nearest_train_cm": 1.98,
+      "cube_uv": null,
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.16,
+        "longest_carry_steps": 162,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.88,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 25.2
+    },
+    {
+      "episode": 5,
+      "spot": [
+        0.3453,
+        -0.4641
+      ],
+      "yaw_deg": -29.4,
+      "nearest_train_cm": 1.33,
+      "cube_uv": null,
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.09,
+        "longest_carry_steps": 161,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.67,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 25.4
+    },
+    {
+      "episode": 6,
+      "spot": [
+        0.3865,
+        -0.4397
+      ],
+      "yaw_deg": -15.0,
+      "nearest_train_cm": 1.46,
+      "cube_uv": null,
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.36,
+        "longest_carry_steps": 163,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.48,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 23.4
+    },
+    {
+      "episode": 7,
+      "spot": [
+        0.2868,
+        -0.403
+      ],
+      "yaw_deg": -3.0,
+      "nearest_train_cm": 0.61,
+      "cube_uv": null,
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.05,
+        "longest_carry_steps": 161,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.76,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 23.3
+    },
+    {
+      "episode": 8,
+      "spot": [
+        0.3143,
+        -0.4601
+      ],
+      "yaw_deg": 21.0,
+      "nearest_train_cm": 1.18,
+      "cube_uv": null,
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.14,
+        "longest_carry_steps": 161,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.77,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 26.1
+    },
+    {
+      "episode": 9,
+      "spot": [
+        0.3831,
+        -0.3745
+      ],
+      "yaw_deg": 23.4,
+      "nearest_train_cm": 1.21,
+      "cube_uv": null,
+      "verdict": {
+        "success": true,
+        "lifted": true,
+        "stable_grasp": true,
+        "placed": true,
+        "failure": "",
+        "max_lift_cm": 6.16,
+        "longest_carry_steps": 161,
+        "held_fraction": 1.0,
+        "final_error_cm": 0.63,
+        "final_height_above_rest_cm": -0.0,
+        "steps": 720
+      },
+      "wall_clock_s": 25.6
+    }
+  ],
+  "summary": {
+    "episodes": 10,
+    "successes": 10,
+    "rate": 1.0,
+    "failures": {}
+  }
+}

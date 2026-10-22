@@ -1,0 +1,202 @@
+{
+ "config": {
+  "seed": 18000,
+  "camera_res": [
+   800,
+   600
+  ],
+  "view_camera": false,
+  "bin_center_xy_m": [
+   0.19,
+   0.02
+  ],
+  "bin_outer_m": [
+   0.088,
+   0.208,
+   0.034
+  ],
+  "left_center_xy_m": [
+   0.07,
+   0.17
+  ],
+  "right_center_xy_m": [
+   0.07,
+   -0.13
+  ],
+  "box_outer_m": [
+   0.115,
+   0.115,
+   0.045
+  ],
+  "cubes_per_color": 3,
+  "cylinders_per_color": 1,
+  "roi_x_m": [
+   0.0,
+   0.26
+  ],
+  "roi_y_m": [
+   -0.215,
+   0.26
+  ],
+  "policy_image_hw": [
+   288,
+   160
+  ]
+ },
+ "contenedor_origen": {
+  "capa_0": {
+   "alcanzables": 75,
+   "total": 75,
+   "fraccion": 1.0,
+   "fallos": []
+  },
+  "capa_1": {
+   "alcanzables": 65,
+   "total": 75,
+   "fraccion": 0.867,
+   "fallos": [
+    {
+     "xy": [
+      0.202,
+      -0.064
+     ],
+     "polar": [
+      0.21,
+      -17.58
+     ],
+     "why": "no hay postura del brazo que llegue desde arriba"
+    },
+    {
+     "xy": [
+      0.202,
+      0.104
+     ],
+     "polar": [
+      0.23,
+      27.24
+     ],
+     "why": "no hay postura del brazo que llegue desde arriba"
+    },
+    {
+     "xy": [
+      0.214,
+      -0.064
+     ],
+     "polar": [
+      0.22,
+      -16.65
+     ],
+     "why": "no hay postura del brazo que llegue desde arriba"
+    },
+    {
+     "xy": [
+      0.214,
+      -0.052
+     ],
+     "polar": [
+      0.22,
+      -13.66
+     ],
+     "why": "no hay postura del brazo que llegue desde arriba"
+    },
+    {
+     "xy": [
+      0.214,
+      -0.04
+     ],
+     "polar": [
+      0.22,
+      -10.59
+     ],
+     "why": "no hay postura del brazo que llegue desde arriba"
+    },
+    {
+     "xy": [
+      0.214,
+      -0.028
+     ],
+     "polar": [
+      0.22,
+      -7.45
+     ],
+     "why": "no hay postura del brazo que llegue desde arriba"
+    },
+    {
+     "xy": [
+      0.214,
+      0.068
+     ],
+     "polar": [
+      0.22,
+      17.63
+     ],
+     "why": "no hay postura del brazo que llegue desde arriba"
+    },
+    {
+     "xy": [
+      0.214,
+      0.08
+     ],
+     "polar": [
+      0.23,
+      20.5
+     ],
+     "why": "no hay postura del brazo que llegue desde arriba"
+    }
+   ]
+  }
+ },
+ "contenedor_polar_centro": [
+  0.191,
+  6.009
+ ],
+ "caja_izquierda": {
+  "alcanzables": 33,
+  "total": 36,
+  "fraccion": 0.917,
+  "huecos_2x2_alcanzables": 4,
+  "huecos_2x2": [
+   true,
+   true,
+   true,
+   true
+  ],
+  "polar_centro": [
+   0.18,
+   67.62
+  ]
+ },
+ "caja_derecha": {
+  "alcanzables": 36,
+  "total": 36,
+  "fraccion": 1.0,
+  "huecos_2x2_alcanzables": 4,
+  "huecos_2x2": [
+   true,
+   true,
+   true,
+   true
+  ],
+  "polar_centro": [
+   0.15,
+   -61.7
+  ]
+ },
+ "brazo_plegado": {
+  "x": [
+   -0.067,
+   0.137
+  ],
+  "y": [
+   -0.035,
+   0.076
+  ],
+  "z_max": 0.208,
+  "solapa": {
+   "origen": 0,
+   "caja_izquierda": 0,
+   "caja_derecha": 0
+  },
+  "puntos_dentro_del_ROI": 6942
+ }
+}

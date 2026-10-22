@@ -1,0 +1,483 @@
+{
+ "variantes": {
+  "m16": {
+   "n": 11,
+   "ok": 7,
+   "estados": {
+    "ok": 7,
+    "deslizada": 1,
+    "vacío": 3
+   },
+   "sin_candidata": 5,
+   "err_pos_mm_medio": 0.97,
+   "err_yaw_deg_medio": 0.0,
+   "desplazamiento_mm_medio_si_falla": 11.5
+  },
+  "m16_g3": {
+   "n": 11,
+   "ok": 8,
+   "estados": {
+    "ok": 8,
+    "vacío": 1,
+    "deslizada": 2
+   },
+   "sin_candidata": 5,
+   "err_pos_mm_medio": 0.97,
+   "err_yaw_deg_medio": 0.0,
+   "desplazamiento_mm_medio_si_falla": 9.6
+  },
+  "m16_g6": {
+   "n": 11,
+   "ok": 7,
+   "estados": {
+    "ok": 7,
+    "deslizada": 3,
+    "vacío": 1
+   },
+   "sin_candidata": 5,
+   "err_pos_mm_medio": 0.94,
+   "err_yaw_deg_medio": 0.0,
+   "desplazamiento_mm_medio_si_falla": 13.5
+  }
+ },
+ "intentos": [
+  {
+   "seed": 310000,
+   "variante": "m16",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310000,
+   "variante": "m16_g3",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310000,
+   "variante": "m16_g6",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310001,
+   "variante": "m16",
+   "pieza": "rojo_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310001,
+   "variante": "m16_g3",
+   "pieza": "rojo_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310001,
+   "variante": "m16_g6",
+   "pieza": "rojo_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310002,
+   "variante": "m16",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310002,
+   "variante": "m16_g3",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310002,
+   "variante": "m16_g6",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310003,
+   "variante": "m16",
+   "pieza": "azul_y1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 9.1
+  },
+  {
+   "seed": 310003,
+   "variante": "m16_g3",
+   "pieza": "azul_y1",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 3.8
+  },
+  {
+   "seed": 310003,
+   "variante": "m16_g6",
+   "pieza": "azul_y1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 16.4
+  },
+  {
+   "seed": 310004,
+   "variante": "m16",
+   "pieza": "rojo_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310004,
+   "variante": "m16_g3",
+   "pieza": "rojo_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310004,
+   "variante": "m16_g6",
+   "pieza": "rojo_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310005,
+   "variante": "m16",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310005,
+   "variante": "m16_g3",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310005,
+   "variante": "m16_g6",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310006,
+   "variante": "m16",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 16.5
+  },
+  {
+   "seed": 310006,
+   "variante": "m16_g3",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.7,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310006,
+   "variante": "m16_g6",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 0.7,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 16.8
+  },
+  {
+   "seed": 310007,
+   "variante": "m16",
+   "pieza": "azul_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310007,
+   "variante": "m16_g3",
+   "pieza": "azul_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310007,
+   "variante": "m16_g6",
+   "pieza": "azul_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310008,
+   "variante": "m16",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310008,
+   "variante": "m16_g3",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 14.1
+  },
+  {
+   "seed": 310008,
+   "variante": "m16_g6",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 15.9
+  },
+  {
+   "seed": 310009,
+   "variante": "m16",
+   "pieza": "rojo_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310009,
+   "variante": "m16_g3",
+   "pieza": "rojo_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310009,
+   "variante": "m16_g6",
+   "pieza": "rojo_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310010,
+   "variante": "m16",
+   "pieza": "azul_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310010,
+   "variante": "m16_g3",
+   "pieza": "azul_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310010,
+   "variante": "m16_g6",
+   "pieza": "azul_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310011,
+   "variante": "m16",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310011,
+   "variante": "m16_g3",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310011,
+   "variante": "m16_g6",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310012,
+   "variante": "m16",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 5.7
+  },
+  {
+   "seed": 310012,
+   "variante": "m16_g3",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 1.2,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 10.8
+  },
+  {
+   "seed": 310012,
+   "variante": "m16_g6",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 4.8
+  },
+  {
+   "seed": 310013,
+   "variante": "m16",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310013,
+   "variante": "m16_g3",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310013,
+   "variante": "m16_g6",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 310014,
+   "variante": "m16",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.4,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310014,
+   "variante": "m16_g3",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.4,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310014,
+   "variante": "m16_g6",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.4,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310015,
+   "variante": "m16",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 14.8
+  },
+  {
+   "seed": 310015,
+   "variante": "m16_g3",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 310015,
+   "variante": "m16_g6",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  }
+ ]
+}

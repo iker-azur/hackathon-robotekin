@@ -1,0 +1,1110 @@
+{
+  "summary": {
+    "frames": 20,
+    "recall_visible": 0.9852941176470589,
+    "false_detections": 0,
+    "occluded_by_arm": 4,
+    "position_error_mm_mean": 0.9521794339514039,
+    "position_error_mm_p95": 1.1982820253466082,
+    "position_error_mm_max": 8.21026417425111,
+    "shape_accuracy": 0.9701492537313433,
+    "in_box_accuracy": 1.0,
+    "cube_yaw_error_deg_mean": 0.7404328332846986,
+    "cube_yaw_error_deg_max": 24.712774588905834,
+    "totals": {
+      "truth": 140,
+      "visible": 136,
+      "found": 134,
+      "false": 0,
+      "shape_ok": 130,
+      "shape_unknown": 4,
+      "shape_wrong": 0,
+      "box_ok": 134,
+      "occluded": 4
+    }
+  },
+  "rows": [
+    {
+      "frame": "frame_000.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 1.21,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_000.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.9,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_000.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.68,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_000.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.48,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_000.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 1.09,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_000.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.88,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_000.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 0.96,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_001.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 1.05,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_001.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.96,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_001.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.9,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_001.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.85,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_001.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 1.22,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_001.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.58,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_001.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 0.2,
+      "shape": "cube",
+      "in_box": true
+    },
+    {
+      "frame": "frame_002.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 0.72,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_002.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 1.12,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_002.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.3,
+      "shape": "cube",
+      "in_box": true
+    },
+    {
+      "frame": "frame_002.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 1.01,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_002.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.67,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_002.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.88,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_002.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 0.97,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_003.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 0.18,
+      "shape": "cube",
+      "in_box": true
+    },
+    {
+      "frame": "frame_003.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.86,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_003.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 1.2,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_003.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.93,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_003.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 1.09,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_003.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 5.14,
+      "shape": "?",
+      "in_box": false
+    },
+    {
+      "frame": "frame_004.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 0.9,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_004.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.38,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_004.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.58,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_004.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 1.07,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_004.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.77,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_004.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 1.13,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_004.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 0.79,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_005.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 0.53,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_005.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.83,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_005.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.98,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_005.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.74,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_005.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 1.08,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_005.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.33,
+      "shape": "cylinder",
+      "in_box": true
+    },
+    {
+      "frame": "frame_005.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 1.0,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_006.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 0.6,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_006.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.78,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_006.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.3,
+      "shape": "cube",
+      "in_box": true
+    },
+    {
+      "frame": "frame_006.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 1.03,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_006.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.42,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_006.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.87,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_006.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 1.1,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_007.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 0.83,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_007.npz",
+      "id": "rojo_2",
+      "result": "no encontrada"
+    },
+    {
+      "frame": "frame_007.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 3.05,
+      "shape": "?",
+      "in_box": false
+    },
+    {
+      "frame": "frame_007.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 1.16,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_007.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 1.03,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_007.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 0.53,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_008.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 0.95,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_008.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 1.2,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_008.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.79,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_008.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.89,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_008.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.77,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_008.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.94,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_008.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 0.76,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_009.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 0.9,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_009.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.99,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_009.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 1.03,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_009.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.27,
+      "shape": "cube",
+      "in_box": true
+    },
+    {
+      "frame": "frame_009.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.75,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_009.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 1.09,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_009.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 1.04,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_010.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 0.44,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_010.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.96,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_010.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 1.0,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_010.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 1.09,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_010.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.49,
+      "shape": "cube",
+      "in_box": true
+    },
+    {
+      "frame": "frame_010.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.31,
+      "shape": "cylinder",
+      "in_box": true
+    },
+    {
+      "frame": "frame_010.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 0.84,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_011.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 1.09,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_011.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.22,
+      "shape": "cube",
+      "in_box": true
+    },
+    {
+      "frame": "frame_011.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.79,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_011.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 1.06,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_011.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.49,
+      "shape": "cylinder",
+      "in_box": true
+    },
+    {
+      "frame": "frame_011.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 6.57,
+      "shape": "?",
+      "in_box": false
+    },
+    {
+      "frame": "frame_012.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 1.0,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_012.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 1.14,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_012.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.65,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_012.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.66,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_012.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.54,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_012.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.27,
+      "shape": "cylinder",
+      "in_box": true
+    },
+    {
+      "frame": "frame_012.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 1.0,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_013.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 1.09,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_013.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.96,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_013.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.6,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_013.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.91,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_013.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.69,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_013.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.78,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_013.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 1.08,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_014.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 1.1,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_014.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.98,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_014.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.57,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_014.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.98,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_014.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.69,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_014.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.55,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_014.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 1.11,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_015.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 0.81,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_015.npz",
+      "id": "rojo_2",
+      "result": "no encontrada"
+    },
+    {
+      "frame": "frame_015.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.56,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_015.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.73,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_015.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 1.04,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_015.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 0.89,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_016.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 0.73,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_016.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 1.09,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_016.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.55,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_016.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.47,
+      "shape": "cube",
+      "in_box": true
+    },
+    {
+      "frame": "frame_016.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.25,
+      "shape": "cube",
+      "in_box": true
+    },
+    {
+      "frame": "frame_016.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.84,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_016.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 0.64,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_017.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 1.05,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_017.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.96,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_017.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.63,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_017.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.27,
+      "shape": "cube",
+      "in_box": true
+    },
+    {
+      "frame": "frame_017.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.92,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_017.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.34,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_017.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 1.08,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_018.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 1.07,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_018.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 0.33,
+      "shape": "cube",
+      "in_box": true
+    },
+    {
+      "frame": "frame_018.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.88,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_018.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.66,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_018.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 0.66,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_018.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 1.18,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_018.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 0.23,
+      "shape": "cube",
+      "in_box": true
+    },
+    {
+      "frame": "frame_019.npz",
+      "id": "rojo_1",
+      "result": "ok",
+      "err_mm": 0.92,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_019.npz",
+      "id": "rojo_2",
+      "result": "ok",
+      "err_mm": 8.21,
+      "shape": "?",
+      "in_box": false
+    },
+    {
+      "frame": "frame_019.npz",
+      "id": "azul_1",
+      "result": "ok",
+      "err_mm": 0.73,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_019.npz",
+      "id": "azul_2",
+      "result": "ok",
+      "err_mm": 0.96,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_019.npz",
+      "id": "azul_3",
+      "result": "ok",
+      "err_mm": 1.18,
+      "shape": "cube",
+      "in_box": false
+    },
+    {
+      "frame": "frame_019.npz",
+      "id": "verde_1",
+      "result": "ok",
+      "err_mm": 0.98,
+      "shape": "cylinder",
+      "in_box": false
+    },
+    {
+      "frame": "frame_019.npz",
+      "id": "verde_2",
+      "result": "ok",
+      "err_mm": 0.81,
+      "shape": "cube",
+      "in_box": false
+    }
+  ]
+}

@@ -1,0 +1,380 @@
+"""Repeatable CPU evaluation and observed Isaac capture, without changing executors.
+
+Outputs go to out11/benchmarks. Run with the same Python environment as Demo 11.
+  python tools/benchmark_demo11.py intent
+  python tools/benchmark_demo11.py capture [Demo 11 arguments]
+  python tools/benchmark_demo11.py perception
+"""
+import argparse
+from dataclasses import asdict
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+import subprocess
+import time
+
+HERE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HERE))
+OUT = HERE / "out11" / "benchmarks"
+
+
+def write(name, data):
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT/name).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def item(value):
+    return {k: value.get(k) for k in ("kind", "color", "quantity", "position", "place")}
+
+
+def semantic(command):
+    intent = command["intent"]
+    return {"intent": intent, "items": [item(i) for i in command.get("items", [])],
+            "place": command.get("place"), "sort_by": command.get("sort_by", "none"),
+            "sort_filter": [item(i) for i in command.get("sort_filter", [])]}
+
+
+def intent():
+    import numpy as np
+    from command_model_v2.command_model import CommandModel, plain
+    from intent_parser import HybridParser
+    data = HERE / "command_model_v2" / "data"
+    train = {plain(json.loads(s)["input"]) for s in (data/"train_commands.jsonl").read_text(encoding="utf-8").splitlines()}
+    rows = [json.loads(s) for s in (data/"test_real.jsonl").read_text(encoding="utf-8").splitlines()]
+    rows = [r for r in rows if plain(r["input"]) not in train]
+    started = time.perf_counter()
+    model = CommandModel()
+    result = {"count": len(rows), "excluded_exact_train_overlaps": 136-len(rows),
+              "load_s": time.perf_counter()-started, "backends": {}}
+    # No catalog: this evaluates language extraction, independent of scene availability.
+    for name, parser in [("model", model), ("rules", HybridParser()), ("hybrid", HybridParser(model))]:
+        times, exact, intents, errors = [], 0, 0, []
+        for row in rows:
+            began = time.perf_counter(); got = parser.parse(row["input"])
+            times.append((time.perf_counter()-began)*1000)
+            expected = row["meta"]["command"]
+            ok = semantic(expected) == semantic(got) and not got.get("errors")
+            exact += ok; intents += expected["intent"] == got["intent"]
+            if not ok: errors.append({"text": row["input"], "expected": semantic(expected), "got": got})
+        result["backends"][name] = {"exact": exact, "intent": intents, "mean_ms": float(np.mean(times)),
+                                     "p50_ms": float(np.percentile(times,50)), "p95_ms": float(np.percentile(times,95)), "errors": errors}
+    write("intent.json", result)
+    print(json.dumps({**result, "backends": {k:{a:b for a,b in v.items() if a!="errors"} for k,v in result["backends"].items()}}, indent=2), flush=True)
+
+
+def capture(arguments):
+    import cv2
+    import numpy as np
+    import isaac_io
+    import scene_spec
+    import telemetry
+    spec = importlib.util.spec_from_file_location("benchmark_demo11_runtime", HERE/"11_real_sorting_with_monitor.py")
+    demo = importlib.util.module_from_spec(spec); sys.modules[spec.name] = demo; spec.loader.exec_module(demo)
+    args = demo.build_parser().parse_args(arguments)
+    args.web = False; args.wait_for_start = False
+    bus = telemetry.Bus(); timings = {}; stages = []; started = time.perf_counter()
+    original_state = bus.set_state
+    def state(**values):
+        if "phase" in values: stages.append({"phase": values["phase"], "s":time.perf_counter()-started})
+        original_state(**values)
+        if values.get("phase") == "done":
+            report = {"elapsed_s":time.perf_counter()-started,"stages":stages,
+                      "timings":timings,"snapshot":bus.snapshot()}
+            write("runtime.json", report)
+            write(f"runtime_{args.seed}.json", report)
+    bus.set_state = state
+    original = demo.MonitoredRobot.look
+    counter = 0
+    def look(self, caption="", *look_args, **kwargs):
+        nonlocal counter
+        # Preserve MonitoredRobot.look's keyword-only recovery controls. This wrapper is
+        # installed by the benchmark harness, so a narrow signature here can turn a valid
+        # production re-look into a TypeError and make the benchmark fail for the wrong reason.
+        seen = original(self, caption, *look_args, **kwargs)
+        # Capture a paired frame with pose truth at the exact same instant; truth is
+        # used only by the offline scorer, never supplied to the detector.
+        if counter < 30:
+            image, depth, camera = self._last_capture
+            folder = OUT/"captures"; folder.mkdir(parents=True,exist_ok=True)
+            stem = f"{args.seed}_{counter:03d}"
+            cv2.imwrite(str(folder/(stem+".png")), image)
+            if depth is not None: np.save(folder/(stem+".npy"),depth)
+            truth = [{"id":i.prim,"kind":i.kind,"color":i.color,"container":i.container,
+                      "size":list(i.size),
+                      "position":self.env.scene[i.prim].data.root_pos_w[0].detach().cpu().tolist()} for i in self.layout]
+            detections = [{"id":thing.id, "entity_id":thing.entity_id,
+                           "kind":thing.kind, "color":thing.color,
+                           "container":thing in seen.containers,
+                           "position":thing.pos_m, "aim_xy":thing.aim_xy,
+                           "confidence":float(thing.confidence),
+                           "ambiguous":bool(getattr(thing, "ambiguous", False)),
+                           "ambiguity_reason":getattr(thing, "ambiguity_reason", None)}
+                          for thing in seen.everything]
+            (folder/(stem+".json")).write_text(json.dumps(
+                {"camera":asdict(camera),"truth":truth,"detections":detections,
+                 "work_area":{"work_x":list(scene_spec.WORK_X),
+                              "work_y":list(scene_spec.WORK_Y)},
+                 "caption":caption}),encoding="utf-8")
+        counter += 1
+        return seen
+    demo.MonitoredRobot.look = look
+    for owner, name in [(isaac_io,"capture"),(isaac_io,"capture_rgb"),(demo.MonitoredRobot,"look")]:
+        function = getattr(owner,name)
+        def timed(*a,_function=function,_name=name,**kw):
+            began=time.perf_counter()
+            try: return _function(*a,**kw)
+            finally:
+                row=timings.setdefault(_name,{"calls":0,"total_ms":0})
+                row["calls"]+=1;row["total_ms"]+=(time.perf_counter()-began)*1000
+        setattr(owner,name,timed)
+    return int(demo.main(args=args,bus=bus) or 0)
+
+
+def perception():
+    import cv2
+    import numpy as np
+    from scipy.optimize import linear_sum_assignment
+    import colors
+    import perceive
+    import scene_spec
+    from scene import CameraModel
+    from tools.benchmark_scene_matrix import perception_work_bounds
+    reports = {}
+    baseline_path=OUT/"baseline_perceive.py"
+    baseline_path.write_bytes(subprocess.check_output(["git","show","979fd5b^:demos/05_planner_and_executor/perceive.py"],cwd=HERE))
+    spec=importlib.util.spec_from_file_location("demo11_baseline_perceive",baseline_path)
+    baseline=importlib.util.module_from_spec(spec);sys.modules[spec.name]=baseline;spec.loader.exec_module(baseline)
+    # Captures from full Isaac campaigns are the preferred benchmark set. Keep the
+    # checked-in RGB-D fixtures as a deterministic minimum dataset so a fresh checkout
+    # never reports an apparently successful benchmark with zero evaluated frames.
+    sample_paths = sorted((OUT/"captures").glob("*.json"))
+    sample_paths.extend(sorted((HERE/"tests"/"fixtures").glob("*/scene.json")))
+    usable_samples = []
+    for path in sample_paths:
+        try:
+            meta = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if path.name == "scene.json":
+            # Unit fixtures store the shared camera/truth metadata beside frame.png;
+            # the small-triangle fixture predates the full truth schema.
+            fixture_frame = path.parent / "frame.png"
+            if fixture_frame.is_file():
+                if not meta.get("truth") and meta.get("target_xy"):
+                    x, y = meta["target_xy"]
+                    meta["truth"] = [{
+                        "id": "small_red_triangle", "kind": "triangular_prism",
+                        "color": "red", "container": False,
+                        "size": [.020, .020, .020],
+                        "position": [x, y, scene_spec.TABLE_TOP_Z + .010],
+                    }]
+                image_path = fixture_frame
+            else:
+                image_path = path.with_suffix(".png")
+        else:
+            image_path = path.with_suffix(".png")
+        if meta.get("caption", "the table") != "the table":
+            continue
+        if image_path.is_file() and isinstance(meta.get("camera"), dict) and meta.get("truth"):
+            usable_samples.append((path, meta, image_path))
+    if not usable_samples:
+        raise RuntimeError(
+            "No hay fotogramas iniciales con verdad de terreno. Ejecuta primero "
+            "`python tools/benchmark_demo11.py capture --open --camera top --rounds 1` "
+            "o restaura las fixtures de tests/fixtures."
+        )
+    for label, detector, mode, use_depth in (
+            ("baseline", baseline, False, True),
+            ("legacy", perceive, False, True),
+            ("robust", perceive, True, True),
+            ("robust_rgb_only", perceive, True, False)):
+        totals={"truth":0,"detections":0,"ambiguous":0,"matched":0,"correct_kind":0,
+                "untyped":0,
+                "xy_errors_mm":[],"latencies_ms":[],"frames":0,
+                "by_category":{k:{"truth":0,"detections":0,"matched":0,
+                                  "correct_kind":0,"untyped":0}
+                               for k in ("objects","containers")}}
+        for path, meta, image_path in usable_samples:
+            image=cv2.imread(str(image_path))
+            if image is None:
+                continue
+            camera=CameraModel.from_dict(meta["camera"])
+            depth=np.load(path.with_suffix(".npy")) if path.with_suffix(".npy").exists() else None
+            # Settled initial scene only: execution frames can legitimately be occluded
+            # by the gripper or contain a piece inside its destination.
+            if meta.get("caption", "the table") != "the table": continue
+            truth=meta["truth"]
+            looking_for_colors=sorted({t["color"] for t in truth})
+            movable = [t for t in truth if not t["container"]]
+            largest_extent_m = max((max(t["size"][:2]) for t in movable), default=None)
+            largest_footprint_m2 = max((t["size"][0] * t["size"][1]
+                                        for t in movable), default=None)
+            smallest_extent_m = min((min(t["size"][:2]) for t in movable), default=None)
+            bounds_by_color = {}
+            for target in movable:
+                extent = max(target["size"][:2])
+                footprint = target["size"][0] * target["size"][1]
+                if (target["color"] not in bounds_by_color
+                        or footprint > bounds_by_color[target["color"]][1]):
+                    bounds_by_color[target["color"]] = (extent, footprint)
+            previous_work_x, previous_work_y = scene_spec.WORK_X, scene_spec.WORK_Y
+            if detector is perceive and mode:
+                work_bounds = perception_work_bounds(truth, meta)
+                scene_spec.WORK_X, scene_spec.WORK_Y = (
+                    work_bounds["work_x"], work_bounds["work_y"])
+            try:
+                for brightness in (1., .7):
+                    frame=np.clip(image.astype(float)*brightness,0,255).astype(np.uint8)
+                    for repeat in range(6):
+                        began=time.perf_counter()
+                        parameters=dict(camera=camera,depth=depth if use_depth else None,
+                                        plane_z=scene_spec.TABLE_TOP_Z,
+                                        looking_for=looking_for_colors)
+                        if detector is perceive:
+                            parameters["robust"]=mode
+                            if mode:
+                                parameters["min_area_px"]=colors.min_area_for_object_size(smallest_extent_m)
+                                parameters["max_object_extent_m"]=largest_extent_m
+                                parameters["max_object_footprint_m2"]=largest_footprint_m2
+                                parameters["object_bounds_by_color"]=bounds_by_color
+                        seen=detector.perceive(frame,**parameters)
+                        elapsed=(time.perf_counter()-began)*1000
+                        if repeat: totals["latencies_ms"].append(elapsed)
+            finally:
+                scene_spec.WORK_X, scene_spec.WORK_Y = previous_work_x, previous_work_y
+                all_detected=seen.everything
+                detected=[d for d in all_detected if not getattr(d,"ambiguous",False)]
+                totals["frames"]+=1;totals["truth"]+=len(truth)
+                totals["detections"]+=len(detected)
+                totals["ambiguous"]+=sum(bool(getattr(d,"ambiguous",False)) for d in all_detected)
+                for key, group in (("objects",seen.objects),("containers",seen.containers)):
+                    totals["by_category"][key]["truth"] += sum(t["container"] == (key == "containers") for t in truth)
+                    totals["by_category"][key]["detections"] += sum(
+                        not getattr(d,"ambiguous",False) for d in group)
+                cost=np.full((len(truth),len(detected)),1e6)
+                for i,t in enumerate(truth):
+                    for j,d in enumerate(detected):
+                        if t["color"]==d.color and t["container"]==(d in seen.containers):
+                            xy=d.aim_xy if mode and d.aim_xy is not None else scene_spec.aim_point(d.pos_m, container=t["container"])
+                            cost[i,j]=np.linalg.norm(np.array(xy)-t["position"][:2])
+                if cost.size:
+                    for i,j in zip(*linear_sum_assignment(cost)):
+                        if cost[i,j] <= .04:
+                            totals["matched"]+=1
+                            totals["correct_kind"]+=truth[i]["kind"]==detected[j].kind
+                            totals["untyped"]+=detected[j].kind=="any"
+                            category = "containers" if truth[i]["container"] else "objects"
+                            totals["by_category"][category]["matched"] += 1
+                            totals["by_category"][category]["correct_kind"] += truth[i]["kind"] == detected[j].kind
+                            totals["by_category"][category]["untyped"] += detected[j].kind == "any"
+                            totals["xy_errors_mm"].append(float(cost[i,j]*1000))
+        totals["mean_ms"]=float(np.mean(totals["latencies_ms"])) if totals["latencies_ms"] else None
+        totals["p95_ms"]=float(np.percentile(totals["latencies_ms"],95)) if totals["latencies_ms"] else None
+        totals["mean_xy_error_mm"]=float(np.mean(totals["xy_errors_mm"])) if totals["xy_errors_mm"] else None
+        totals["p95_xy_error_mm"]=float(np.percentile(totals["xy_errors_mm"],95)) if totals["xy_errors_mm"] else None
+        totals["recall"]=totals["matched"]/totals["truth"] if totals["truth"] else None
+        totals["precision"]=totals["matched"]/totals["detections"] if totals["detections"] else 0.0
+        totals["kind_accuracy"]=totals["correct_kind"]/totals["matched"] if totals["matched"] else None
+        totals["kind_coverage"]=(totals["matched"]-totals["untyped"])/totals["truth"] if totals["truth"] else None
+        observed=totals["detections"]+totals["ambiguous"]
+        totals["abstention_rate"]=totals["ambiguous"]/observed if observed else 0.0
+        reports[label]=totals
+    write("perception.json",reports);print(json.dumps(reports,indent=2),flush=True)
+
+
+def extensions():
+    """Freeze additional scene-vocabulary cases before running any parser on them.
+
+    This is a scene extension test, not a claim of semantic independence from train.
+    """
+    import scene_config
+    from intent_parser import HybridParser
+    from command_model_v2.command_model import CommandModel
+    cfg, parts = scene_config.load()
+    cfg["containers"][0]["name"] = "Destino Norte"
+    cfg["containers"][1]["name"] = "Destino Sur"
+    catalog = scene_config.catalog(cfg, parts)
+    destination = cfg["containers"][0]
+    cases = []
+    for language, template in [("es", "pon {n} bolas rojas en Destino Norte"),
+                               ("en", "put {n} red balls into Destino Norte"),
+                               ("eu", "hartu {n} bola gorri eta sartu kutxa Destino Norte")]:
+        for number in range(1, 7):
+            cases.append({"text": template.format(n=number), "lang":language,"quantity":number,"refuse":False})
+    for language, sentences in {
+        "es": ["pon la bola magenta en Destino Norte", "pon la bola roja en la caja fantasma", "no cojas la bola roja", "pon 0 bolas rojas en Destino Norte"],
+        "en": ["put the magenta ball into Destino Norte", "put the red ball into the phantom box", "don't grab the red ball", "put 0 red balls into Destino Norte"],
+        "eu": ["hartu bola magenta eta sartu kutxa Destino Norte", "hartu bola gorri eta sartu kutxa fantasma", "ez hartu bola gorri", "hartu 0 bola gorri eta sartu kutxa Destino Norte"]
+    }.items():
+        cases.extend({"text":s,"lang":language,"refuse":True} for s in sentences)
+    write("extension_cases.json",cases)
+    model=CommandModel(); result={}
+    for name, parser in [("model",model),("rules",HybridParser(catalog=catalog)),("hybrid",HybridParser(model,catalog))]:
+        correct=0; failures=[]; refused=0; elapsed=[]
+        for case in cases:
+            started=time.perf_counter();got=parser.parse(case["text"]);elapsed.append((time.perf_counter()-started)*1000)
+            rejected=bool(got.get("errors")) or got["intent"] in {"not_doable","off_topic"}
+            if case["refuse"]:
+                ok=rejected;refused+=rejected
+            else:
+                items=got.get("items",[]);place=got.get("place") or {}
+                ok=(not rejected and got["intent"]=="pick_and_place" and len(items)==1
+                    and items[0]["kind"]=="ball" and items[0]["color"]=="red"
+                    and items[0]["quantity"]==case["quantity"] and place.get("entity_id")==destination["id"])
+            correct+=bool(ok)
+            if not ok: failures.append({"case":case,"got":got})
+        result[name]={"correct":correct,"total":len(cases),"safe_refusals":refused,"refusal_cases":12,
+                      "mean_ms":sum(elapsed)/len(elapsed),"failures":failures}
+    write("extensions.json",result)
+    print(json.dumps({k:{a:b for a,b in v.items() if a!="failures"} for k,v in result.items()},indent=2),flush=True)
+
+
+def monitor():
+    import asyncio
+    import websockets
+    import telemetry
+    from monitor.server import serve
+    bus=telemetry.Bus(); server=serve(bus,port=0)
+    async def stream():
+        async with websockets.connect(f"ws://{server.host}:{server.port}/ws") as socket:
+            started=time.perf_counter();await socket.recv(); initial=(time.perf_counter()-started)*1000
+            await asyncio.sleep(.06)
+            started=time.perf_counter()
+            for index in range(100):bus.set_state(profile_burst=index)
+            await socket.recv(); burst=(time.perf_counter()-started)*1000
+            extras=0
+            deadline=time.perf_counter()+.5
+            while time.perf_counter()<deadline:
+                try:await asyncio.wait_for(socket.recv(),deadline-time.perf_counter());extras+=1
+                except asyncio.TimeoutError:break
+            return {"initial_snapshot_ms":initial,"burst_first_snapshot_ms":burst,"writes":100,"extra_messages_in_half_second":extras}
+    try: result={"websocket":asyncio.run(stream())}
+    finally:server.stop()
+    # DOM shim timing isolates script work, not visual browser responsiveness.
+    bus=telemetry.Bus();bus.set_state(phase="waiting",detections=[],tasks=[],plan=None)
+    snapshots=[]
+    for index in range(1000):
+        snap=bus.snapshot();snap["rev"]=index+1;snap["metrics"]={"profile_counter":index};snapshots.append(snap)
+    write("ui_snapshots.json",[snapshots])
+    baseline=OUT/"baseline_index.html"
+    baseline.write_bytes(subprocess.check_output(["git","show","979fd5b^:demos/05_planner_and_executor/monitor/static/index.html"],cwd=HERE))
+    result["dom_shim"]={}
+    for label,page in (("baseline",baseline),("updated",HERE/"monitor"/"static"/"index.html")):
+        samples=[]
+        for _ in range(5):
+            completed=subprocess.run(["node",str(HERE/"tests"/"dashboard_client.js"),str(page),str(OUT/"ui_snapshots.json")],capture_output=True,encoding="utf-8",check=True)
+            report=json.loads(completed.stdout)
+            if report["loadError"] or report["warnings"] or report["throws"]:raise RuntimeError(report)
+            samples.append({key:report[key] for key in ("paintMs","htmlWrites")})
+        result["dom_shim"][label]=samples
+    write("monitor.json",result);print(json.dumps(result,indent=2),flush=True)
+
+
+if __name__ == "__main__":
+    os.environ.setdefault("HF_HUB_OFFLINE","1")
+    mode=sys.argv[1]
+    result = {"intent":intent,"extensions":extensions,"monitor":monitor,"perception":perception,
+              "capture":lambda:capture(sys.argv[2:])}[mode]()
+    raise SystemExit(int(result or 0))

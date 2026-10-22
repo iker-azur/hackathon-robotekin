@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RecoveryKit · SO-101</title>
+<script type="importmap">{"imports": {"three": "/static/vendor/three.module.min.js"}}</script>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171b21; --panel2: #1d222a; --line: #2a313b; --text: #e6e9ee; --muted: #8d97a5;
+    --accent: #4f9cf7; --ok: #3ccf7e; --warn: #f2b84b; --bad: #f05d5e; --run: #b48cf7;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header h1 small { color: var(--muted); font-weight: 400; }
+  .pill { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--panel2); border: 1px solid var(--line); }
+  .pill.ejecutando { color: var(--run); border-color: var(--run); }
+  .pill.completado { color: var(--ok); border-color: var(--ok); }
+  .pill.fallido, .pill.incompleto { color: var(--bad); border-color: var(--bad); }
+  .pill.detenido { color: var(--warn); border-color: var(--warn); }
+  .spacer { flex: 1; }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 6px 12px; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  .rail { display: flex; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; }
+  .stage { padding: 5px 12px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); font-weight: 600; font-size: 12px; letter-spacing: .04em; }
+  .stage.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .stage.on.RECUPERAR { background: var(--warn); border-color: var(--warn); color: #1b1b1b; }
+  #stage-detail { color: var(--muted); margin-left: 8px; }
+  main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; padding: 12px 16px; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-width: 0; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+  .col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .views { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 760px) { .views { grid-template-columns: 1fr; } }
+  #cam { width: 100%; aspect-ratio: 4/3; object-fit: contain; background: #000; border-radius: 6px; display: block; }
+  #view3d { width: 100%; aspect-ratio: 4/3; border-radius: 6px; background: #0b0d10; display: block; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input[type=text], input[type=number], select { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; font: inherit; }
+  #cmd { flex: 1; min-width: 220px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .chip { font-size: 12px; padding: 4px 9px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); cursor: pointer; }
+  .chip:hover { border-color: var(--accent); }
+  .understood { margin-top: 8px; }
+  .understood .err { color: var(--bad); }
+  .progress { height: 10px; background: var(--panel2); border-radius: 999px; overflow: hidden; margin: 8px 0; }
+  .progress > div { height: 100%; background: var(--ok); width: 0; transition: width .3s; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .b-pendiente { background: #2a313b; color: var(--muted); }
+  .b-ejecutando { background: #3a2f55; color: var(--run); }
+  .b-completada { background: #173a29; color: var(--ok); }
+  .b-fallida { background: #4a1e1f; color: var(--bad); }
+  .b-bloqueada { background: #4a3a17; color: var(--warn); }
+  .note { color: var(--muted); font-size: 12px; }
+  .perts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .perts button { text-align: left; font-size: 12px; }
+  .perts button b { display: block; font-size: 13px; }
+  .log { max-height: 260px; overflow: auto; font-size: 12.5px; }
+  .log div { padding: 3px 0; border-bottom: 1px dashed #232a33; }
+  .log .t { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  .k-recuperar { color: var(--warn); }
+  .k-verificar { color: var(--ok); }
+  .k-perturbación { color: var(--bad); }
+  .rec { padding: 6px 8px; border-left: 3px solid var(--warn); background: var(--panel2); margin-bottom: 6px; border-radius: 4px; }
+  .rec .f { color: var(--bad); font-weight: 600; }
+  .audit { margin-top: 8px; padding: 8px; border-radius: 6px; background: var(--panel2); font-size: 13px; }
+  .audit.ok { border-left: 3px solid var(--ok); }
+  .audit.no { border-left: 3px solid var(--bad); }
+  details summary { cursor: pointer; color: var(--muted); }
+  .cfg-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+  .cfg-grid label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+  .cfg-grid input, .cfg-grid select { width: 100%; }
+  #toast { position: fixed; bottom: 16px; right: 16px; background: var(--panel2); border: 1px solid var(--line); padding: 10px 14px; border-radius: 8px; display: none; max-width: 420px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RecoveryKit <small>· SO-101 que prepara kits y se recupera</small></h1>
+  <span id="status" class="pill">conectando…</span>
+  <span class="note" id="simtime"></span>
+  <span class="spacer"></span>
+  <button class="primary" id="btn-demo" title="Pide 1 roja + 2 azules y alguien mueve la primera pieza">Demo guiada</button>
+  <button id="btn-pause">Pausar</button>
+  <button id="btn-stop">Detener</button>
+  <button id="btn-reset">Reiniciar</button>
+  <button id="btn-rand">Aleatorizar piezas</button>
+</header>
+<div class="rail" id="rail"></div>
+
+<main>
+  <div class="col">
+    <div class="views">
+      <div class="card">
+        <h2>Cámara del robot <span class="note">lo que ve el agente</span></h2>
+        <img id="cam" alt="cámara cenital">
+        <div class="hint">Círculos: piezas detectadas · rectángulo blanco: caja detectada.</div>
+      </div>
+      <div class="card">
+        <h2>Simulación 3D <span class="note">arrastra para girar</span></h2>
+        <canvas id="view3d"></canvas>
+        <div class="hint">Vista del simulador (no es lo que percibe el robot).</div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Fallos detectados y recuperaciones <span class="note" id="rec-count"></span></h2>
+      <div id="recs" class="note">Ninguno todavía.</div>
+    </div>
+    <div class="card">
+      <h2>Registro</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="card">
+      <h2>Pedido</h2>
+      <div class="row">
+        <input id="cmd" type="text" placeholder="p. ej. Prepara un kit con una pieza roja y dos azules">
+        <button class="primary" id="btn-send">Enviar</button>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div class="understood" id="understood"></div>
+    </div>
+
+    <div class="card">
+      <h2>Estado del kit <span class="note" id="kit-count"></span></h2>
+      <div class="progress"><div id="kit-bar"></div></div>
+      <div id="kit-contents" class="note"></div>
+      <div id="audit"></div>
+    </div>
+
+    <div class="card">
+      <h2>Tareas <span class="note">plan actual, en orden</span></h2>
+      <table><thead><tr><th>#</th><th>Tarea</th><th>Pieza</th><th>Estado</th><th>Int.</th></tr></thead>
+        <tbody id="tasks"><tr><td colspan="5" class="note">Sin pedido.</td></tr></tbody></table>
+    </div>
+
+    <div class="card">
+      <h2>Perturbaciones <span class="note" id="armed"></span></h2>
+      <div class="perts" id="perts"></div>
+      <div class="hint">Se preparan ahora y se disparan en la fase indicada; son fuerzas físicas, no movimientos de la pieza por programa.</div>
+    </div>
+
+    <div class="card">
+      <details id="cfg">
+        <summary>Configurar entorno</summary>
+        <div class="cfg-grid">
+          <label>Preajuste<select id="cfg-preset"><option value="">(actual)</option><option>demo</option><option>simple</option><option>formas</option></select></label>
+          <label>Semilla<input id="cfg-seed" type="number"></label>
+          <label>Forma<select id="cfg-shape"><option value="cube">cubos</option><option value="cylinder">cilindros</option><option value="mix">mezcla</option></select></label>
+          <label>Rojas<input id="cfg-red" type="number" min="0" max="4"></label>
+          <label>Azules<input id="cfg-blue" type="number" min="0" max="4"></label>
+          <label>Verdes<input id="cfg-green" type="number" min="0" max="4"></label>
+          <label>Tamaño (mm)<input id="cfg-size" type="number" min="18" max="30"></label>
+          <label>Masa (g)<input id="cfg-mass" type="number" min="3" max="60"></label>
+          <label>μ pieza<input id="cfg-mu" type="number" step="0.01" min="0.1" max="1.0"></label>
+          <label>Caja x (m)<input id="cfg-boxx" type="number" step="0.005"></label>
+          <label>Caja y (m)<input id="cfg-boxy" type="number" step="0.005"></label>
+          <label>Cámara altura (m)<input id="cfg-camz" type="number" step="0.02"></label>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <button id="btn-cfg">Aplicar (reinicia la simulación)</button>
+          <span class="note" id="cfg-msg"></span>
+        </div>
+      </details>
+    </div>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "/static/vendor/OrbitControls.js";
+
+const STAGES = [["VER","Ver"],["ENTENDER","Entender"],["PLANIFICAR","Planificar"],["ACTUAR","Actuar"],["VERIFICAR","Verificar"],["RECUPERAR","Recuperarse"]];
+const EXAMPLES = ["Prepara un kit con una pieza roja y dos azules", "Un cubo rojo y un cubo azul", "Dos piezas azules", "Place one red cube and two blue cubes inside the box"];
+const PERTS = [
+  ["empujar", "A · Mover pieza", "Al empezar la aproximación, alguien desliza la pieza objetivo."],
+  ["golpe_cierre", "B · Golpe al cerrar", "La pieza sale de entre los dedos mientras la pinza cierra."],
+  ["tirón_subida", "B · Tirón al subir", "Un tirón arranca la pieza de la pinza al levantarla."],
+  ["fallo_pinza", "C · Fallo de pinza", "La pinza se abre sola sobre el borde de la caja."],
+  ["sacar_caja", "C · Sacar de la caja", "Alguien saca una pieza ya colocada."],
+];
+const COLOR = { red: 0xd33a2c, blue: 0x2f64d6, green: 0x2e9a45, yellow: 0xe0c020 };
+const COLOR_M = { red: "rojo", blue: "azul", green: "verde", yellow: "amarillo" };   // cubo/cilindro: masculino
+const SHAPE_ES = { cube: "cubo", cylinder: "cilindro", prism: "prisma" };
+const ACT = { reintentar: "reintentar", replanificar: "replanificar", otra_pieza: "usar otra pieza", abandonar: "abandonar" };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let last = null;
+
+// ------------------------------------------------------------- estructura
+$("rail").innerHTML = STAGES.map(([k, l]) => `<span class="stage ${k}" data-k="${k}">${l}</span>`).join("") + `<span id="stage-detail"></span>`;
+$("chips").innerHTML = EXAMPLES.map((e) => `<span class="chip">${esc(e)}</span>`).join("");
+$("chips").addEventListener("click", (ev) => { if (ev.target.classList.contains("chip")) { $("cmd").value = ev.target.textContent; $("cmd").focus(); } });
+$("perts").innerHTML = PERTS.map(([k, t, d]) => `<button data-k="${k}"><b>${t}</b>${d}</button>`).join("");
+
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => (t.style.display = "none"), 4000); }
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) toast(j.detail || `error ${r.status}`);
+  return r.ok ? j : null;
+}
+$("btn-send").onclick = () => { const t = $("cmd").value.trim(); if (t) post("/api/kit", { text: t }); };
+$("cmd").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btn-send").click(); });
+$("btn-demo").onclick = () => post("/api/control", { action: "demo" });
+$("btn-stop").onclick = () => post("/api/control", { action: "stop" });
+$("btn-reset").onclick = () => post("/api/control", { action: "reset" });
+$("btn-rand").onclick = () => post("/api/control", { action: "randomize" });
+$("btn-pause").onclick = () => post("/api/control", { action: last && last.paused ? "resume" : "pause" });
+$("perts").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button"); if (!b) return;
+  const r = await post("/api/perturb", { kind: b.dataset.k }); if (r) toast("Preparada: " + r.label);
+});
+
+// ------------------------------------------------------------- render del estado
+function render(s) {
+  last = s;
+  const st = $("status"); st.textContent = s.paused ? "en pausa" : s.status; st.className = "pill " + (s.paused ? "detenido" : s.status);
+  $("simtime").textContent = `t = ${(s.sim_time ?? 0).toFixed(1)} s · semilla ${s.seed ?? "-"}`;
+  $("btn-pause").textContent = s.paused ? "Reanudar" : "Pausar";
+  const running = s.status === "ejecutando";
+  $("btn-demo").disabled = running; $("btn-send").disabled = running; $("btn-rand").disabled = running;
+  document.querySelectorAll(".stage").forEach((e) => e.classList.toggle("on", e.dataset.k === s.stage));
+  $("stage-detail").textContent = s.stage_detail || "";
+
+  let u = "";
+  if (s.command) u += `<div class="note">Pedido: «${esc(s.command)}»</div>`;
+  if (s.kit) u += `<div>Entendido: <b>${esc(s.kit)}</b></div>`;
+  (s.kit_errors || []).forEach((e) => (u += `<div class="err">${esc(e)}</div>`));
+  $("understood").innerHTML = u;
+
+  const ks = s.kit_status || {}; const req = ks.required || 0, ver = ks.verified || 0;
+  $("kit-count").textContent = req ? `${ver} de ${req} verificadas con la cámara` : "";
+  $("kit-bar").style.width = req ? `${(100 * ver) / req}%` : "0";
+  const inBox = (s.world || []).filter((t) => t.state === "caja").map((t) => t.label);
+  $("kit-contents").textContent = inBox.length ? "En la caja (según la cámara): " + inBox.join(", ") : "La caja está vacía (según la cámara).";
+  if (s.audit) {
+    const a = s.audit;
+    const what = a.contents.map((c) => `${SHAPE_ES[c.shape] || c.shape} ${COLOR_M[c.color] || c.color}`).join(", ") || "nada";
+    $("audit").innerHTML = `<div class="audit ${a.satisfied ? "ok" : "no"}"><b>Auditor independiente (simulador):</b> ${a.satisfied ? "el contenido real de la caja coincide con el pedido" : "el contenido real NO coincide con el pedido"}.<br><span class="note">Dentro de verdad: ${esc(what)}</span></div>`;
+  } else $("audit").innerHTML = "";
+
+  const tasks = s.tasks || [];
+  $("tasks").innerHTML = tasks.length ? tasks.map((t, i) => `<tr><td>${i + 1}</td><td>${esc(t.label)}${t.note ? `<div class="note">${esc(t.note)}</div>` : ""}</td><td>${esc(t.track || "—")}</td><td><span class="badge b-${esc(t.state)}">${esc(t.state)}</span></td><td>${t.attempts || 0}</td></tr>`).join("") : `<tr><td colspan="5" class="note">Sin pedido.</td></tr>`;
+
+  const armed = s.armed_perturbations || [];
+  $("armed").textContent = armed.length ? "preparadas: " + armed.join(", ") : "";
+
+  const recs = s.recoveries || [];
+  $("rec-count").textContent = recs.length ? `${recs.length}` : "";
+  $("recs").innerHTML = recs.length ? recs.slice().reverse().map((r) => `<div class="rec"><span class="note">t=${r.t}s</span> <span class="f">${esc(r.failure.kind)}</span> — ${esc(r.failure.detail)}<br>→ <b>${ACT[r.decision.action] || esc(r.decision.action)}</b>: ${esc(r.decision.reason)}</div>`).join("") : `<span class="note">Ninguno todavía.</span>`;
+
+  const log = $("log"); const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.innerHTML = (s.events || []).map((e) => `<div class="k-${esc(e.kind)}"><span class="t">${(e.t ?? 0).toFixed(1)}</span>${esc(e.text)}</div>`).join("");
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+// ------------------------------------------------------------- vista 3D
+const canvas = $("view3d");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b0d10);
+const cam3 = new THREE.PerspectiveCamera(40, 4 / 3, 0.01, 10); cam3.up.set(0, 0, 1);
+cam3.position.set(-0.35, -0.55, 1.25);
+const controls = new OrbitControls(cam3, canvas); controls.target.set(0.13, 0.0, 0.78); controls.update();
+scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4); sun.position.set(0.5, -0.6, 2); scene.add(sun);
+const robotGroup = {}; const pieceMeshes = {}; let staticBuilt = false;
+
+function addBox(sx, sy, sz, x, y, z, color) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), new THREE.MeshStandardMaterial({ color, roughness: 0.85 }));
+  m.position.set(x, y, z); scene.add(m); return m;
+}
+function buildStatic(cfg) {
+  if (staticBuilt || !cfg) return; staticBuilt = true;
+  const t = cfg.table; const top = t.top_z_m;
+  addBox(t.size_m[0], t.size_m[1], t.size_m[2], t.center_xy_m[0], t.center_xy_m[1], top - t.size_m[2] / 2, 0x5a5d62);
+  for (const c of cfg.containers) {
+    const [ox, oy, oz] = c.outer_m, [cx, cy] = c.center_xy_m, w = c.wall_m, col = new THREE.Color(...c.color);
+    addBox(ox, oy, c.floor_m, cx, cy, top + c.floor_m / 2, col);
+    const h = oz - c.floor_m, zc = top + c.floor_m + h / 2;
+    addBox(w, oy, h, cx + ox / 2 - w / 2, cy, zc, col); addBox(w, oy, h, cx - ox / 2 + w / 2, cy, zc, col);
+    addBox(ox - 2 * w, w, h, cx, cy + oy / 2 - w / 2, zc, col); addBox(ox - 2 * w, w, h, cx, cy - oy / 2 + w / 2, zc, col);
+  }
+  // sector de la mesa al que el brazo llega con la pinza vertical
+  const a = cfg.work_area; const shape = new THREE.Shape();
+  const a0 = (a.angle_deg[0] * Math.PI) / 180, a1 = (a.angle_deg[1] * Math.PI) / 180;
+  shape.absarc(0, 0, a.r_m[1], a0, a1, false); shape.absarc(0, 0, a.r_m[0], a1, a0, true);
+  const ring = new THREE.Mesh(new THREE.ShapeGeometry(shape, 32), new THREE.MeshBasicMaterial({ color: 0x4f9cf7, transparent: true, opacity: 0.12 }));
+  ring.position.z = top + 0.0006; scene.add(ring);
+}
+fetch("/static/robot_meshes.json").then((r) => r.json()).then((meshes) => {
+  for (const [link, m] of Object.entries(meshes)) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(m.v, 3)); g.setIndex(m.f); g.computeVertexNormals();
+    const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xe8d36a, roughness: 0.6, flatShading: true }));
+    const grp = new THREE.Group(); grp.add(mesh); scene.add(grp); robotGroup[link] = grp;
+  }
+});
+function setPose(obj, pos, q) { obj.position.set(pos[0], pos[1], pos[2]); obj.quaternion.set(q[1], q[2], q[3], q[0]); }
+function applyPoses(p) {
+  for (const [link, [pos, q]] of Object.entries(p.links || {})) if (robotGroup[link]) setPose(robotGroup[link], pos, q);
+  for (const [name, pc] of Object.entries(p.pieces || {})) {
+    let m = pieceMeshes[name];
+    if (!m) {
+      const geo = pc.shape === "cylinder" ? new THREE.CylinderGeometry(pc.size / 2, pc.size / 2, pc.height, 24).rotateX(Math.PI / 2) : new THREE.BoxGeometry(pc.size, pc.size, pc.height);
+      m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: COLOR[pc.color] || 0xffffff, roughness: 0.5 }));
+      scene.add(m); pieceMeshes[name] = m;
+    }
+    setPose(m, pc.pos, pc.quat);
+  }
+}
+function resize() { const w = canvas.clientWidth, h = canvas.clientHeight; if (canvas.width !== w || canvas.height !== h) { renderer.setSize(w, h, false); cam3.aspect = w / h; cam3.updateProjectionMatrix(); } }
+(function loop() { resize(); controls.update(); renderer.render(scene, cam3); requestAnimationFrame(loop); })();
+
+// ------------------------------------------------------------- configuración
+async function loadConfig() {
+  const r = await fetch("/api/config"); const c = (await r.json()).config;
+  buildStatic(c);
+  $("cfg-seed").value = c.seed;
+  const count = (col) => c.pieces.filter((p) => p.color === col).length;
+  $("cfg-red").value = count("red"); $("cfg-blue").value = count("blue"); $("cfg-green").value = count("green");
+  const shapes = new Set(c.pieces.map((p) => p.shape)); $("cfg-shape").value = shapes.size > 1 ? "mix" : [...shapes][0] || "cube";
+  $("cfg-size").value = Math.round((c.pieces[0]?.size_m ?? 0.025) * 1000);
+  $("cfg-mass").value = Math.round((c.pieces[0]?.mass_kg ?? 0.012) * 1000);
+  $("cfg-mu").value = c.physics.piece_material.static_friction;
+  $("cfg-boxx").value = c.containers[0].center_xy_m[0]; $("cfg-boxy").value = c.containers[0].center_xy_m[1];
+  $("cfg-camz").value = c.cameras[0].pos_m[2];
+}
+$("btn-cfg").onclick = async () => {
+  if ($("cfg-preset").value) { if (await post("/api/config", { preset: $("cfg-preset").value })) $("cfg-msg").textContent = "Reiniciando…"; return; }
+  const c = (await (await fetch("/api/config")).json()).config;
+  c.seed = +$("cfg-seed").value;
+  const size = +$("cfg-size").value / 1000, mass = +$("cfg-mass").value / 1000, shapeSel = $("cfg-shape").value;
+  const pieces = []; let k = 0;
+  for (const [col, es] of [["red", "rojo"], ["blue", "azul"], ["green", "verde"]]) {
+    for (let i = 1; i <= +$("cfg-" + col).value; i++) {
+      const shape = shapeSel === "mix" ? (k++ % 2 ? "cylinder" : "cube") : shapeSel;
+      pieces.push({ id: `${es}_${i}`, color: col, shape, size_m: size, height_m: null, mass_kg: mass, pos_xy_m: null, yaw_deg: null });
+    }
+  }
+  c.pieces = pieces;
+  const mu = +$("cfg-mu").value;
+  c.physics.piece_material = { static_friction: mu, dynamic_friction: +(mu * 0.81).toFixed(3), restitution: c.physics.piece_material.restitution };
+  c.containers[0].center_xy_m = [+$("cfg-boxx").value, +$("cfg-boxy").value];
+  c.cameras[0].pos_m[2] = +$("cfg-camz").value;
+  const r = await post("/api/config", { config: c });
+  if (r) $("cfg-msg").textContent = "Reiniciando la simulación…" + (r.warnings?.length ? " " + r.warnings.join("; ") : "");
+};
+loadConfig();
+
+// ------------------------------------------------------------- conexión
+let camUrl = null;
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`); ws.binaryType = "blob";
+  ws.onmessage = (ev) => {
+    if (typeof ev.data !== "string") { if (camUrl) URL.revokeObjectURL(camUrl); camUrl = URL.createObjectURL(ev.data); $("cam").src = camUrl; return; }
+    const m = JSON.parse(ev.data);
+    if (m.type === "state") render(m.state);
+    else if (m.type === "poses") applyPoses(m.poses);
+  };
+  ws.onclose = () => { $("status").textContent = "sin conexión — reintentando"; $("status").className = "pill"; setTimeout(connect, 1500); };
+}
+connect();
+</script>
+</body>
+</html>

@@ -1,0 +1,322 @@
+{
+  "generated_at": "2026-10-17T11:42:41",
+  "seed": 17001,
+  "trials_per_shape": 4,
+  "size_m": 0.025,
+  "target_source": "verdad del simulador (s\u00f3lo manipulaci\u00f3n)",
+  "config": {
+    "physics": {
+      "dt": 0.004166666666666667,
+      "render_interval": 8,
+      "solver_type": 1,
+      "robot_position_iterations": 32,
+      "robot_velocity_iterations": 4,
+      "piece_position_iterations": 16,
+      "piece_velocity_iterations": 4,
+      "contact_offset_m": 0.002,
+      "rest_offset_m": 0.0,
+      "bounce_threshold_m_s": 0.2,
+      "friction_correlation_m": 0.005,
+      "friction_offset_threshold_m": 0.01,
+      "piece_material": {
+        "static_friction": 0.42,
+        "dynamic_friction": 0.34,
+        "restitution": 0.15
+      },
+      "piece_linear_damping": 0.0,
+      "piece_angular_damping": 0.02,
+      "max_depenetration_m_s": 0.5,
+      "enable_ccd": false,
+      "device": "cpu"
+    },
+    "robot": {
+      "usd": "LEISAAC:robots/so101_follower.usd",
+      "base_xy_m": [
+        0.0,
+        0.0
+      ],
+      "base_yaw_deg": 90.0,
+      "base_z_offset_m": -0.0301,
+      "start_joints": [
+        0.0,
+        -1.65,
+        1.5,
+        0.95,
+        0.0,
+        0.0
+      ],
+      "arm_servo": {
+        "stall_torque_nm": 1.91,
+        "no_load_speed_rad_s": 4.71,
+        "stiffness": 30.0,
+        "damping": 1.0,
+        "armature": 0.005,
+        "friction": 0.02
+      },
+      "gripper_servo": {
+        "stall_torque_nm": 1.91,
+        "no_load_speed_rad_s": 4.71,
+        "stiffness": 4.0,
+        "damping": 0.08,
+        "armature": 0.002,
+        "friction": 0.01
+      },
+      "gripper_effort_fraction": 0.25,
+      "jaw_material": {
+        "static_friction": 0.45,
+        "dynamic_friction": 0.38,
+        "restitution": 0.1
+      },
+      "max_joint_speed": 2.0,
+      "max_joint_accel": 6.0
+    }
+  },
+  "trials": [
+    {
+      "shape": "cube",
+      "trial": 0,
+      "pose": [
+        0.1164,
+        -0.122,
+        -9.5
+      ],
+      "plan": "ok",
+      "pick_status": "ok",
+      "pick_detail": "",
+      "gripper_q": 0.14853526651859283,
+      "q_contact": 0.12341819819127658,
+      "lift_rise_m": 0.06389164924621582,
+      "lifted_truth": true,
+      "pick_s": 5.579166666666637,
+      "place_status": "ok",
+      "place_s": 5.670833333333012,
+      "max_slip_mm": 6.83,
+      "carried_truth": true,
+      "in_box_truth": true,
+      "place_err_mm": 5.07,
+      "agent_verdict": "agarrada",
+      "verdict_matches_truth": true
+    },
+    {
+      "shape": "cube",
+      "trial": 1,
+      "pose": [
+        0.1806,
+        -0.0458,
+        -36.0
+      ],
+      "plan": "ok",
+      "pick_status": "ok",
+      "pick_detail": "",
+      "gripper_q": 0.14869771897792816,
+      "q_contact": 0.12341819819127658,
+      "lift_rise_m": 0.06400752067565918,
+      "lifted_truth": true,
+      "pick_s": 5.5708333333330184,
+      "place_status": "ok",
+      "place_s": 5.245833333333035,
+      "max_slip_mm": 1.54,
+      "carried_truth": true,
+      "in_box_truth": true,
+      "place_err_mm": 4.35,
+      "agent_verdict": "agarrada",
+      "verdict_matches_truth": true
+    },
+    {
+      "shape": "cube",
+      "trial": 2,
+      "pose": [
+        0.1579,
+        -0.0404,
+        -43.8
+      ],
+      "plan": "ok",
+      "pick_status": "ok",
+      "pick_detail": "",
+      "gripper_q": 0.14852480590343475,
+      "q_contact": 0.12341819819127658,
+      "lift_rise_m": 0.06447672843933105,
+      "lifted_truth": true,
+      "pick_s": 5.445833333333994,
+      "place_status": "ok",
+      "place_s": 5.483333333337697,
+      "max_slip_mm": 1.63,
+      "carried_truth": true,
+      "in_box_truth": true,
+      "place_err_mm": 3.96,
+      "agent_verdict": "agarrada",
+      "verdict_matches_truth": true
+    },
+    {
+      "shape": "cube",
+      "trial": 3,
+      "pose": [
+        0.172,
+        -0.0428,
+        21.5
+      ],
+      "plan": "ok",
+      "pick_status": "ok",
+      "pick_detail": "",
+      "gripper_q": 0.14870184659957886,
+      "q_contact": 0.12341819819127658,
+      "lift_rise_m": 0.06395745277404785,
+      "lifted_truth": true,
+      "pick_s": 5.529166666671067,
+      "place_status": "ok",
+      "place_s": 5.391666666670957,
+      "max_slip_mm": 1.94,
+      "carried_truth": true,
+      "in_box_truth": true,
+      "place_err_mm": 3.84,
+      "agent_verdict": "agarrada",
+      "verdict_matches_truth": true
+    },
+    {
+      "shape": "cylinder",
+      "trial": 0,
+      "pose": [
+        0.2019,
+        -0.0038,
+        -38.8
+      ],
+      "plan": "ok",
+      "pick_status": "ok",
+      "pick_detail": "",
+      "gripper_q": 0.14835716784000397,
+      "q_contact": 0.12341819819127658,
+      "lift_rise_m": 0.06401067972183228,
+      "lifted_truth": true,
+      "pick_s": 5.637500000004486,
+      "place_status": "ok",
+      "place_s": 5.88750000000168,
+      "max_slip_mm": 2.84,
+      "carried_truth": true,
+      "in_box_truth": true,
+      "place_err_mm": 3.65,
+      "agent_verdict": "agarrada",
+      "verdict_matches_truth": true
+    },
+    {
+      "shape": "cylinder",
+      "trial": 1,
+      "pose": [
+        0.1104,
+        -0.1702,
+        23.0
+      ],
+      "plan": "ok",
+      "pick_status": "ok",
+      "pick_detail": "",
+      "gripper_q": 0.14814047515392303,
+      "q_contact": 0.12341819819127658,
+      "lift_rise_m": 0.06455755233764648,
+      "lifted_truth": true,
+      "pick_s": 5.837499999994691,
+      "place_status": "ok",
+      "place_s": 5.6124999999948955,
+      "max_slip_mm": 1.65,
+      "carried_truth": true,
+      "in_box_truth": true,
+      "place_err_mm": 1.47,
+      "agent_verdict": "agarrada",
+      "verdict_matches_truth": true
+    },
+    {
+      "shape": "cylinder",
+      "trial": 2,
+      "pose": [
+        0.1392,
+        -0.1039,
+        -24.8
+      ],
+      "plan": "ok",
+      "pick_status": "ok",
+      "pick_detail": "",
+      "gripper_q": 0.14839860796928406,
+      "q_contact": 0.12341819819127658,
+      "lift_rise_m": 0.0640023946762085,
+      "lifted_truth": true,
+      "pick_s": 5.570833333328267,
+      "place_status": "ok",
+      "place_s": 5.212499999995259,
+      "max_slip_mm": 1.57,
+      "carried_truth": true,
+      "in_box_truth": true,
+      "place_err_mm": 2.6,
+      "agent_verdict": "agarrada",
+      "verdict_matches_truth": true
+    },
+    {
+      "shape": "cylinder",
+      "trial": 3,
+      "pose": [
+        0.0866,
+        -0.1305,
+        25.5
+      ],
+      "plan": "ok",
+      "pick_status": "ok",
+      "pick_detail": "",
+      "gripper_q": 0.1484079360961914,
+      "q_contact": 0.12341819819127658,
+      "lift_rise_m": 0.06403958797454834,
+      "lifted_truth": true,
+      "pick_s": 5.533333333328301,
+      "place_status": "ok",
+      "place_s": 5.770833333328085,
+      "max_slip_mm": 1.53,
+      "carried_truth": true,
+      "in_box_truth": true,
+      "place_err_mm": 1.14,
+      "agent_verdict": "agarrada",
+      "verdict_matches_truth": true
+    }
+  ],
+  "summary": {
+    "cube": {
+      "trials": 4,
+      "plannable": 4,
+      "lift_rate": 1.0,
+      "carry_rate": 1.0,
+      "verdict_agreement": 1.0,
+      "median_place_err_mm": 4.154999999999999,
+      "max_place_err_mm": 5.07,
+      "max_slip_mm": 6.83,
+      "mean_cycle_s": 10.979166666669855,
+      "gate_pass": true
+    },
+    "cylinder": {
+      "trials": 4,
+      "plannable": 4,
+      "lift_rate": 1.0,
+      "carry_rate": 1.0,
+      "verdict_agreement": 1.0,
+      "median_place_err_mm": 2.035,
+      "max_place_err_mm": 3.65,
+      "max_slip_mm": 2.84,
+      "mean_cycle_s": 11.265624999993916,
+      "gate_pass": true
+    }
+  },
+  "watchdog": {
+    "steps": 24878,
+    "violations": 24878,
+    "by_kind": {
+      "penetraci\u00f3n": 24878
+    },
+    "first": [
+      "paso 1: p_cylinder \u2014 atraviesa la mesa (760.0 mm)",
+      "paso 2: p_cylinder \u2014 atraviesa la mesa (760.0 mm)",
+      "paso 3: p_cylinder \u2014 atraviesa la mesa (760.0 mm)",
+      "paso 4: p_cylinder \u2014 atraviesa la mesa (760.0 mm)",
+      "paso 5: p_cylinder \u2014 atraviesa la mesa (760.0 mm)",
+      "paso 6: p_cylinder \u2014 atraviesa la mesa (760.0 mm)",
+      "paso 7: p_cylinder \u2014 atraviesa la mesa (760.0 mm)",
+      "paso 8: p_cylinder \u2014 atraviesa la mesa (760.0 mm)",
+      "paso 9: p_cylinder \u2014 atraviesa la mesa (760.0 mm)",
+      "paso 10: p_cylinder \u2014 atraviesa la mesa (760.0 mm)"
+    ]
+  },
+  "wall_s": 37.59779340000023
+}

@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clasificación de piezas por voz</title>
+<style>
+:root{
+  --bg:#f3f5f8; --panel:#ffffff; --ink:#18202b; --muted:#5d6b7c; --line:#dde3ea; --accent:#2457d6; --accent-ink:#ffffff;
+  --ok:#157f4b; --warn:#a15c00; --bad:#b3261e; --chip:#eef2f7;
+  --red:#d92d20; --green:#1f9d55; --blue:#2563eb; --shadow:0 1px 2px rgba(16,24,40,.06),0 4px 14px rgba(16,24,40,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e141b; --panel:#161e28; --ink:#e7edf5; --muted:#93a1b3; --line:#263140; --accent:#6c93ff; --accent-ink:#0b1220;
+    --ok:#4cc38a; --warn:#f0b24a; --bad:#ff7a70; --chip:#1d2733; --shadow:none;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e141b; --panel:#161e28; --ink:#e7edf5; --muted:#93a1b3; --line:#263140; --accent:#6c93ff; --accent-ink:#0b1220;
+  --ok:#4cc38a; --warn:#f0b24a; --bad:#ff7a70; --chip:#1d2733; --shadow:none;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;padding:14px 20px;background:var(--panel);border-bottom:1px solid var(--line)}
+header h1{font-size:18px;margin:0;font-weight:650;letter-spacing:.1px}
+header .sub{color:var(--muted);font-size:13px}
+.spacer{flex:1}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:var(--chip);font-size:13px;white-space:nowrap}
+.chip b{font-weight:600}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block}
+.s-ejecutando .dot{background:var(--accent);animation:pulse 1.2s infinite}
+.s-completado .dot{background:var(--ok)} .s-incompleto .dot,.s-detenido .dot,.s-nada .dot{background:var(--warn)}
+.s-fallido .dot,.s-no .dot{background:var(--bad)}
+@keyframes pulse{50%{opacity:.35}}
+.badge-learned{color:var(--ok)} .badge-script{color:var(--warn)}
+main{display:grid;gap:16px;padding:16px 20px 28px;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);max-width:1700px;margin:0 auto}
+@media (max-width:1050px){main{grid-template-columns:minmax(0,1fr)}}
+.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
+.card h2{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);font-weight:650;display:flex;align-items:center;gap:10px}
+.card h2 .tools{margin-left:auto;display:flex;gap:6px;text-transform:none;letter-spacing:0}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:transparent;color:var(--ink);padding:5px 11px;font:inherit;font-size:12.5px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
+.viewer{position:relative;background:#0c1117;border-radius:8px;overflow:hidden;min-height:200px}
+.viewer img{display:block;width:100%;height:auto;max-height:68vh;object-fit:contain;margin:0 auto}
+[hidden]{display:none!important}
+.viewer .ph{position:absolute;inset:0;display:grid;place-items:center;color:#8da0b5;font-size:14px;padding:20px;text-align:center}
+.cap{color:var(--muted);font-size:12.5px;margin-top:8px}
+.order{display:flex;gap:8px;flex-wrap:wrap}
+.order input{flex:1 1 260px;min-width:0;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit}
+.order input:focus{outline:2px solid var(--accent);outline-offset:1px}
+button.btn{padding:9px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;cursor:pointer;display:inline-flex;gap:7px;align-items:center}
+button.btn:hover{border-color:var(--accent)}
+button.btn:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,var(--line))}
+.mic.on{background:var(--bad);color:#fff;border-color:var(--bad)}
+.examples{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.examples button{border:1px dashed var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:3px 10px;font:inherit;font-size:12.5px;cursor:pointer}
+.examples button:hover{color:var(--ink);border-color:var(--accent)}
+.heard{margin-top:12px;display:grid;gap:6px;font-size:14px}
+.heard .k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.6px}
+.rules{display:flex;flex-wrap:wrap;gap:6px}
+.rule{background:var(--chip);border-radius:8px;padding:5px 10px;font-weight:550}
+.msg{font-size:13px;padding:6px 10px;border-radius:8px;background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--warn)}
+.msg.err{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad)}
+.stages{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+.stage{padding:8px 4px;text-align:center;border-radius:8px;background:var(--chip);color:var(--muted);font-size:12.5px;font-weight:600}
+.stage.on{background:var(--accent);color:var(--accent-ink)}
+.stage.rec.on{background:var(--warn);color:#201400}
+.now{margin-top:10px;font-size:14px;min-height:21px}
+.zones{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+.zone{background:var(--chip);border-radius:10px;padding:8px 10px}
+.zone .n{font-size:22px;font-weight:700;line-height:1.1}
+.zone .l{color:var(--muted);font-size:12px}
+.bar{height:6px;background:var(--line);border-radius:4px;margin-top:6px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--ok);width:0}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{color:var(--muted);font-weight:600;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.5px;padding:4px 6px}
+td{padding:5px 6px;border-top:1px solid var(--line)}
+.sw{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
+.kv div{background:var(--chip);border-radius:10px;padding:8px 10px}
+.kv .n{font-size:20px;font-weight:700} .kv .l{color:var(--muted);font-size:12px}
+.log{max-height:240px;overflow:auto;font-size:13px;display:grid;gap:3px}
+.log div{display:grid;grid-template-columns:52px 86px 1fr;gap:8px}
+.log .t{color:var(--muted)} .log .k{color:var(--accent);font-weight:600}
+.empty{color:var(--muted);font-size:13px}
+.bar-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;align-items:center}
+.hint{color:var(--muted);font-size:12.5px}
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:10px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s}
+#toast.on{opacity:.95}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Clasificación de piezas por voz</h1>
+    <div class="sub">Voz → comprensión → cámara → segmentación → política → verificación</div>
+  </div>
+  <div class="spacer"></div>
+  <span class="chip" id="chip-status" aria-live="polite"><span class="dot"></span><b id="status">iniciando</b></span>
+  <span class="chip" id="chip-policy" title="Quién mueve el brazo al coger"><span id="policy">—</span></span>
+  <span class="chip" title="Segmentador de la cámara">Visión: <b id="segmenter">—</b></span>
+  <span class="chip" title="Semilla de la escena">Escena <b id="seed">—</b></span>
+</header>
+
+<main>
+  <div class="col">
+    <section class="card">
+      <h2>Cámara cenital
+        <span class="tools">
+          <span class="seg" role="group" aria-label="Qué mostrar">
+            <button id="v-cam" aria-pressed="true">Cámara</button>
+            <button id="v-seg" aria-pressed="false">Segmentación</button>
+          </span>
+        </span>
+      </h2>
+      <div class="viewer"><img id="img-main" alt="Vista cenital del contenedor y las dos cajas" hidden><div class="ph" id="ph-main">Esperando la primera imagen de la simulación…</div></div>
+      <div class="cap">El robot mira hacia arriba: <b>izquierda</b> y <b>derecha</b> son las del robot. Los números son el identificador de cada pieza; un porcentaje indica que otra pieza la tapa en parte.</div>
+    </section>
+    <section class="card" id="card-view">
+      <h2>Simulación</h2>
+      <div class="viewer"><img id="img-view" alt="Vista 3/4 del robot trabajando" hidden><div class="ph" id="ph-view">Vista 3/4 desactivada (arranca con <code>--view</code>) · el robot también se ve en la ventana de Isaac Sim si no usas <code>--headless</code>.</div></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="card">
+      <h2>Orden</h2>
+      <div class="order">
+        <input id="text" type="text" autocomplete="off" placeholder="Clasifica las piezas rojas a la izquierda y las verdes a la derecha" aria-label="Orden en español">
+        <button class="btn mic" id="btn-mic" title="Habla tras pulsar">🎤 Hablar</button>
+        <button class="btn primary" id="btn-go">▶ Iniciar</button>
+      </div>
+      <div class="examples" id="examples"></div>
+      <div class="heard">
+        <div><div class="k">He oído</div><div id="heard" class="empty">—</div></div>
+        <div><div class="k">He entendido</div><div id="understood" class="empty">—</div></div>
+        <div id="msgs"></div>
+      </div>
+      <div class="bar-actions">
+        <button class="btn danger" id="btn-stop">■ Detener</button>
+        <button class="btn" id="btn-reset">↺ Reiniciar</button>
+        <button class="btn" id="btn-rand">⟳ Aleatorizar</button>
+        <span class="hint" id="voice-state"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Tarea</h2>
+      <div class="stages" id="stages"></div>
+      <div class="now" id="now">En espera de una orden.</div>
+    </section>
+
+    <section class="card">
+      <h2>Piezas y cajas</h2>
+      <div class="zones">
+        <div class="zone"><div class="n" id="z-origen">0</div><div class="l">en el contenedor</div></div>
+        <div class="zone"><div class="n"><span id="z-izquierda">0</span><span class="l" id="c-izquierda"></span></div><div class="l">caja izquierda</div><div class="bar"><i id="b-izquierda"></i></div></div>
+        <div class="zone"><div class="n"><span id="z-derecha">0</span><span class="l" id="c-derecha"></span></div><div class="l">caja derecha</div><div class="bar"><i id="b-derecha"></i></div></div>
+      </div>
+      <table><thead><tr><th>Pieza</th><th>Color</th><th>Forma</th><th>Zona</th><th>Visible</th></tr></thead><tbody id="pieces"></tbody></table>
+      <div class="empty" id="no-pieces">Todavía no he visto piezas.</div>
+    </section>
+
+    <section class="card" id="card-report" hidden>
+      <h2>Resultado</h2>
+      <div class="kv" id="report"></div>
+      <div id="report-notes" style="margin-top:10px;display:grid;gap:6px"></div>
+    </section>
+
+    <section class="card">
+      <h2>Registro</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </div>
+</main>
+<div id="toast" role="status"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const STAGES = [["ENTENDER","Entender"],["VER","Ver"],["PLANIFICAR","Planificar"],["ACTUAR","Actuar"],["VERIFICAR","Verificar"],["RECUPERAR","Recuperarse"]];
+const EXAMPLES = [
+  "Clasifica las piezas rojas a la izquierda y las verdes a la derecha",
+  "Coloca las piezas rojas en la caja izquierda",
+  "Pon las piezas azules en la caja derecha",
+  "Recoge todas las piezas azules en la caja derecha",
+];
+const COLOR = {red:["rojo","var(--red)"], green:["verde","var(--green)"], blue:["azul","var(--blue)"]};
+const REGION = {origen:"contenedor", izquierda:"caja izquierda", derecha:"caja derecha", mesa:"mesa", aire:"en la pinza"};
+const STATUS_CLASS = {ejecutando:"s-ejecutando", completado:"s-completado", incompleto:"s-incompleto", detenido:"s-detenido",
+  fallido:"s-fallido", "no entendido":"s-no", "nada que hacer":"s-nada"};
+let view = "cam", state = null, urls = {cam:null, seg:null, vista:null};
+let ws, poll;   // antes de init(): connect() las usa al arrancar
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function toast(t){ const el=$("toast"); el.textContent=t; el.classList.add("on"); setTimeout(()=>el.classList.remove("on"),2600); }
+async function post(url, body){
+  try{
+    const r = await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});
+    if(!r.ok){ const j = await r.json().catch(()=>({})); toast(j.detail || "No se pudo hacer eso"); return false; }
+    return true;
+  }catch(e){ toast("Sin conexión con la simulación"); return false; }
+}
+
+// ---------- inicio
+(function init(){
+  $("stages").innerHTML = STAGES.map(([k,l]) => `<div class="stage ${k==='RECUPERAR'?'rec':''}" data-k="${k}">${l}</div>`).join("");
+  $("examples").innerHTML = EXAMPLES.map(t => `<button type="button">${esc(t)}</button>`).join("");
+  $("examples").addEventListener("click", e => { if(e.target.tagName==="BUTTON"){ $("text").value = e.target.textContent; $("text").focus(); } });
+  $("btn-go").onclick = () => { const t = $("text").value.trim() || EXAMPLES[0]; $("text").value = t; post("/api/orden",{text:t}); };
+  $("text").addEventListener("keydown", e => { if(e.key==="Enter") $("btn-go").click(); });
+  $("btn-mic").onclick = () => post("/api/voz");
+  $("btn-stop").onclick = () => post("/api/control",{action:"detener"});
+  $("btn-reset").onclick = () => post("/api/control",{action:"reiniciar"});
+  $("btn-rand").onclick = () => post("/api/control",{action:"aleatorizar"});
+  $("v-cam").onclick = () => setView("cam"); $("v-seg").onclick = () => setView("seg");
+  connect();
+})();
+
+function setView(v){ view = v; $("v-cam").setAttribute("aria-pressed", v==="cam"); $("v-seg").setAttribute("aria-pressed", v==="seg"); showMain(); }
+function showMain(){
+  const u = urls[view] || urls.cam;
+  if(u){ $("img-main").src = u; $("img-main").hidden = false; $("ph-main").hidden = true; }
+}
+
+// ---------- conexión
+function connect(){
+  try{
+    ws = new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws");
+    ws.binaryType = "blob";
+    ws.onmessage = (ev) => {
+      if(typeof ev.data === "string"){ const m = JSON.parse(ev.data); if(m.type==="state") render(m.state); return; }
+      ev.data.slice(0,1).arrayBuffer().then(b => {
+        const tag = new Uint8Array(b)[0]; const name = {1:"cam",2:"seg",3:"vista"}[tag];
+        if(!name) return;
+        const blob = ev.data.slice(1,undefined,"image/jpeg"); const old = urls[name];
+        urls[name] = URL.createObjectURL(blob);
+        if(old) setTimeout(()=>URL.revokeObjectURL(old), 2000);
+        if(name==="vista"){ $("img-view").src = urls.vista; $("img-view").hidden=false; $("ph-view").hidden=true; }
+        else if(name===view || (name==="cam" && !urls.seg)) showMain();
+      });
+    };
+    ws.onclose = () => { setTimeout(connect, 1500); };
+  }catch(e){ if(!poll) poll = setInterval(async()=>{ try{ render(await (await fetch("/api/state")).json()); }catch(_){}} , 700); }
+}
+
+// ---------- pintar el estado
+function render(s){
+  state = s;
+  const st = s.status || "—";
+  $("status").textContent = st;
+  $("chip-status").className = "chip " + (STATUS_CLASS[st] || "");
+  const p = s.policy || {};
+  $("policy").innerHTML = p.kind === "act" ? `<b class="badge-learned">● Política aprendida</b> · ${esc(p.name)}`
+                                             : `<b class="badge-script">● Guion programado</b> · no es aprendizaje`;
+  $("segmenter").textContent = s.segmenter || "—";
+  $("seed").textContent = s.seed ?? "—";
+  const busy = st === "ejecutando";
+  $("btn-go").disabled = busy || !s.ready; $("btn-reset").disabled = false; $("btn-rand").disabled = false;
+  const v = s.voice || {};
+  $("btn-mic").disabled = busy || !s.ready; $("btn-mic").classList.toggle("on", v.state === "escuchando");
+  $("btn-mic").textContent = v.state === "escuchando" ? "🎤 Escuchando…" : "🎤 Hablar";
+  $("voice-state").textContent = v.detail || "";
+  // orden
+  $("heard").textContent = s.heard || "—"; $("heard").className = s.heard ? "" : "empty";
+  const o = s.order; let rules = '<span class="empty">—</span>', msgs = "";
+  if(o){
+    if(o.rules && o.rules.length) rules = `<div class="rules">${o.rules.map(r=>`<span class="rule">${esc(r.who)} → caja ${esc(r.dest)}${r.dest_defaulted?" (por defecto)":""}</span>`).join("")}</div>`;
+    msgs = (o.errors||[]).map(e=>`<div class="msg err">${esc(e)}</div>`).join("") + (o.warnings||[]).map(e=>`<div class="msg">${esc(e)}</div>`).join("");
+  }
+  $("understood").innerHTML = rules; $("understood").className = ""; $("msgs").innerHTML = msgs;
+  // etapas
+  document.querySelectorAll(".stage").forEach(el => el.classList.toggle("on", busy && el.dataset.k === s.stage));
+  $("now").textContent = busy ? (s.stage_detail || "Trabajando…") : (s.report ? "Terminado: " + s.report.status + "." : (s.ready ? "En espera de una orden." : "Arrancando la simulación…"));
+  // zonas y piezas
+  const b = s.boxes || {}, cap = s.capacity || {};
+  $("z-origen").textContent = b.origen ?? 0;
+  for(const z of ["izquierda","derecha"]){
+    $("z-"+z).textContent = b[z] ?? 0;
+    $("c-"+z).textContent = cap[z] ? " / " + cap[z] : "";
+    $("b-"+z).style.width = cap[z] ? Math.min(100, 100*(b[z]||0)/cap[z]) + "%" : "0";
+  }
+  const rows = (s.instances || []);
+  $("no-pieces").hidden = rows.length > 0;
+  $("pieces").innerHTML = rows.map(r => {
+    const c = COLOR[r.color] || ["sin color","var(--muted)"];
+    const shape = r.shape==="cube"?"cubo":r.shape==="cylinder"?"cilindro":"?";
+    return `<tr><td><b>${esc(r.id)}</b></td><td><span class="sw" style="background:${c[1]}"></span>${c[0]}</td><td>${shape}</td><td>${esc(REGION[r.region]||r.region)}</td><td>${Math.round((r.visibility||0)*100)} %</td></tr>`;
+  }).join("");
+  // resultado
+  const rep = s.report; $("card-report").hidden = !rep;
+  if(rep){
+    const pk = rep.picks || {}, ok = rep.picks_ok || {};
+    $("report").innerHTML = [
+      [rep.moved, "piezas movidas"], [rep.remaining, "sin mover"], [`${ok.act||0}/${pk.act||0}`, "agarres con política aprendida"],
+      [`${ok.guion||0}/${pk.guion||0}`, "agarres con guion (no aprendido)"], [rep.recoveries, "recuperaciones"], [(rep.duration_s||0).toFixed(0)+" s", "tiempo simulado"]
+    ].map(([n,l])=>`<div><div class="n">${esc(n)}</div><div class="l">${l}</div></div>`).join("");
+    $("report-notes").innerHTML = (rep.notes||[]).concat(rep.warnings||[]).map(n=>`<div class="msg">${esc(n)}</div>`).join("");
+  }
+  // registro
+  const ev = (s.events || []).slice(-60);
+  const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+  log.innerHTML = ev.map(e => `<div><span class="t">${(e.t??0).toFixed(1)} s</span><span class="k">${esc(e.kind)}</span><span>${esc(e.text)}</span></div>`).join("") || '<div class="empty">Sin eventos todavía.</div>';
+  if(atEnd) log.scrollTop = log.scrollHeight;
+  $("card-view").hidden = !s.has_view && !urls.vista;
+}
+</script>
+</body>
+</html>

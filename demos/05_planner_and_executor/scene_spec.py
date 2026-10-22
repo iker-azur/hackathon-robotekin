@@ -1,0 +1,699 @@
+"""What the perception scene contains: the objects, the containers, where they go.
+
+Kept apart from ``09_camera_to_scene.py`` so that the same scene can be built in the
+simulator and scored, and so that ``--trials`` can move things around without touching
+any Isaac code.
+
+Two decisions worth stating:
+
+**The red cube is LeIsaac's own, not a primitive.** The shipped scene has exactly one
+rigid body, a 3 cm textured glossy red cube, which ``parse_usd_and_create_subassets``
+already exposes as ``env.scene["cube"]``. It is kept and repositioned so that colour
+segmentation is proven on a real textured asset and not only on flat shading. The other
+objects are IsaacLab primitives (``CuboidCfg``, ``SphereCfg``) with an explicit
+``PreviewSurfaceCfg.diffuse_color``, because that gives the exact albedo the HSV bands
+in ``colors.py`` are written for and needs no asset download.
+
+**Two objects share a colour.** ``ball_red`` exists so that "the red ball" is
+genuinely ambiguous and the robot has to ask, which is the moment worth showing. Pass
+``--no-duplicate`` for a scene where every colour is unique.
+
+Positions are world metres on the shipped table. Its top surface is at z = 0.0409, and
+it spans x 0.0032..0.7032 and y -0.6768..-0.0268, all measured from
+``assets/scenes/table_with_cube/scene.usd`` rather than assumed. The objects live in
+x 0.25..0.50, y -0.52..-0.30, which is inside the reach demo 05 already proved works,
+so demo 10 can reuse this layout unchanged.
+
+Objects of the same colour are at least 6 cm apart, which is 72 px at the top camera's
+1206 px/m and comfortably more than ``colors.OPENING_PX`` can bridge.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+
+import math
+
+import numpy as np
+
+# Measured from the shipped USD, not guessed.
+TABLE_TOP_Z = 0.0409
+TABLE_X = (0.0032, 0.7032)
+TABLE_Y = (-0.6768, -0.0268)
+
+# The area the robot works in.
+#
+# **CHANGED: wider and shallower, from x 0.24..0.40 by y -0.53..-0.32 to x 0.275..0.515 by
+# y -0.52..-0.40.** This is 24 cm across instead of 16, and 12 cm deep instead of 21. The
+# direction looks backwards until you know what was measured, so here it is.
+#
+# The old area was a 16 x 21 cm rectangle whose farthest corner is 0.31 m from the base, and the
+# arm's reach is 0.33 m. That rectangle simply does not fit inside the reachable disc: the
+# largest rectangle inscribable in a disc of radius r has area 2r^2, which for r = 0.33 is
+# 218 cm2, and the old area was 336 cm2. So parts of it could never have been worked in, and
+# they were not theoretical - ``tools/probe_grasp.py``, which runs the real pick cycle at each
+# point of a grid, found the jaws closing on nothing at x = 0.56 and along the y = -0.34 row,
+# both comfortably inside the declared area.
+#
+# The new area is fitted to the region where a pick actually completes. Measured, both a cube
+# and a ball, x from 0.29 to 0.48 and y from -0.40 to -0.47: every point lifts. The two
+# neighbouring corners do not - (0.29, -0.54) and (0.48, -0.40) fail for both - so they are
+# left outside. Perception localises to 10 mm inside this band and to 53 mm along y = -0.34,
+# which is why the far row is not in the area: that limit is the camera's, not the arm's.
+#
+# The bounds are a few millimetres wider than the layout needs, which is not tidiness: an item
+# placed exactly on the boundary fails ``clearance`` on a floating-point comparison
+# (0.290 - 0.015 evaluates to just under 0.275) and is reported as outside its own area.
+#
+# **So the working area did not get bigger, and it cannot.** It got the shape the arm and the
+# camera can actually cover, which is 50% wider than before. Anyone who wants more room needs
+# the robot further back from the table or a longer arm, not a larger constant here.
+#
+# **CHANGED AGAIN: y -0.54..-0.38 becomes -0.555..-0.355.** The shipped receptacles sat at
+# y = -0.50, 0.14-0.17 m from the base, and strict-physical trials showed the arm cannot lower a
+# part into a tray nearer than ``MIN_PLACE_REACH_M`` (0.17 m): every order ended with the part
+# gripped and the carry stopped short. The trays are now at y = -0.46, and the loose parts move
+# out to y = -0.38 to keep 30 mm between them and the trays. The 20 mm of extra depth is the
+# band the strict benchmark matrix has worked in all along (y -0.555..-0.355).
+WORK_X = (0.27, 0.52)
+WORK_Y = (-0.555, -0.355)
+
+# Minimum center distance for a same-colour object and its destination tray. A measured
+# mixed scene lost the object's color-segmentation identity on reobservation at 63.6 mm.
+MIN_OBJECT_CONTAINER_VISUAL_GAP_M = 0.075
+
+
+def set_work_area(work_x, work_y) -> None:
+    """Apply the configured operating rectangle to runtime consumers.
+
+    Validation passes bounds explicitly and never mutates these module defaults. The real
+    session applies its saved bounds once, before perception, grounding and scene dynamics run.
+    """
+    global WORK_X, WORK_Y
+    WORK_X = tuple(float(value) for value in work_x)
+    WORK_Y = tuple(float(value) for value in work_y)
+
+# The SO-101's base, from LiftCubeEnvCfg.__post_init__. Needed because "left" is the
+# robot's left, and a scene that does not say where the robot is cannot answer that.
+ROBOT_XY = (0.35, -0.64)
+
+# How far the arm is expected to reach from that base. LeRobot advertises about 350 mm
+# for the SO-101 and the shipped cube rests 280 mm forward, so 0.33 leaves the zones a
+# little room without putting them past the arm's specification. It is a figure from the
+# hardware, not from this simulation: if demo 10 cannot reach a zone, this is the first
+# number to move.
+MAX_REACH_M = 0.33
+
+# The SO-101 also has a near-base dead zone. A pose can be inside the published maximum reach
+# and still be impossible because the links cannot fold far enough to put the gripper over the
+# table point. Strict-physical trials found a 30 mm ball at 0.191 m from the base can leave a
+# 36 mm IK/servo residual and be pushed on retreat, while a nearby trial at 0.198 m completed.
+# Keep a 5 mm margin beyond that failed sample. This is a conservative *tested workspace*
+# bound, not a claim about the robot's theoretical kinematic envelope.
+MIN_REACH_M = 0.195
+# Keep scene editing, command grounding, and randomization inside the same tested pick region.
+# A 10 mm radial buffer covers the observed camera/servo residual near the SO-101 folded limit;
+# without it, valid JSON could place a part at 198 mm, where the pick controller had no reliable
+# convergence margin even though it was technically outside the 195 mm dead-zone estimate.
+PICK_REACH_MARGIN_M = 0.010
+
+# The nearest a receptacle's centre may be to the base axis for the arm to lower a part into it.
+# Picking and placing are different limits: with the release pose held over the tray the arm
+# needs its wrist further from the base than a pick does. Strict-physical pick-and-place of one
+# cube with the tray moved inward: 0.21, 0.18, 0.175 and 0.165 m placed and verified, 0.15 m
+# gripped the cube and then stopped the carry 20.3 mm short of a 20 mm tolerance (with and
+# without the narrower jaw opening), and 0.12 m never gripped it. The shipped presets and a
+# dashboard-saved scene had trays at 0.12-0.17 m, so no order could ever finish. 0.17 keeps 5 mm
+# beyond the closest tested pass.
+MIN_PLACE_REACH_M = 0.170
+
+
+def reach_facts(x: float, y: float, work_x=None, work_y=None) -> dict:
+    """The numbers behind "can the arm work here", so callers can say it in their own language.
+
+    ``why_unreachable`` renders these as an English sentence, which is fine for a log line and
+    wrong for a reply: it produced "Veo un cubo azul, pero no puedo llegar: esta 35 cm from
+    the base, past the 33 cm the arm can reach". A measurement should be a number plus a limit,
+    and the sentence around it belongs to whoever is speaking.
+    """
+    work_x = WORK_X if work_x is None else work_x
+    work_y = WORK_Y if work_y is None else work_y
+    distance = math.hypot(x - ROBOT_XY[0], y - ROBOT_XY[1])
+    return {
+        "distance_m": distance,
+        "limit_m": MAX_REACH_M,
+        "beyond_arm": distance > MAX_REACH_M,
+        "inside_dead_zone": distance < MIN_REACH_M,
+        "pick_limit_m": MIN_REACH_M + PICK_REACH_MARGIN_M,
+        "outside_pick_envelope": distance < MIN_REACH_M + PICK_REACH_MARGIN_M,
+        "place_limit_m": MIN_PLACE_REACH_M,
+        "outside_place_envelope": distance < MIN_PLACE_REACH_M,
+        "in_area": (work_x[0] <= x <= work_x[1] and work_y[0] <= y <= work_y[1]),
+        "x": x,
+        "y": y,
+    }
+
+
+def why_unreachable(x: float, y: float, work_x=None, work_y=None,
+                    require_pick_envelope: bool = False,
+                    require_place_envelope: bool = False) -> str | None:
+    """Why the arm cannot work at this point, or None if it can.
+
+    Lives here rather than in ``planner`` because ``ground`` needs it too and ``planner``
+    already imports ``ground`` - putting it in either would be circular. It is the one
+    definition of "the robot cannot do this here", used for planning and for refusing.
+
+    Two tests, in this order, and they are different failures:
+
+    * beyond ``MAX_REACH_M`` of the base - physically out of the arm's length, which is not a
+      policy and cannot be argued with.
+    * outside ``WORK_X``/``WORK_Y`` - the declared operating region. The arm may well be able
+      to reach it; the demo has decided that region is where it works, which is a policy.
+    """
+    work_x = WORK_X if work_x is None else work_x
+    work_y = WORK_Y if work_y is None else work_y
+    facts = reach_facts(x, y, work_x, work_y)
+    if require_pick_envelope and facts["outside_pick_envelope"]:
+        return (f"{facts['distance_m'] * 1000:.0f} mm from the base, inside the tested "
+                f"minimum reach pick envelope of {facts['pick_limit_m'] * 1000:.0f} mm "
+                f"(including "
+                f"{PICK_REACH_MARGIN_M * 1000:.0f} mm clearance)")
+    if require_place_envelope and facts["outside_place_envelope"]:
+        return (f"{facts['distance_m'] * 1000:.0f} mm from the base, nearer than the "
+                f"{facts['place_limit_m'] * 1000:.0f} mm the arm can lower a part into a "
+                "receptacle from")
+    if facts["beyond_arm"]:
+        return (f"{facts['distance_m'] * 100:.0f} cm from the base, past the "
+                f"{MAX_REACH_M * 100:.0f} cm the arm can reach")
+    if not facts["in_area"]:
+        return f"({x:+.3f}, {y:+.3f}) is outside the working area {work_x} {work_y}"
+    return None
+
+
+@dataclass
+class Item:
+    """One thing to put on the table.
+
+    ``prim`` is the name it will have in ``env.scene``. ``shape`` is the IsaacLab
+    primitive to spawn, or ``None`` for the shipped USD cube, which needs no spawning.
+    ``size`` is the full (x, y, z) extent in metres; for a sphere it is the diameter.
+    """
+
+    prim: str
+    kind: str
+    color: str
+    x: float
+    y: float
+    yaw_deg: float = 0.0
+    shape: str | None = "cuboid"
+    size: tuple[float, float, float] = (0.03, 0.03, 0.03)
+    container: bool = False
+    inner: tuple[float, float] = (0.0, 0.0)
+    wall: float = 0.0
+    floor: float = 0.0
+
+    @property
+    def height(self) -> float:
+        return self.size[2]
+
+    @property
+    def z(self) -> float:
+        """The height of the item's centre when it is resting on the table."""
+        return TABLE_TOP_Z + self.height / 2.0
+
+    @property
+    def outer(self) -> tuple[float, float]:
+        """A container's footprint from its cavity, for checking against ``size``.
+
+        ``size`` stays the outer footprint on purpose: ``half_width``, ``half_depth`` and
+        ``clearance`` all read it, so the working area fitted for demo 09 still holds. This
+        is the same number stated the other way round, which is what hollow.py needs.
+        """
+        return (self.inner[0] + 2.0 * self.wall, self.inner[1] + 2.0 * self.wall)
+
+    @property
+    def cavity_depth(self) -> float:
+        """Usable depth inside a tray: its height less the floor slab."""
+        return max(0.0, self.height - self.floor)
+
+
+def _cube(prim: str, color: str, x: float, y: float, edge: float = 0.03) -> Item:
+    return Item(prim=prim, kind="cube", color=color, x=x, y=y,
+                shape="cuboid", size=(edge, edge, edge))
+
+
+def _ball(prim: str, color: str, x: float, y: float, diameter: float = 0.03) -> Item:
+    """A ball, 3 cm across.
+
+    **CHANGED: 4 cm to 3 cm, because the gripper physically cannot close on 4 cm.**
+
+    The SO-101's two finger bodies sit 36.2 mm apart and that number does not move: measured
+    across close commands from 0.0 to 1.0 rad and open commands from 1.0 to the 1.745 rad
+    joint limit, ``tools/probe_gripper.py`` reads 36.2 mm every single time. The fingers are
+    fixed to their mounts; the joint drives them along their own axes and never widens the
+    span between the two bodies. So 40 mm is not "hard to grip", it does not fit: the jaws
+    close onto a ball that is wider than the distance between them and push it off the table.
+
+    That is the whole reason this demo's ball handling looked broken. ``results/
+    approach_drift.md`` records three attempted fixes - slower descent, re-grasp, re-aim -
+    and all three failed for the same reason, which no amount of aiming could have fixed. A
+    3 cm ball has 6.2 mm of clearance in a 36.2 mm aperture, and it is the same size as the
+    cubes, so the two are still told apart by shape rather than by scale - which is what
+    ``perceive`` uses anyway, since it separates a disc from a square by their second
+    moments and not by how many pixels across they are.
+    """
+    return Item(prim=prim, kind="ball", color=color, x=x, y=y,
+                shape="sphere", size=(diameter, diameter, diameter))
+
+
+def _tray(prim: str, color: str, x: float, y: float) -> Item:
+    """A shallow open tray: a 4.4 x 4.4 cm cavity 4.4 cm deep, in a 6 x 6 cm footprint.
+
+    CHANGED IN THIS COPY. Demo 09's tray was a solid 6 x 7 x 1.2 cm coloured slab - a zone
+    painted on the table, with nothing an object could go inside. Demo 09's own readme
+    records that as the thing demo 10 had to fix: *"Containers are coloured zones, not
+    hollow boxes... Making one hollow is a demo 10 change."*
+
+    This is that change. hollow.py builds it as one kinematic rigid body whose five
+    collision shapes are a floor and four walls, so an object dropped from above stays
+    inside. The footprint is 7 cm square, the widest two trays fit across the 16 cm working
+    area with a gap between them.
+
+    The cavity is 5.6 cm rather than the 4.4 cm first tried, and that number was measured
+    rather than chosen (``tools/tray_sizes.py``). Perception localises a tray to within
+    9-11 mm on this camera, and the margin left after that error is the cavity half-width
+    less the object's half-width less 12 mm:
+
+        3 cm cube   5.6 cm cavity -> +1 mm     4.4 cm cavity -> -5 mm
+        4 cm ball   5.6 cm cavity -> -4 mm     4.4 cm cavity -> -10 mm
+
+    So even the largest cavity the reach envelope allows cannot absorb the localisation
+    error for a ball. The tray is therefore sized to make the cube case marginal rather
+    than impossible, and the executor does not rely on the margin: it verifies where the
+    object actually came to rest and re-drops it if it is not in the cavity. That is the
+    recovery loop this demo is supposed to demonstrate anyway, and it is the honest answer
+    to an error that perception cannot be made small enough to remove.
+
+    ``kind`` is still ``box``: perception sees a rim and a cavity, not an aspect ratio it
+    can classify, and hollow.py has no way to make a square tray read as anything else.
+    """
+    inner_w, inner_d, wall = 0.056, 0.056, 0.007
+    height, floor = 0.05, 0.006
+    return Item(
+        prim=prim, kind="box", color=color, x=x, y=y, shape="cuboid",
+        size=(inner_w + 2 * wall, inner_d + 2 * wall, height),
+        container=True, inner=(inner_w, inner_d), wall=wall, floor=floor,
+    )
+
+
+def _box(prim: str, color: str, x: float, y: float) -> Item:
+    """A second tray, geometrically identical to ``_tray`` and told apart only by colour.
+
+    CHANGED IN THIS COPY. Demo 09 declared this one 3 cm tall against the tray's 1.2 cm,
+    and wrote "told apart by height" - but both were SOLID SLABS, so the height difference
+    was between two painted rectangles and nothing could grasp into either. Its docstring
+    also claimed a "3 cm interior ... exactly one cube wide", which was a field no code
+    anywhere read: ``Item.inner`` and ``Item.wall`` had no readers in the repository.
+
+    It is now a real cavity, and it is the SAME SIZE as the tray. An earlier version of
+    this copy gave the box a taller rim and said so here; that was dropped because
+    perception cannot tell the two apart either way - ``perceive.py`` is explicit that
+    nothing is called a tray from shape, and the colour blob of a hollow box is the same
+    ring a hollow tray's is. Claiming a distinction that no measurement can see is the same
+    mistake demo 09 made in the other direction, so the two are declared equal and the demo
+    relies on colour, which a person would too.
+
+    Its footprint is 7 cm square, the same as the tray's, so nothing in the layout maths
+    moves, and ``_tray``'s reach and margin argument applies here unchanged.
+    """
+    inner, wall = 0.056, 0.007
+    height, floor = 0.05, 0.006
+    return Item(
+        prim=prim, kind="box", color=color, x=x, y=y, shape="cuboid",
+        size=(inner + 2 * wall, inner + 2 * wall, height),
+        container=True, inner=(inner, inner), wall=wall, floor=floor,
+    )
+
+
+# The default scene. One line per thing, so the layout can be read at a glance and
+# changed at the hackathon without touching code that builds it.
+# A 2 x 3 grid, one thing per cell, and that is not tidiness: it is what stops two
+# same-coloured things from merging into one blob in the image.
+#
+# Every number below was fitted, not chosen by eye, against four constraints at once:
+# inside WORK_X and WORK_Y, within MAX_REACH_M of the arm's base, same-coloured pairs
+# further apart than the jitter can close, and rows far enough apart that a nearer row
+# does not cover the one behind it in the camera's view. A search over zone sizes and
+# grid positions returned 12804 layouts meeting all four; this is the one with the
+# largest same-colour margin.
+#
+# Two things the earlier layout got wrong, both found by ``clearance`` rather than by
+# looking at the render:
+#
+# * ``tray_blue`` was 7.3 mm outside MAX_REACH_M and outside WORK_Y, on the *base* layout,
+#   before any jitter. A 9 x 7 cm tray has a 5.7 cm half-extent and the far row sits only
+#   13 cm from the base, so the reach envelope simply has no room for a third row that
+#   wide. The zones are now 6 cm.
+# * the balls shared a column with a same-coloured cube above and the same-coloured zone
+#   below, needing 88.4 mm of centre-to-centre separation where the row spacing gave
+#   85 mm. The rows are now 55 mm apart in y and the balls are in the *opposite* columns
+#   to the cubes, which separates that pair in x instead. Minimum same-colour gap is
+#   51 mm, or 38 px at the measured 747 px/m, against a 3 px morphological opening.
+# The default scene: the loose objects in the near row, the receptacles in the far row.
+#
+# **CHANGED from two columns of three to a row of four plus a row of two.** The old layout was
+# a 2 x 3 grid because the old working area was 16 cm wide; this one is 25 cm wide, and the
+# constraints below are what actually decide where things can go.
+#
+# Three constraints, and the second is the one that costs the most:
+#
+# 1. **Receptacles in the FAR row, objects in the NEAR row.** The camera is at y = -0.22, so
+#    y = -0.50 is behind y = -0.435, and a 5 cm tall tray standing in the near row stands
+#    between the camera and everything behind it. A first attempt put the trays in the near row
+#    and recorded 2 of 4 objects per frame.
+# 2. **Same-coloured pairs at least 70 mm apart in x.** Two blobs of one colour that touch come
+#    back from segmentation as a single blob, and then a tray swallows the object behind it: a
+#    recorded frame showed a 4158 px blue blob where a tray alone measures about 2600 px, and
+#    the cube was simply gone. Measured blob half-widths put the threshold at about 63 mm - a
+#    24 px tray plus a 12 px cube - so the positions below keep 80-150 mm. This is why the red
+#    cube and the red box are 150 mm apart in x rather than sitting in a tidy column.
+# 3. **Loose objects 70 mm apart**, which is a 40 mm gap between two 3 cm objects: 50 px of
+#    daylight at 747 px/m against a 3 px morphological opening.
+#
+# Everything here is also a position ``tools/probe_grasp.py`` measured to lift.
+DEFAULT_SCENE: list[Item] = [
+    # near row: the loose objects, 70 mm apart.
+    #
+    # The COLOURS are assigned across the row, not down it, and that is the whole point of this
+    # list. Read the x column and the same-colour gaps are 150 mm, 110 mm and 80 mm; read it as
+    # two tidy columns instead and the red ball ends up 10 mm from the red box, which is a
+    # single blob and a missing object. An earlier version of this very list did that and
+    # recorded 2 of 4 objects per frame.
+    _cube("cube", "red", 0.290, -0.380),
+    _ball("ball_red", "red", 0.360, -0.380),
+    _cube("cube_blue", "blue", 0.430, -0.380),
+    _ball("ball_green", "green", 0.500, -0.380),
+    # far row: the hollow receptacles, 120 mm apart so their 7 cm footprints leave 5 cm between.
+    # At y = -0.46 they are 0.18 and 0.20 m from the base: the arm cannot lower a part into a
+    # receptacle nearer than ``MIN_PLACE_REACH_M`` (the old y = -0.50 was 0.14 and 0.17 m).
+    _tray("tray_blue", "blue", 0.320, -0.460),
+    _box("box_red", "red", 0.440, -0.460),
+]
+
+# The shipped cube is the only rigid body inside the scene USD, so
+# parse_usd_and_create_subassets already exposes it as env.scene["cube"] and it only
+# has to be moved. Everything else is added to cfg.scene before gym.make().
+SHIPPED_CUBE = "cube"
+
+
+def scene_of(duplicate: bool = True) -> list[Item]:
+    """The default scene, with or without the second red ball."""
+    items = list(DEFAULT_SCENE)
+    if not duplicate:
+        items = [i for i in items if i.prim != "ball_red"]
+    return items
+
+
+# ADDED FOR THE out_of_reach VARIANT. Two objects placed just beyond the far edge of the
+# working area, at y = -0.325 against a WORK_Y that ends at -0.32.
+#
+# **Chosen so they are genuinely out of the arm's reach, not merely outside the declared
+# area.** That distinction is the whole demo. At y = -0.325 the base is 0.315 m away in y, so
+# the reach envelope leaves |dx| <= sqrt(0.33^2 - 0.315^2) = 0.10 m: anything past x = 0.45 or
+# before x = 0.25 is physically unreachable. Placing them merely outside WORK_X instead - say
+# at x = 0.205 - would be 0.235 m from the base and comfortably inside the arm's length, so the
+# robot could reach it and the refusal would be policy dressed up as physics.
+#
+# **Placed clear of everything, and that took one correction.** The first attempt put the blue
+# cube at x = 0.245, where it overlapped the blue tray's footprint and simply did not appear:
+# the rendered frame had three objects and no blue cube anywhere. ``clearance`` did not catch it
+# either, because it compares centre distances minus half-extents and an L-shaped overlap can
+# come out positive. x = 0.190 is 85 mm from the tray in x, well past the 50 mm their combined
+# half-widths need.
+#
+# They are still on the table (which spans y -0.6768..-0.0268) and inside the top camera's
+# field, so perception finds them: the point is that the robot can SEE something it cannot
+# TOUCH, which is the case a person needs told about.
+OUT_OF_REACH_ITEMS = {
+    # cube_blue: 19 mm further left than the nearest reachable point at this depth.
+    "cube_blue": (0.190, -0.325),
+    # ball_green: the same distance to the right. Symmetric, so the demo is not accidentally
+    # easier on one side of the table than the other.
+    "ball_green": (0.510, -0.325),
+}
+
+
+def _footprint_half_extents(item: Item) -> tuple[float, float]:
+    """Conservative XY half extents, including the configured yaw."""
+    angle = math.radians(float(item.yaw_deg))
+    c, s = abs(math.cos(angle)), abs(math.sin(angle))
+    return ((c * item.size[0] + s * item.size[1]) / 2,
+            (s * item.size[0] + c * item.size[1]) / 2)
+
+
+def out_of_reach_layout(items: list[Item]) -> list[Item]:
+    """Move the legacy targets and any custom loose parts to visible unreachable table poses.
+
+    The named default targets keep their measured positions. New object IDs (including custom
+    geometries created by the scene editor) are assigned deterministic, collision-free points
+    beyond the physical reach radius. Receptacles and unrelated default objects keep their pose.
+    This makes the negative-reachability variant describe the scene the user configured instead
+    of silently leaving newly added objects reachable.
+    """
+    default_objects = {(item.prim, item.kind, item.container) for item in DEFAULT_SCENE}
+    complete_default_scene = ({item.prim for item in items}
+                              >= {item.prim for item in DEFAULT_SCENE})
+    out = [replace(item, x=OUT_OF_REACH_ITEMS[item.prim][0],
+                   y=OUT_OF_REACH_ITEMS[item.prim][1])
+           if not item.container and item.prim in OUT_OF_REACH_ITEMS else item
+           for item in items]
+    custom = [item for item in out if not item.container
+              and item.prim not in OUT_OF_REACH_ITEMS
+              and (not complete_default_scene
+                   or (item.prim, item.kind, item.container) not in default_objects)]
+    if not custom:
+        return out
+
+    reserved = [item for item in out if item not in custom]
+    candidates = list(dict.fromkeys(OUT_OF_REACH_ITEMS.values()))
+    x_values = [round(TABLE_X[0] + 0.025 + .05 * index, 6)
+                for index in range(int((TABLE_X[1] - TABLE_X[0] - .05) / .05) + 1)]
+    for y in (-.325, -.275, -.225, -.175, -.125, -.075):
+        candidates.extend((x, y) for x in x_values)
+
+    placed: dict[str, Item] = {}
+    for item in sorted(custom, key=lambda part: part.prim):
+        hx, hy = _footprint_half_extents(item)
+        target = None
+        for x, y in candidates:
+            if (x - hx < TABLE_X[0] or x + hx > TABLE_X[1]
+                    or y - hy < TABLE_Y[0] or y + hy > TABLE_Y[1]
+                    or math.hypot(x - ROBOT_XY[0], y - ROBOT_XY[1]) <= MAX_REACH_M + .005):
+                continue
+            collision = False
+            for other in [*reserved, *placed.values()]:
+                ox, oy = _footprint_half_extents(other)
+                if abs(x - other.x) < hx + ox + .003 and abs(y - other.y) < hy + oy + .003:
+                    collision = True
+                    break
+            if not collision:
+                target = replace(item, x=x, y=y)
+                break
+        if target is None:
+            raise ValueError(f"No hay una pose visible y fuera del alcance para {item.prim}.")
+        placed[item.prim] = target
+
+    return [placed.get(item.prim, item) for item in out]
+
+
+def out_of_reach_scene() -> list[Item]:
+    """The static scene for the ``out_of_reach`` variant.
+
+    STATIC on purpose, unlike the other variants which re-randomise: the point of this one is
+    that a given object is always in the same place, so "that one is out there and I cannot
+    get it" is a stable fact about the table rather than a coin flip each round.
+
+    Two objects are moved out of reach; everything else is the normal scene, so the robot has
+    to tell them apart from memory and say which is which.
+    """
+    return out_of_reach_layout(DEFAULT_SCENE)
+
+
+def jittered(items: list[Item], trial: int) -> list[Item]:
+    """A deterministic rearrangement of the same scene, for ``--trials``.
+
+    No randomness on purpose: the report has to be reproducible, so trial N is the same
+    layout on every machine and on every run. Each object is nudged along x and y by an
+    amount derived from the trial number, clamped so nothing leaves the reach envelope.
+
+    The nudge is far smaller than the smallest same-colour gap in ``DEFAULT_SCENE``
+    (51 mm), so a rearrangement cannot bring two objects of the same colour together.
+    ``clearance`` is checked for every trial by ``09_camera_to_scene.py --calibrate``,
+    and the numbers were chosen so that it passes.
+
+    The 2 mm below are not arbitrary: at the measured 747 px/m they are 1.5 px, so two
+    trials differ by at most 3 px in the image while the tightest same-colour gap is
+    38 px. An earlier version nudged by 3 and 4 mm, which is still inside a 51 mm gap,
+    but it was sized against a layout that no longer exists.
+    """
+    out: list[Item] = []
+    for index, item in enumerate(items):
+        step = 0.002 * ((trial + index) % 3 - 1)
+        across = 0.002 * (((trial * 3 + index) % 3) - 1)
+        # Clamped against the item's own footprint, not its centre: clamping a 6 cm zone
+        # by its centre puts 3 cm of it outside the area.
+        x = min(max(item.x + step, WORK_X[0] + half_width(item)), WORK_X[1] - half_width(item))
+        y = min(max(item.y + across, WORK_Y[0] + half_depth(item)), WORK_Y[1] - half_depth(item))
+        out.append(Item(**{**item.__dict__, "x": x, "y": y}))
+    return out
+
+
+def half_width(item: Item) -> float:
+    """Half the item's x extent, which is what a containment check on x needs."""
+    return item.size[0] / 2.0
+
+
+def half_depth(item: Item) -> float:
+    """Half the item's y extent, which is what a containment check on y needs."""
+    return item.size[1] / 2.0
+
+
+def half_extent(item: Item) -> float:
+    """Half the item's largest horizontal dimension, as a circle would be.
+
+    Used for separating two items and for the reach check, where treating everything as
+    a disc is the conservative choice. Containment uses ``half_width``/``half_depth``
+    instead: a 6 x 7 cm tray is not a 7 cm circle, and clamping it as one pushes it out
+    of the working area.
+    """
+    return max(item.size[0], item.size[1]) / 2.0
+
+
+# How far the plane-ray position estimate is off, and the correction to aim with.
+#
+# ``perceive`` turns a blob centroid into a position by casting one ray to the TABLE PLANE,
+# which assumes the centroid is on the table. It is not: it is on the object's TOP face, 3 cm
+# higher, so the ray carries on past it and lands short of the far side. The error is fixed and
+# one-signed, which is the good case - a bias can be subtracted, noise cannot.
+#
+# Measured over the 20 recorded frames, 120 blobs, against the simulator's own positions
+# (``tools/measure_bias.py``, no simulator needed - the layout each frame came from is a pure
+# function of the trial number):
+#
+#     blobs   n    dx      dy     mean |err|
+#     balls  40   +2.1   -7.3      4.8 mm
+#     cubes  40   +1.0   -6.5      4.2 mm
+#     trays  40   +0.3  -10.3      8.0 mm
+#
+# These are the AIMING corrections, i.e. truth minus perceived, so they are added to ``pos_m``.
+# Subtracting the measured bias takes the residual from 10.3-12.5 mm to 4.2-4.8 mm, which matters
+# because ``executor.GRASP_REACH_M`` is 20 mm: a 7 mm systematic error is a third of the entire
+# grasp budget, spent before the arm has moved at all.
+#
+# Trays are corrected separately and by more, because a tray's blob centroid is not over the
+# cavity floor either - it sits over the whole rim-and-interior shape, whose projected centre is
+# further from the camera than the tray's footprint centre.
+AIM_CORRECTION_OBJECT_M = (-0.0016, 0.0069)
+AIM_CORRECTION_TRAY_M = (-0.0003, 0.0103)
+
+
+def aim_point(pos_m, container: bool = False) -> tuple[float, float]:
+    """Where to point the arm, given what the plane-ray estimate reported.
+
+    Deliberately not applied inside ``perceive``: ``pos_m`` stays the raw measurement, with
+    ``pos_m_depth`` beside it for comparison, and only the three places that AIM use this -
+    ``planner.grasp_pose``, ``planner.place_pose`` and ``Robot.locate`` while tracking. Grounding
+    does not, because it only needs to know roughly where something is: whether it is inside the
+    working area does not turn on 7 mm.
+    """
+    if pos_m is None:
+        raise ValueError("aim_point needs a measured position")
+    dx, dy = AIM_CORRECTION_TRAY_M if container else AIM_CORRECTION_OBJECT_M
+    return (pos_m[0] + dx, pos_m[1] + dy)
+
+
+def clearance(items: list[Item], same_colour_only: bool = True) -> list[tuple[str, str, float]]:
+    """Every pair closer than it should be, plus anything out of bounds.
+
+    Two blobs of the same colour that touch come back from segmentation as one, so the
+    layout has to keep them apart; different colours cannot merge and are only reported
+    when the caller asks for them. Also reports anything past the reach envelope or
+    outside the working area, which would look fine in a picture and be unreachable by
+    the arm.
+    """
+    problems: list[tuple[str, str, float]] = []
+    for index, first in enumerate(items):
+        for second in items[index + 1 :]:
+            if same_colour_only and first.color != second.color:
+                continue
+            distance = float(np.hypot(first.x - second.x, first.y - second.y))
+            gap = distance - half_extent(first) - half_extent(second)
+            if gap < 0.0:
+                problems.append((first.prim, second.prim, round(gap * 1000, 1)))
+    for item in items:
+        reach = float(np.hypot(item.x - ROBOT_XY[0], item.y - ROBOT_XY[1])) + half_extent(item)
+        if reach > MAX_REACH_M:
+            problems.append((item.prim, "out of reach", round((reach - MAX_REACH_M) * 1000, 1)))
+        if item.x - half_width(item) < WORK_X[0] or item.x + half_width(item) > WORK_X[1]:
+            problems.append((item.prim, "outside the working area in x", 0.0))
+        if item.y - half_depth(item) < WORK_Y[0] or item.y + half_depth(item) > WORK_Y[1]:
+            problems.append((item.prim, "outside the working area in y", 0.0))
+    return problems
+
+
+def camera_poses() -> dict[str, dict]:
+    """Where the cameras go, in world metres, with what they look at.
+
+    **The top camera looks from the far side of the table, back towards the robot, not
+    the other way round.** That is the whole trick. The arm sits at x 0.28..0.40,
+    y -0.68..-0.50, rising to about z 0.45 at its home pose, which is between the robot
+    and any camera placed behind the robot. A camera there sees the arm first and loses
+    the left-hand objects behind the gripper: the first version of this demo rendered
+    exactly that, with the yellow arm filling the left half of the frame and the blue
+    cube and green ball completely hidden. From y = -0.22 the objects are nearest the
+    camera and the arm is only ever behind them, as background.
+
+    Elevation is 67 degrees, which keeps the foreshortening along the view direction to
+    about 8%, and the objects are 8 cm or more behind the tallest zone, so nothing hides
+    anything: a 3 cm tall box hides only 3/tan(67) = 1.3 cm behind itself.
+
+    Focal length 24 with aperture 38.11 gives a 38 degree horizontal half-angle, which
+    covers the whole working area with room to spare, and about 1000 px/m, so a 3 cm cube
+    is about 30 px. The ``side`` camera is deliberately on the robot's other side so that
+    it too never looks through the arm.
+
+    ``front`` is an oblique view from the robot's front-left. A straight-on view from
+    y = -0.86 looks through the shoulder and hides the target, so the x offset moves the
+    sight line around the arm while keeping the front-side perspective distinct from both
+    the top and side views. The arm also starts folded clear of the table.
+    """
+    return {
+        "top": {"pos": (0.375, -0.22, 0.55), "look_at": (0.36, -0.43, 0.045),
+                "focal_length": 24.0, "width": 1280, "height": 960},
+        # The low side view looks through the red receptacle and the arm at the target; it
+        # produced a clean tray mask and no object detections. Raise this view so its line of
+        # sight clears both, and narrow the lens to retain useful pixels on a 3 cm part.
+        "side": {"pos": (0.02, -0.50, 0.80), "look_at": (0.36, -0.43, 0.05),
+                 "focal_length": 40.0, "width": 1280, "height": 960},
+        # The straight-on front-left ray crossed the SO-101 shoulder and wrist, masking the
+        # target in most captures. Move laterally around the arm and use a tighter lens so
+        # the 3 cm prisms still occupy enough pixels for shape moments.
+        "front": {"pos": (-0.50, -0.86, 1.50), "look_at": (0.36, -0.45, 0.05),
+                  "focal_length": 85.0, "width": 1280, "height": 960},
+    }
+
+
+# Which sensor name each --camera choice reads from, and whether this demo adds it.
+# All three are added by this demo, including `front`: the shipped `front` TiledCamera is
+# removed in build_env together with the observation term that read it, so reusing that
+# name for our own camera replaces nothing and collides with nothing.
+#
+# `front` is an oblique front-left view, chosen to keep the arm out of the target line of sight.
+CAMERA_CHOICES = {
+    "top": ("top", True),
+    "side": ("side", True),
+    "front": ("front", True),
+}
+
+
+DEPTH = "distance_to_image_plane"

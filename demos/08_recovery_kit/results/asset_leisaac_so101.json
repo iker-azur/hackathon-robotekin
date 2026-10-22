@@ -1,0 +1,265 @@
+{
+  "usd": "C:/Users/Usuario/.cache/huggingface/hub/models--LightwheelAI--leisaac_env/snapshots/6c35af0af55506eb75c5592930134d4af44e8341/assets/robots/so101_follower.usd",
+  "meters_per_unit": 1.0,
+  "links": [
+    {
+      "path": "/so101_new_calib/base",
+      "mass": 0.1469999998807907,
+      "density": 0.0,
+      "com": [
+        0.020739000290632248,
+        0.0020428700372576714,
+        0.06596600264310837
+      ],
+      "diag_inertia": [
+        0.00013612688053399324,
+        0.00011323285434627905,
+        0.0001318072754656896
+      ]
+    },
+    {
+      "path": "/so101_new_calib/shoulder",
+      "mass": 0.10000599920749664,
+      "density": 0.0,
+      "com": [
+        -0.030760399997234344,
+        -1.6672700439812616e-05,
+        -0.025271300226449966
+      ],
+      "diag_inertia": [
+        8.37835468701087e-05,
+        8.103880827547982e-05,
+        2.395523915765807e-05
+      ]
+    },
+    {
+      "path": "/so101_new_calib/upper_arm",
+      "mass": 0.10300000011920929,
+      "density": 0.0,
+      "com": [
+        -0.08984710276126862,
+        -0.008382240310311317,
+        0.018408900126814842
+      ],
+      "diag_inertia": [
+        3.7245055864332244e-05,
+        0.0001508731656940654,
+        0.00014248699881136417
+      ]
+    },
+    {
+      "path": "/so101_new_calib/lower_arm",
+      "mass": 0.10400000214576721,
+      "density": 0.0,
+      "com": [
+        -0.09807009994983673,
+        0.003243759972974658,
+        0.018283100798726082
+      ],
+      "diag_inertia": [
+        2.831245910783764e-05,
+        0.0001602617121534422,
+        0.0001453036384191364
+      ]
+    },
+    {
+      "path": "/so101_new_calib/wrist",
+      "mass": 0.07900000363588333,
+      "density": 0.0,
+      "com": [
+        -0.00010331199882784858,
+        -0.03861429914832115,
+        0.02811560034751892
+      ],
+      "diag_inertia": [
+        3.6826477298745885e-05,
+        2.744737867033109e-05,
+        1.8943444956676103e-05
+      ]
+    },
+    {
+      "path": "/so101_new_calib/gripper",
+      "mass": 0.08699999749660492,
+      "density": 0.0,
+      "com": [
+        0.00021362700499594212,
+        0.00024513801326975226,
+        -0.025187000632286072
+      ],
+      "diag_inertia": [
+        2.4283923266921192e-05,
+        4.3373493099352345e-05,
+        3.77228825527709e-05
+      ]
+    },
+    {
+      "path": "/so101_new_calib/jaw",
+      "mass": 0.012000000104308128,
+      "density": 0.0,
+      "com": [
+        -0.001574949943460524,
+        -0.030024399980902672,
+        0.019275499507784843
+      ],
+      "diag_inertia": [
+        6.63582477500313e-06,
+        1.8652258404472377e-06,
+        5.290919943945482e-06
+      ]
+    }
+  ],
+  "joints": [
+    {
+      "path": "/so101_new_calib/joints/shoulder_pan",
+      "type": "PhysicsRevoluteJoint",
+      "body0": [
+        "/so101_new_calib/base"
+      ],
+      "body1": [
+        "/so101_new_calib/shoulder"
+      ],
+      "lower": -109.99987030029297,
+      "upper": 109.99987030029297,
+      "drive": {
+        "stiffness": 0.049496203660964966,
+        "damping": 0.006929468363523483,
+        "max_force": 10.0,
+        "type": "force"
+      },
+      "max_joint_velocity_deg_s": 572.957763671875
+    },
+    {
+      "path": "/so101_new_calib/joints/shoulder_lift",
+      "type": "PhysicsRevoluteJoint",
+      "body0": [
+        "/so101_new_calib/shoulder"
+      ],
+      "body1": [
+        "/so101_new_calib/upper_arm"
+      ],
+      "lower": -100.00003814697266,
+      "upper": 100.00003814697266,
+      "drive": {
+        "stiffness": 0.4194968342781067,
+        "damping": 0.05872955545783043,
+        "max_force": 10.0,
+        "type": "force"
+      },
+      "max_joint_velocity_deg_s": 572.957763671875
+    },
+    {
+      "path": "/so101_new_calib/joints/elbow_flex",
+      "type": "PhysicsRevoluteJoint",
+      "body0": [
+        "/so101_new_calib/upper_arm"
+      ],
+      "body1": [
+        "/so101_new_calib/lower_arm"
+      ],
+      "lower": -100.00003814697266,
+      "upper": 90.00020599365234,
+      "drive": {
+        "stiffness": 0.8457441329956055,
+        "damping": 0.11840418726205826,
+        "max_force": 10.0,
+        "type": "force"
+      },
+      "max_joint_velocity_deg_s": 572.957763671875
+    },
+    {
+      "path": "/so101_new_calib/joints/wrist_flex",
+      "type": "PhysicsRevoluteJoint",
+      "body0": [
+        "/so101_new_calib/lower_arm"
+      ],
+      "body1": [
+        "/so101_new_calib/wrist"
+      ],
+      "lower": -94.99983215332031,
+      "upper": 94.99983215332031,
+      "drive": {
+        "stiffness": 0.7680981159210205,
+        "damping": 0.10753373056650162,
+        "max_force": 10.0,
+        "type": "force"
+      },
+      "max_joint_velocity_deg_s": 572.957763671875
+    },
+    {
+      "path": "/so101_new_calib/joints/wrist_roll",
+      "type": "PhysicsRevoluteJoint",
+      "body0": [
+        "/so101_new_calib/wrist"
+      ],
+      "body1": [
+        "/so101_new_calib/gripper"
+      ],
+      "lower": -160.00018310546875,
+      "upper": 160.00018310546875,
+      "drive": {
+        "stiffness": 0.1204453855752945,
+        "damping": 0.016862355172634125,
+        "max_force": 10.0,
+        "type": "force"
+      },
+      "max_joint_velocity_deg_s": 572.957763671875
+    },
+    {
+      "path": "/so101_new_calib/joints/gripper",
+      "type": "PhysicsRevoluteJoint",
+      "body0": [
+        "/so101_new_calib/gripper"
+      ],
+      "body1": [
+        "/so101_new_calib/jaw"
+      ],
+      "lower": -10.000003814697266,
+      "upper": 100.00003814697266,
+      "drive": {
+        "stiffness": 0.006050668191164732,
+        "damping": 0.000847093528136611,
+        "max_force": 10.0,
+        "type": "force"
+      },
+      "max_joint_velocity_deg_s": 572.957763671875
+    }
+  ],
+  "colliders": [
+    {
+      "path": "/so101_new_calib/base/collisions",
+      "type": "Xform",
+      "approximation": "convexDecomposition"
+    },
+    {
+      "path": "/so101_new_calib/shoulder/collisions",
+      "type": "Xform",
+      "approximation": "convexDecomposition"
+    },
+    {
+      "path": "/so101_new_calib/upper_arm/collisions",
+      "type": "Xform",
+      "approximation": "convexDecomposition"
+    },
+    {
+      "path": "/so101_new_calib/lower_arm/collisions",
+      "type": "Xform",
+      "approximation": "convexDecomposition"
+    },
+    {
+      "path": "/so101_new_calib/wrist/collisions",
+      "type": "Xform",
+      "approximation": "convexDecomposition"
+    },
+    {
+      "path": "/so101_new_calib/gripper/collisions",
+      "type": "Xform",
+      "approximation": "convexDecomposition"
+    },
+    {
+      "path": "/so101_new_calib/jaw/collisions",
+      "type": "Xform",
+      "approximation": "convexDecomposition"
+    }
+  ],
+  "materials": []
+}
