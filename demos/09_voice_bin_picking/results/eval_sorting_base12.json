@@ -1,0 +1,624 @@
+{
+ "resumen": {
+  "política": "guion del experto (no aprendido)",
+  "tipo": "GUION programado (NO aprendizaje)",
+  "modo": "guion",
+  "segmentador": "hsv",
+  "ejecuciones": 12,
+  "éxito_según_la_verdad_del_simulador": "5/12",
+  "estado_del_robot": {
+   "nada que hacer": 3,
+   "completado": 2,
+   "incompleto": 7
+  },
+  "agarres_act": "0/0",
+  "agarres_guion": "9/16",
+  "piezas_en_caja_equivocada": 0,
+  "el_robot_acierta_al_creerlo": "12/12",
+  "recuperaciones_totales": 7,
+  "t_sim_medio_s": 16.4
+ },
+ "ejecuciones": [
+  {
+   "seed": 200000,
+   "orden": "Coloca las piezas rojas en la caja izquierda.",
+   "escena": {
+    "modo": "separadas",
+    "piezas": 4,
+    "colores": {
+     "blue": 2,
+     "green": 2
+    },
+    "contacto": 0,
+    "apiladas": 0
+   },
+   "estado": "nada que hacer",
+   "movidas": 0,
+   "sin_mover": 0,
+   "recuperaciones": 0,
+   "fallos": {},
+   "agarres": {
+    "act": 0,
+    "guion": 0
+   },
+   "agarres_ok": {
+    "act": 0,
+    "guion": 0
+   },
+   "t_sim_s": 2.1,
+   "verdad": {
+    "wrong": 0,
+    "pending": 0,
+    "ok": true
+   },
+   "el_robot_acierta_al_creerlo": true,
+   "piezas_en_cajas_de_verdad": 0,
+   "notas": [
+    "No veo piezas que cumplan «todas las piezas rojas» en el contenedor."
+   ],
+   "eventos": [
+    "[entender] Entendido: rojas → izquierda",
+    "[ver] Veo 4 piezas por clasificar: 2 cubo azul, 2 cubo verde",
+    "[ver] No veo piezas que cumplan «todas las piezas rojas» en el contenedor.",
+    "[verificar] Orden nada que hacer: 0 movidas, 0 sin mover"
+   ]
+  },
+  {
+   "seed": 200001,
+   "orden": "Pon las piezas azules en la caja derecha.",
+   "escena": {
+    "modo": "apiladas",
+    "piezas": 6,
+    "colores": {
+     "green": 1,
+     "red": 4,
+     "blue": 1
+    },
+    "contacto": 0,
+    "apiladas": 2
+   },
+   "estado": "completado",
+   "movidas": 1,
+   "sin_mover": 0,
+   "recuperaciones": 0,
+   "fallos": {},
+   "agarres": {
+    "act": 0,
+    "guion": 1
+   },
+   "agarres_ok": {
+    "act": 0,
+    "guion": 1
+   },
+   "t_sim_s": 14.0,
+   "verdad": {
+    "wrong": 0,
+    "pending": 0,
+    "ok": true
+   },
+   "el_robot_acierta_al_creerlo": true,
+   "piezas_en_cajas_de_verdad": 1,
+   "notas": [],
+   "eventos": [
+    "[entender] Entendido: azules → derecha",
+    "[ver] Veo 4 piezas por clasificar: 1 cilindro rojo, 1 cubo azul, 2 cubo rojo",
+    "[planificar] Voy a por cubo azul (P4: está arriba del montón, se ve entera) → caja derecha",
+    "[verificar] Agarre confirmado (guion)",
+    "[verificar] Verificado con la cámara: P4 está en la caja derecha",
+    "[verificar] Orden completada y verificada con la cámara: 1 piezas movidas"
+   ]
+  },
+  {
+   "seed": 200002,
+   "orden": "Clasifica las piezas rojas a la izquierda y las verdes a la derecha.",
+   "escena": {
+    "modo": "separadas",
+    "piezas": 6,
+    "colores": {
+     "green": 4,
+     "red": 2
+    },
+    "contacto": 0,
+    "apiladas": 0
+   },
+   "estado": "incompleto",
+   "movidas": 3,
+   "sin_mover": 3,
+   "recuperaciones": 3,
+   "fallos": {
+    "vacío": 2,
+    "deslizada": 1
+   },
+   "agarres": {
+    "act": 0,
+    "guion": 6
+   },
+   "agarres_ok": {
+    "act": 0,
+    "guion": 3
+   },
+   "t_sim_s": 63.2,
+   "verdad": {
+    "wrong": 0,
+    "pending": 3,
+    "ok": false
+   },
+   "el_robot_acierta_al_creerlo": true,
+   "piezas_en_cajas_de_verdad": 3,
+   "notas": [
+    "No puedo coger las piezas que quedan — P6: los dedos no caben junto a la pared o las vecinas; P2: inalcanzable: en la bajada: el gripper chocaría con la pared origen/px (a 92 % del trayecto); P5: inalcanzable: en la bajada: el gripper chocaría con la pared origen/nx (a 92 % del trayecto)"
+   ],
+   "eventos": [
+    "[entender] Entendido: rojas → izquierda; verdes → derecha",
+    "[ver] Veo 5 piezas por clasificar: 1 cilindro verde, 2 cubo rojo, 2 cubo verde",
+    "[planificar] Voy a por cubo rojo (P1: se ve entera) → caja izquierda",
+    "[verificar] Agarre confirmado (guion)",
+    "[verificar] Verificado con la cámara: P1 está en la caja izquierda",
+    "[planificar] Voy a por cubo rojo (P2: se ve entera) → caja izquierda",
+    "[verificar] Agarre fallido (guion): vacío. la pinza cerró sin encontrar la pieza",
+    "[recuperar] la pinza se cerró sin la pieza; intento 2: vuelvo a localizarla y apunto a su centro medido",
+    "[ver] P2: se ha movido 15 mm",
+    "[planificar] Voy a por cilindro verde (P5: se ve entera) → caja derecha",
+    "[verificar] Agarre fallido (guion): deslizada. la pieza se soltó al levantar",
+    "[recuperar] la pieza se soltó; intento 2: vuelvo a localizarla y apunto a su centro medido",
+    "[ver] P2: se ha movido 18 mm",
+    "[planificar] Voy a por cubo verde (P4: se ve entera) → caja derecha",
+    "[verificar] Agarre confirmado (guion)",
+    "[verificar] Verificado con la cámara: P4 está en la caja derecha",
+    "[planificar] Voy a por cubo verde (P3: se ve entera) → caja derecha",
+    "[verificar] Agarre confirmado (guion)",
+    "[verificar] Verificado con la cámara: P3 está en la caja derecha",
+    "[planificar] Voy a por cilindro verde (P6: la mejor disponible) → caja derecha",
+    "[verificar] Agarre fallido (guion): vacío. la pinza cerró sin encontrar la pieza",
+    "[recuperar] la pinza se cerró sin la pieza; intento 2: vuelvo a localizarla y apunto a su centro medido",
+    "[ver] P2: se ha movido 14 mm",
+    "[ver] P6: se ha movido 36 mm",
+    "[planificar] No puedo coger las piezas que quedan — P6: los dedos no caben junto a la pared o las vecinas; P2: inalcanzable: en la bajada: el gripper chocaría con la pared origen/px (a 92 % del trayecto); P5: inalcanzable: en la bajada: el gripper chocaría con la pared origen/nx (a 92 % del trayecto)",
+    "[verificar] Orden incompleto: 3 movidas, 3 sin mover"
+   ]
+  },
+  {
+   "seed": 200003,
+   "orden": "Recoge todas las piezas azules.",
+   "escena": {
+    "modo": "mixto",
+    "piezas": 6,
+    "colores": {
+     "green": 3,
+     "blue": 3
+    },
+    "contacto": 4,
+    "apiladas": 0
+   },
+   "estado": "incompleto",
+   "movidas": 1,
+   "sin_mover": 2,
+   "recuperaciones": 1,
+   "fallos": {
+    "deslizada": 1
+   },
+   "agarres": {
+    "act": 0,
+    "guion": 2
+   },
+   "agarres_ok": {
+    "act": 0,
+    "guion": 1
+   },
+   "t_sim_s": 25.9,
+   "verdad": {
+    "wrong": 0,
+    "pending": 2,
+    "ok": false
+   },
+   "el_robot_acierta_al_creerlo": true,
+   "piezas_en_cajas_de_verdad": 1,
+   "notas": [
+    "No puedo coger las piezas que quedan — P4: los dedos no caben junto a la pared o las vecinas; P3: los dedos no caben junto a la pared o las vecinas"
+   ],
+   "eventos": [
+    "[entender] Entendido: azules → derecha",
+    "[entender] No has dicho a qué caja: uso la caja derecha.",
+    "[ver] Veo 3 piezas por clasificar: 1 cilindro azul, 2 cubo verde",
+    "[planificar] Voy a por cilindro azul (P3: se ve entera, los dedos caben bien) → caja derecha",
+    "[verificar] Agarre fallido (guion): deslizada. la pieza se soltó al levantar",
+    "[recuperar] la pieza se soltó; intento 2: vuelvo a localizarla y apunto a su centro medido",
+    "[ver] P3: se ha movido 13 mm",
+    "[planificar] Voy a por cilindro azul (P5: se ve entera) → caja derecha",
+    "[verificar] Agarre confirmado (guion)",
+    "[verificar] Verificado con la cámara: P5 está en la caja derecha",
+    "[planificar] No puedo coger las piezas que quedan — P4: los dedos no caben junto a la pared o las vecinas; P3: los dedos no caben junto a la pared o las vecinas",
+    "[verificar] Orden incompleto: 1 movidas, 2 sin mover"
+   ]
+  },
+  {
+   "seed": 200004,
+   "orden": "Coloca las piezas rojas en la caja izquierda.",
+   "escena": {
+    "modo": "mixto",
+    "piezas": 4,
+    "colores": {
+     "green": 2,
+     "blue": 2
+    },
+    "contacto": 0,
+    "apiladas": 0
+   },
+   "estado": "nada que hacer",
+   "movidas": 0,
+   "sin_mover": 0,
+   "recuperaciones": 0,
+   "fallos": {},
+   "agarres": {
+    "act": 0,
+    "guion": 0
+   },
+   "agarres_ok": {
+    "act": 0,
+    "guion": 0
+   },
+   "t_sim_s": 2.1,
+   "verdad": {
+    "wrong": 0,
+    "pending": 0,
+    "ok": true
+   },
+   "el_robot_acierta_al_creerlo": true,
+   "piezas_en_cajas_de_verdad": 0,
+   "notas": [
+    "No veo piezas que cumplan «todas las piezas rojas» en el contenedor."
+   ],
+   "eventos": [
+    "[entender] Entendido: rojas → izquierda",
+    "[ver] Veo 4 piezas por clasificar: 2 cubo azul, 2 cubo verde",
+    "[ver] No veo piezas que cumplan «todas las piezas rojas» en el contenedor.",
+    "[verificar] Orden nada que hacer: 0 movidas, 0 sin mover"
+   ]
+  },
+  {
+   "seed": 200005,
+   "orden": "Pon las piezas azules en la caja derecha.",
+   "escena": {
+    "modo": "separadas",
+    "piezas": 5,
+    "colores": {
+     "blue": 1,
+     "green": 3,
+     "red": 1
+    },
+    "contacto": 0,
+    "apiladas": 0
+   },
+   "estado": "incompleto",
+   "movidas": 0,
+   "sin_mover": 1,
+   "recuperaciones": 1,
+   "fallos": {
+    "vacío": 1
+   },
+   "agarres": {
+    "act": 0,
+    "guion": 1
+   },
+   "agarres_ok": {
+    "act": 0,
+    "guion": 0
+   },
+   "t_sim_s": 9.5,
+   "verdad": {
+    "wrong": 0,
+    "pending": 1,
+    "ok": false
+   },
+   "el_robot_acierta_al_creerlo": true,
+   "piezas_en_cajas_de_verdad": 0,
+   "notas": [
+    "No puedo coger las piezas que quedan — P5: los dedos no caben junto a la pared o las vecinas"
+   ],
+   "eventos": [
+    "[entender] Entendido: azules → derecha",
+    "[ver] Veo 5 piezas por clasificar: 1 cilindro azul, 1 cubo rojo, 3 cubo verde",
+    "[planificar] Voy a por cilindro azul (P5: se ve entera) → caja derecha",
+    "[verificar] Agarre fallido (guion): vacío. la pinza cerró sin encontrar la pieza",
+    "[recuperar] la pinza se cerró sin la pieza; intento 2: vuelvo a localizarla y apunto a su centro medido",
+    "[ver] P5: se ha movido 36 mm",
+    "[planificar] No puedo coger las piezas que quedan — P5: los dedos no caben junto a la pared o las vecinas",
+    "[verificar] Orden incompleto: 0 movidas, 1 sin mover"
+   ]
+  },
+  {
+   "seed": 200006,
+   "orden": "Clasifica las piezas rojas a la izquierda y las verdes a la derecha.",
+   "escena": {
+    "modo": "mixto",
+    "piezas": 5,
+    "colores": {
+     "blue": 1,
+     "red": 2,
+     "green": 2
+    },
+    "contacto": 1,
+    "apiladas": 2
+   },
+   "estado": "incompleto",
+   "movidas": 1,
+   "sin_mover": 3,
+   "recuperaciones": 0,
+   "fallos": {},
+   "agarres": {
+    "act": 0,
+    "guion": 1
+   },
+   "agarres_ok": {
+    "act": 0,
+    "guion": 1
+   },
+   "t_sim_s": 15.1,
+   "verdad": {
+    "wrong": 0,
+    "pending": 3,
+    "ok": false
+   },
+   "el_robot_acierta_al_creerlo": true,
+   "piezas_en_cajas_de_verdad": 1,
+   "notas": [
+    "No puedo coger las piezas que quedan — P1: los dedos no caben junto a la pared o las vecinas; P2: inalcanzable: no hay postura del brazo que llegue desde arriba; P4: inalcanzable: no hay postura del brazo que llegue desde arriba"
+   ],
+   "eventos": [
+    "[entender] Entendido: rojas → izquierda; verdes → derecha",
+    "[ver] Veo 2 piezas por clasificar: 1 cilindro verde, 1 cubo rojo",
+    "[planificar] Voy a por cilindro verde (P3: se ve entera, los dedos caben bien) → caja derecha",
+    "[verificar] Agarre confirmado (guion)",
+    "[verificar] Verificado con la cámara: P3 está en la caja derecha",
+    "[planificar] No puedo coger las piezas que quedan — P1: los dedos no caben junto a la pared o las vecinas; P2: inalcanzable: no hay postura del brazo que llegue desde arriba; P4: inalcanzable: no hay postura del brazo que llegue desde arriba",
+    "[verificar] Orden incompleto: 1 movidas, 3 sin mover"
+   ]
+  },
+  {
+   "seed": 200007,
+   "orden": "Recoge todas las piezas azules.",
+   "escena": {
+    "modo": "apiladas",
+    "piezas": 6,
+    "colores": {
+     "green": 2,
+     "red": 2,
+     "blue": 2
+    },
+    "contacto": 0,
+    "apiladas": 3
+   },
+   "estado": "incompleto",
+   "movidas": 1,
+   "sin_mover": 1,
+   "recuperaciones": 0,
+   "fallos": {},
+   "agarres": {
+    "act": 0,
+    "guion": 1
+   },
+   "agarres_ok": {
+    "act": 0,
+    "guion": 1
+   },
+   "t_sim_s": 14.5,
+   "verdad": {
+    "wrong": 0,
+    "pending": 1,
+    "ok": false
+   },
+   "el_robot_acierta_al_creerlo": true,
+   "piezas_en_cajas_de_verdad": 1,
+   "notas": [
+    "No puedo coger las piezas que quedan — P4: inalcanzable: no hay postura del brazo que llegue desde arriba"
+   ],
+   "eventos": [
+    "[entender] Entendido: azules → derecha",
+    "[entender] No has dicho a qué caja: uso la caja derecha.",
+    "[ver] Veo 3 piezas por clasificar: 1 cilindro azul, 1 cubo azul, 1 pieza rojo",
+    "[planificar] Voy a por cilindro azul (P3: está arriba del montón, se ve entera, los dedos caben bien) → caja derecha",
+    "[verificar] Agarre confirmado (guion)",
+    "[verificar] Verificado con la cámara: P3 está en la caja derecha",
+    "[planificar] No puedo coger las piezas que quedan — P4: inalcanzable: no hay postura del brazo que llegue desde arriba",
+    "[verificar] Orden incompleto: 1 movidas, 1 sin mover"
+   ]
+  },
+  {
+   "seed": 200008,
+   "orden": "Coloca las piezas rojas en la caja izquierda.",
+   "escena": {
+    "modo": "separadas",
+    "piezas": 4,
+    "colores": {
+     "red": 1,
+     "green": 1,
+     "blue": 2
+    },
+    "contacto": 0,
+    "apiladas": 0
+   },
+   "estado": "completado",
+   "movidas": 1,
+   "sin_mover": 0,
+   "recuperaciones": 0,
+   "fallos": {},
+   "agarres": {
+    "act": 0,
+    "guion": 1
+   },
+   "agarres_ok": {
+    "act": 0,
+    "guion": 1
+   },
+   "t_sim_s": 15.0,
+   "verdad": {
+    "wrong": 0,
+    "pending": 0,
+    "ok": true
+   },
+   "el_robot_acierta_al_creerlo": true,
+   "piezas_en_cajas_de_verdad": 1,
+   "notas": [],
+   "eventos": [
+    "[entender] Entendido: rojas → izquierda",
+    "[ver] Veo 4 piezas por clasificar: 2 cubo azul, 1 cubo rojo, 1 cubo verde",
+    "[planificar] Voy a por cubo rojo (P1: se ve entera) → caja izquierda",
+    "[verificar] Agarre confirmado (guion)",
+    "[verificar] Verificado con la cámara: P1 está en la caja izquierda",
+    "[verificar] Orden completada y verificada con la cámara: 1 piezas movidas"
+   ]
+  },
+  {
+   "seed": 200009,
+   "orden": "Pon las piezas azules en la caja derecha.",
+   "escena": {
+    "modo": "mixto",
+    "piezas": 6,
+    "colores": {
+     "red": 2,
+     "green": 4
+    },
+    "contacto": 1,
+    "apiladas": 1
+   },
+   "estado": "nada que hacer",
+   "movidas": 0,
+   "sin_mover": 0,
+   "recuperaciones": 0,
+   "fallos": {},
+   "agarres": {
+    "act": 0,
+    "guion": 0
+   },
+   "agarres_ok": {
+    "act": 0,
+    "guion": 0
+   },
+   "t_sim_s": 2.1,
+   "verdad": {
+    "wrong": 0,
+    "pending": 0,
+    "ok": true
+   },
+   "el_robot_acierta_al_creerlo": true,
+   "piezas_en_cajas_de_verdad": 0,
+   "notas": [
+    "No veo piezas que cumplan «todas las piezas azules» en el contenedor."
+   ],
+   "eventos": [
+    "[entender] Entendido: azules → derecha",
+    "[ver] Veo 6 piezas por clasificar: 1 cilindro verde, 1 cubo rojo, 3 cubo verde, 1 pieza rojo",
+    "[ver] No veo piezas que cumplan «todas las piezas azules» en el contenedor.",
+    "[verificar] Orden nada que hacer: 0 movidas, 0 sin mover"
+   ]
+  },
+  {
+   "seed": 200010,
+   "orden": "Clasifica las piezas rojas a la izquierda y las verdes a la derecha.",
+   "escena": {
+    "modo": "apiladas",
+    "piezas": 4,
+    "colores": {
+     "blue": 1,
+     "green": 3
+    },
+    "contacto": 0,
+    "apiladas": 1
+   },
+   "estado": "incompleto",
+   "movidas": 1,
+   "sin_mover": 2,
+   "recuperaciones": 1,
+   "fallos": {
+    "vacío": 1
+   },
+   "agarres": {
+    "act": 0,
+    "guion": 2
+   },
+   "agarres_ok": {
+    "act": 0,
+    "guion": 1
+   },
+   "t_sim_s": 23.7,
+   "verdad": {
+    "wrong": 0,
+    "pending": 2,
+    "ok": false
+   },
+   "el_robot_acierta_al_creerlo": true,
+   "piezas_en_cajas_de_verdad": 1,
+   "notas": [
+    "No veo piezas que cumplan «todas las piezas rojas» en el contenedor.",
+    "No puedo coger las piezas que quedan — P2: los dedos no caben junto a la pared o las vecinas; P1: los dedos no caben junto a la pared o las vecinas"
+   ],
+   "eventos": [
+    "[entender] Entendido: rojas → izquierda; verdes → derecha",
+    "[ver] Veo 4 piezas por clasificar: 1 cilindro verde, 2 cubo verde, 1 pieza azul",
+    "[ver] No veo piezas que cumplan «todas las piezas rojas» en el contenedor.",
+    "[planificar] Voy a por cilindro verde (P1: está arriba del montón, se ve entera, los dedos caben bien) → caja derecha",
+    "[verificar] Agarre fallido (guion): vacío. la pinza cerró sin encontrar la pieza",
+    "[recuperar] la pinza se cerró sin la pieza; intento 2: vuelvo a localizarla y apunto a su centro medido",
+    "[ver] P1: se ha movido 21 mm",
+    "[ver] P4: se ha movido 19 mm",
+    "[planificar] Voy a por cubo verde (P3: se ve entera) → caja derecha",
+    "[verificar] Agarre confirmado (guion)",
+    "[verificar] Verificado con la cámara: P3 está en la caja derecha",
+    "[planificar] No puedo coger las piezas que quedan — P2: los dedos no caben junto a la pared o las vecinas; P1: los dedos no caben junto a la pared o las vecinas",
+    "[verificar] Orden incompleto: 1 movidas, 2 sin mover"
+   ]
+  },
+  {
+   "seed": 200011,
+   "orden": "Recoge todas las piezas azules.",
+   "escena": {
+    "modo": "mixto",
+    "piezas": 6,
+    "colores": {
+     "green": 2,
+     "red": 2,
+     "blue": 2
+    },
+    "contacto": 1,
+    "apiladas": 3
+   },
+   "estado": "incompleto",
+   "movidas": 0,
+   "sin_mover": 2,
+   "recuperaciones": 1,
+   "fallos": {
+    "vacío": 1
+   },
+   "agarres": {
+    "act": 0,
+    "guion": 1
+   },
+   "agarres_ok": {
+    "act": 0,
+    "guion": 0
+   },
+   "t_sim_s": 9.6,
+   "verdad": {
+    "wrong": 0,
+    "pending": 2,
+    "ok": false
+   },
+   "el_robot_acierta_al_creerlo": true,
+   "piezas_en_cajas_de_verdad": 0,
+   "notas": [
+    "No puedo coger las piezas que quedan — P4: los dedos no caben junto a la pared o las vecinas; P5: los dedos no caben junto a la pared o las vecinas"
+   ],
+   "eventos": [
+    "[entender] Entendido: azules → derecha",
+    "[entender] No has dicho a qué caja: uso la caja derecha.",
+    "[ver] Veo 4 piezas por clasificar: 2 cubo azul, 1 pieza rojo, 1 pieza verde",
+    "[planificar] Voy a por cubo azul (P5: está arriba del montón, se ve entera, los dedos caben bien) → caja derecha",
+    "[verificar] Agarre fallido (guion): vacío. la pinza cerró sin encontrar la pieza",
+    "[recuperar] la pinza se cerró sin la pieza; intento 2: vuelvo a localizarla y apunto a su centro medido",
+    "[ver] P1: se ha movido 27 mm",
+    "[planificar] No puedo coger las piezas que quedan — P4: los dedos no caben junto a la pared o las vecinas; P5: los dedos no caben junto a la pared o las vecinas",
+    "[verificar] Orden incompleto: 0 movidas, 2 sin mover"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,333 @@
+{
+ "variantes": {
+  "dedos_sin_modelo": {
+   "n": 19,
+   "ok": 7,
+   "estados": {
+    "vacío": 5,
+    "deslizada": 7,
+    "ok": 7
+   },
+   "sin_candidata": 21,
+   "err_pos_mm_medio": 1.41,
+   "err_yaw_deg_medio": 1.16,
+   "desplazamiento_mm_medio_si_falla": 7.5
+  }
+ },
+ "intentos": [
+  {
+   "seed": 330000,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330001,
+   "variante": "dedos_sin_modelo",
+   "pieza": "azul_c2",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.1,
+   "desplazada_mm": 11.0
+  },
+  {
+   "seed": 330002,
+   "variante": "dedos_sin_modelo",
+   "pieza": "azul_c3",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 2.7,
+   "desplazada_mm": 8.2
+  },
+  {
+   "seed": 330003,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330004,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330005,
+   "variante": "dedos_sin_modelo",
+   "pieza": "rojo_y1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 0.7,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 0.0
+  },
+  {
+   "seed": 330006,
+   "variante": "dedos_sin_modelo",
+   "pieza": "rojo_c2",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 0.7,
+   "err_yaw_deg": 0.3,
+   "desplazada_mm": 1.0
+  },
+  {
+   "seed": 330007,
+   "variante": "dedos_sin_modelo",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.1,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 330008,
+   "variante": "dedos_sin_modelo",
+   "pieza": "rojo_c2",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.1,
+   "desplazada_mm": 11.3
+  },
+  {
+   "seed": 330009,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330010,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330011,
+   "variante": "dedos_sin_modelo",
+   "pieza": "azul_c3",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.4,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 330012,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330013,
+   "variante": "dedos_sin_modelo",
+   "pieza": "azul_c2",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 0.6,
+   "err_yaw_deg": 0.1,
+   "desplazada_mm": 16.1
+  },
+  {
+   "seed": 330014,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330015,
+   "variante": "dedos_sin_modelo",
+   "pieza": "rojo_c1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 10.1,
+   "err_yaw_deg": 14.8,
+   "desplazada_mm": 10.2
+  },
+  {
+   "seed": 330016,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330017,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330018,
+   "variante": "dedos_sin_modelo",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 330019,
+   "variante": "dedos_sin_modelo",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.7,
+   "desplazada_mm": 2.9
+  },
+  {
+   "seed": 330020,
+   "variante": "dedos_sin_modelo",
+   "pieza": "rojo_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.7,
+   "err_yaw_deg": 0.3,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 330021,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330022,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330023,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330024,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330025,
+   "variante": "dedos_sin_modelo",
+   "pieza": "rojo_c3",
+   "z_mm": 801.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 0.7,
+   "err_yaw_deg": 0.1,
+   "desplazada_mm": 6.4
+  },
+  {
+   "seed": 330026,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330027,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330028,
+   "variante": "dedos_sin_modelo",
+   "pieza": "verde_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.7,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 330029,
+   "variante": "dedos_sin_modelo",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 1.2,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": 5.3
+  },
+  {
+   "seed": 330030,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330031,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330032,
+   "variante": "dedos_sin_modelo",
+   "pieza": "rojo_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.1,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 330033,
+   "variante": "dedos_sin_modelo",
+   "pieza": "verde_c3",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 1.3,
+   "err_yaw_deg": 0.8,
+   "desplazada_mm": 9.7
+  },
+  {
+   "seed": 330034,
+   "variante": "dedos_sin_modelo",
+   "pieza": "azul_c3",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.1,
+   "desplazada_mm": 8.4
+  },
+  {
+   "seed": 330035,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330036,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330037,
+   "variante": "dedos_sin_modelo",
+   "pieza": "verde_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.4,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 330038,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 330039,
+   "variante": "dedos_sin_modelo",
+   "estado": "sin candidata"
+  }
+ ]
+}

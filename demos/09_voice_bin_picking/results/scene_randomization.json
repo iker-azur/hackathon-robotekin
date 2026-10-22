@@ -1,0 +1,809 @@
+{
+ "resumen": {
+  "escenas": 30,
+  "válidas": 30,
+  "con_contacto": 16,
+  "con_apiladas": 13,
+  "con_piezas_tapadas": 12,
+  "modos": {
+   "mixto": 14,
+   "separadas": 11,
+   "apiladas": 5
+  },
+  "piezas_agarrables_de_entrada": "94/139",
+  "alcanzables_sin_choque": "73/139",
+  "violaciones_físicas_total": 0,
+  "asentamiento_s_medio": 0.79,
+  "combinaciones_distintas_de_colores_y_numero_de_piezas": 22
+ },
+ "escenas": [
+  {
+   "seed": 0,
+   "modo": "mixto",
+   "piezas": 5,
+   "colores": {
+    "blue": 4,
+    "red": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.68,
+   "pares_en_contacto": 1,
+   "apiladas": 1,
+   "aisladas": 2,
+   "inclinación_máx_deg": 0.0003,
+   "categorías": [
+    "separadas",
+    "tocándose",
+    "apiladas"
+   ],
+   "vistas": 5,
+   "tapadas": 1,
+   "agarrables": 3,
+   "alcanzables_sin_choque": 3,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 1,
+   "modo": "separadas",
+   "piezas": 6,
+   "colores": {
+    "blue": 2,
+    "red": 1,
+    "green": 3
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 1.05,
+   "pares_en_contacto": 2,
+   "apiladas": 0,
+   "aisladas": 0,
+   "inclinación_máx_deg": 0.0001,
+   "categorías": [
+    "tocándose"
+   ],
+   "vistas": 6,
+   "tapadas": 0,
+   "agarrables": 5,
+   "alcanzables_sin_choque": 4,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 2,
+   "modo": "separadas",
+   "piezas": 4,
+   "colores": {
+    "green": 1,
+    "blue": 2,
+    "red": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.67,
+   "pares_en_contacto": 0,
+   "apiladas": 0,
+   "aisladas": 4,
+   "inclinación_máx_deg": 0.0,
+   "categorías": [
+    "separadas"
+   ],
+   "vistas": 4,
+   "tapadas": 0,
+   "agarrables": 4,
+   "alcanzables_sin_choque": 4,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 3,
+   "modo": "separadas",
+   "piezas": 6,
+   "colores": {
+    "green": 3,
+    "blue": 2,
+    "red": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 1.1,
+   "pares_en_contacto": 0,
+   "apiladas": 0,
+   "aisladas": 1,
+   "inclinación_máx_deg": 0.0001,
+   "categorías": [
+    "separadas"
+   ],
+   "vistas": 6,
+   "tapadas": 0,
+   "agarrables": 5,
+   "alcanzables_sin_choque": 2,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 4,
+   "modo": "separadas",
+   "piezas": 5,
+   "colores": {
+    "blue": 3,
+    "red": 1,
+    "green": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.82,
+   "pares_en_contacto": 1,
+   "apiladas": 0,
+   "aisladas": 1,
+   "inclinación_máx_deg": 0.0001,
+   "categorías": [
+    "separadas",
+    "tocándose"
+   ],
+   "vistas": 5,
+   "tapadas": 0,
+   "agarrables": 4,
+   "alcanzables_sin_choque": 2,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 5,
+   "modo": "mixto",
+   "piezas": 5,
+   "colores": {
+    "blue": 1,
+    "red": 3,
+    "green": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.81,
+   "pares_en_contacto": 0,
+   "apiladas": 2,
+   "aisladas": 3,
+   "inclinación_máx_deg": 0.0033,
+   "categorías": [
+    "separadas",
+    "apiladas"
+   ],
+   "vistas": 4,
+   "tapadas": 2,
+   "agarrables": 2,
+   "alcanzables_sin_choque": 1,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 6,
+   "modo": "mixto",
+   "piezas": 4,
+   "colores": {
+    "green": 3,
+    "blue": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.7,
+   "pares_en_contacto": 0,
+   "apiladas": 0,
+   "aisladas": 4,
+   "inclinación_máx_deg": 0.0,
+   "categorías": [
+    "separadas"
+   ],
+   "vistas": 4,
+   "tapadas": 0,
+   "agarrables": 4,
+   "alcanzables_sin_choque": 2,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 7,
+   "modo": "mixto",
+   "piezas": 4,
+   "colores": {
+    "red": 4
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.7,
+   "pares_en_contacto": 0,
+   "apiladas": 0,
+   "aisladas": 2,
+   "inclinación_máx_deg": 0.0,
+   "categorías": [
+    "separadas"
+   ],
+   "vistas": 4,
+   "tapadas": 0,
+   "agarrables": 4,
+   "alcanzables_sin_choque": 4,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 8,
+   "modo": "separadas",
+   "piezas": 5,
+   "colores": {
+    "green": 2,
+    "blue": 2,
+    "red": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.8,
+   "pares_en_contacto": 1,
+   "apiladas": 0,
+   "aisladas": 3,
+   "inclinación_máx_deg": 0.0002,
+   "categorías": [
+    "separadas",
+    "tocándose"
+   ],
+   "vistas": 5,
+   "tapadas": 0,
+   "agarrables": 4,
+   "alcanzables_sin_choque": 3,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 9,
+   "modo": "mixto",
+   "piezas": 6,
+   "colores": {
+    "blue": 2,
+    "red": 3,
+    "green": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.86,
+   "pares_en_contacto": 0,
+   "apiladas": 2,
+   "aisladas": 4,
+   "inclinación_máx_deg": 0.003,
+   "categorías": [
+    "separadas",
+    "apiladas"
+   ],
+   "vistas": 5,
+   "tapadas": 1,
+   "agarrables": 4,
+   "alcanzables_sin_choque": 4,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 10,
+   "modo": "mixto",
+   "piezas": 4,
+   "colores": {
+    "blue": 1,
+    "green": 3
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.57,
+   "pares_en_contacto": 1,
+   "apiladas": 1,
+   "aisladas": 0,
+   "inclinación_máx_deg": 0.0001,
+   "categorías": [
+    "tocándose",
+    "apiladas"
+   ],
+   "vistas": 3,
+   "tapadas": 1,
+   "agarrables": 2,
+   "alcanzables_sin_choque": 1,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 11,
+   "modo": "mixto",
+   "piezas": 6,
+   "colores": {
+    "red": 2,
+    "blue": 4
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.79,
+   "pares_en_contacto": 3,
+   "apiladas": 1,
+   "aisladas": 1,
+   "inclinación_máx_deg": 0.0002,
+   "categorías": [
+    "separadas",
+    "tocándose",
+    "apiladas"
+   ],
+   "vistas": 5,
+   "tapadas": 1,
+   "agarrables": 3,
+   "alcanzables_sin_choque": 3,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 12,
+   "modo": "mixto",
+   "piezas": 5,
+   "colores": {
+    "green": 2,
+    "red": 2,
+    "blue": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.63,
+   "pares_en_contacto": 1,
+   "apiladas": 1,
+   "aisladas": 2,
+   "inclinación_máx_deg": 0.0014,
+   "categorías": [
+    "separadas",
+    "tocándose",
+    "apiladas"
+   ],
+   "vistas": 5,
+   "tapadas": 2,
+   "agarrables": 2,
+   "alcanzables_sin_choque": 2,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 13,
+   "modo": "mixto",
+   "piezas": 5,
+   "colores": {
+    "green": 1,
+    "blue": 3,
+    "red": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.81,
+   "pares_en_contacto": 2,
+   "apiladas": 0,
+   "aisladas": 2,
+   "inclinación_máx_deg": 90.0,
+   "categorías": [
+    "separadas",
+    "tocándose"
+   ],
+   "vistas": 5,
+   "tapadas": 0,
+   "agarrables": 2,
+   "alcanzables_sin_choque": 2,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 14,
+   "modo": "separadas",
+   "piezas": 6,
+   "colores": {
+    "blue": 2,
+    "red": 4
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.97,
+   "pares_en_contacto": 1,
+   "apiladas": 0,
+   "aisladas": 1,
+   "inclinación_máx_deg": 51.8942,
+   "categorías": [
+    "separadas",
+    "tocándose"
+   ],
+   "vistas": 6,
+   "tapadas": 1,
+   "agarrables": 3,
+   "alcanzables_sin_choque": 3,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 15,
+   "modo": "separadas",
+   "piezas": 4,
+   "colores": {
+    "blue": 2,
+    "red": 2
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.63,
+   "pares_en_contacto": 0,
+   "apiladas": 0,
+   "aisladas": 2,
+   "inclinación_máx_deg": 0.0001,
+   "categorías": [
+    "separadas"
+   ],
+   "vistas": 4,
+   "tapadas": 0,
+   "agarrables": 4,
+   "alcanzables_sin_choque": 4,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 16,
+   "modo": "mixto",
+   "piezas": 5,
+   "colores": {
+    "red": 1,
+    "green": 1,
+    "blue": 3
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.71,
+   "pares_en_contacto": 0,
+   "apiladas": 1,
+   "aisladas": 4,
+   "inclinación_máx_deg": 0.0007,
+   "categorías": [
+    "separadas",
+    "apiladas"
+   ],
+   "vistas": 5,
+   "tapadas": 1,
+   "agarrables": 4,
+   "alcanzables_sin_choque": 3,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 17,
+   "modo": "mixto",
+   "piezas": 5,
+   "colores": {
+    "green": 3,
+    "blue": 2
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.83,
+   "pares_en_contacto": 1,
+   "apiladas": 0,
+   "aisladas": 2,
+   "inclinación_máx_deg": 0.0,
+   "categorías": [
+    "separadas",
+    "tocándose"
+   ],
+   "vistas": 5,
+   "tapadas": 0,
+   "agarrables": 5,
+   "alcanzables_sin_choque": 5,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 18,
+   "modo": "separadas",
+   "piezas": 4,
+   "colores": {
+    "blue": 1,
+    "green": 2,
+    "red": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.7,
+   "pares_en_contacto": 0,
+   "apiladas": 0,
+   "aisladas": 4,
+   "inclinación_máx_deg": 0.0,
+   "categorías": [
+    "separadas"
+   ],
+   "vistas": 4,
+   "tapadas": 0,
+   "agarrables": 4,
+   "alcanzables_sin_choque": 3,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 19,
+   "modo": "apiladas",
+   "piezas": 4,
+   "colores": {
+    "red": 1,
+    "blue": 3
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.64,
+   "pares_en_contacto": 1,
+   "apiladas": 1,
+   "aisladas": 0,
+   "inclinación_máx_deg": 90.0,
+   "categorías": [
+    "tocándose",
+    "apiladas"
+   ],
+   "vistas": 5,
+   "tapadas": 0,
+   "agarrables": 1,
+   "alcanzables_sin_choque": 0,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 20,
+   "modo": "apiladas",
+   "piezas": 6,
+   "colores": {
+    "blue": 4,
+    "green": 2
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 2,
+   "asentamiento_s": 0.97,
+   "pares_en_contacto": 2,
+   "apiladas": 2,
+   "aisladas": 1,
+   "inclinación_máx_deg": 90.0,
+   "categorías": [
+    "separadas",
+    "tocándose",
+    "apiladas"
+   ],
+   "vistas": 6,
+   "tapadas": 2,
+   "agarrables": 3,
+   "alcanzables_sin_choque": 1,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 21,
+   "modo": "separadas",
+   "piezas": 5,
+   "colores": {
+    "red": 2,
+    "blue": 3
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.87,
+   "pares_en_contacto": 0,
+   "apiladas": 0,
+   "aisladas": 2,
+   "inclinación_máx_deg": 0.0,
+   "categorías": [
+    "separadas"
+   ],
+   "vistas": 5,
+   "tapadas": 0,
+   "agarrables": 3,
+   "alcanzables_sin_choque": 3,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 22,
+   "modo": "separadas",
+   "piezas": 4,
+   "colores": {
+    "blue": 3,
+    "red": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.68,
+   "pares_en_contacto": 0,
+   "apiladas": 0,
+   "aisladas": 4,
+   "inclinación_máx_deg": 0.0001,
+   "categorías": [
+    "separadas"
+   ],
+   "vistas": 4,
+   "tapadas": 0,
+   "agarrables": 4,
+   "alcanzables_sin_choque": 4,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 23,
+   "modo": "mixto",
+   "piezas": 4,
+   "colores": {
+    "blue": 3,
+    "red": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.88,
+   "pares_en_contacto": 1,
+   "apiladas": 0,
+   "aisladas": 2,
+   "inclinación_máx_deg": 90.0,
+   "categorías": [
+    "separadas",
+    "tocándose"
+   ],
+   "vistas": 4,
+   "tapadas": 0,
+   "agarrables": 2,
+   "alcanzables_sin_choque": 1,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 24,
+   "modo": "apiladas",
+   "piezas": 5,
+   "colores": {
+    "blue": 3,
+    "red": 1,
+    "green": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.73,
+   "pares_en_contacto": 1,
+   "apiladas": 2,
+   "aisladas": 1,
+   "inclinación_máx_deg": 0.0064,
+   "categorías": [
+    "separadas",
+    "tocándose",
+    "apiladas"
+   ],
+   "vistas": 4,
+   "tapadas": 1,
+   "agarrables": 2,
+   "alcanzables_sin_choque": 2,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 25,
+   "modo": "mixto",
+   "piezas": 4,
+   "colores": {
+    "blue": 3,
+    "green": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.61,
+   "pares_en_contacto": 3,
+   "apiladas": 0,
+   "aisladas": 1,
+   "inclinación_máx_deg": 90.0,
+   "categorías": [
+    "separadas",
+    "tocándose"
+   ],
+   "vistas": 4,
+   "tapadas": 0,
+   "agarrables": 0,
+   "alcanzables_sin_choque": 0,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 26,
+   "modo": "apiladas",
+   "piezas": 4,
+   "colores": {
+    "red": 1,
+    "blue": 2,
+    "green": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.56,
+   "pares_en_contacto": 0,
+   "apiladas": 2,
+   "aisladas": 0,
+   "inclinación_máx_deg": 0.0005,
+   "categorías": [
+    "apiladas"
+   ],
+   "vistas": 3,
+   "tapadas": 1,
+   "agarrables": 2,
+   "alcanzables_sin_choque": 2,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 27,
+   "modo": "apiladas",
+   "piezas": 5,
+   "colores": {
+    "green": 3,
+    "red": 1,
+    "blue": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 1.23,
+   "pares_en_contacto": 0,
+   "apiladas": 1,
+   "aisladas": 2,
+   "inclinación_máx_deg": 180.0,
+   "categorías": [
+    "separadas",
+    "apiladas"
+   ],
+   "vistas": 5,
+   "tapadas": 2,
+   "agarrables": 2,
+   "alcanzables_sin_choque": 1,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 28,
+   "modo": "separadas",
+   "piezas": 6,
+   "colores": {
+    "blue": 4,
+    "red": 1,
+    "green": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.99,
+   "pares_en_contacto": 0,
+   "apiladas": 0,
+   "aisladas": 1,
+   "inclinación_máx_deg": 0.0,
+   "categorías": [
+    "separadas"
+   ],
+   "vistas": 6,
+   "tapadas": 0,
+   "agarrables": 4,
+   "alcanzables_sin_choque": 3,
+   "violaciones_físicas": 0
+  },
+  {
+   "seed": 29,
+   "modo": "mixto",
+   "piezas": 4,
+   "colores": {
+    "red": 3,
+    "blue": 1
+   },
+   "válida": true,
+   "problemas": [],
+   "intentos": 1,
+   "asentamiento_s": 0.6,
+   "pares_en_contacto": 1,
+   "apiladas": 1,
+   "aisladas": 0,
+   "inclinación_máx_deg": 0.0012,
+   "categorías": [
+    "tocándose",
+    "apiladas"
+   ],
+   "vistas": 3,
+   "tapadas": 0,
+   "agarrables": 3,
+   "alcanzables_sin_choque": 1,
+   "violaciones_físicas": 0
+  }
+ ]
+}

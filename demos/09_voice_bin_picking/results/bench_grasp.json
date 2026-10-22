@@ -1,0 +1,699 @@
+{
+ "variantes": {
+  "m12": {
+   "n": 12,
+   "ok": 9,
+   "estados": {
+    "ok": 9,
+    "deslizada": 3
+   },
+   "sin_candidata": 0,
+   "err_pos_mm_medio": 1.02,
+   "err_yaw_deg_medio": 0.27,
+   "desplazamiento_mm_medio_si_falla": 18.8
+  },
+  "m16": {
+   "n": 12,
+   "ok": 10,
+   "estados": {
+    "ok": 10,
+    "vacío": 1,
+    "deslizada": 1
+   },
+   "sin_candidata": 0,
+   "err_pos_mm_medio": 1.01,
+   "err_yaw_deg_medio": 0.47,
+   "desplazamiento_mm_medio_si_falla": 9.4
+  },
+  "m20": {
+   "n": 12,
+   "ok": 10,
+   "estados": {
+    "ok": 10,
+    "deslizada": 2
+   },
+   "sin_candidata": 0,
+   "err_pos_mm_medio": 1.0,
+   "err_yaw_deg_medio": 0.49,
+   "desplazamiento_mm_medio_si_falla": 11.8
+  },
+  "m16_oraculo": {
+   "n": 12,
+   "ok": 10,
+   "estados": {
+    "ok": 10,
+    "vacío": 1,
+    "deslizada": 1
+   },
+   "sin_candidata": 0,
+   "err_pos_mm_medio": 0.98,
+   "err_yaw_deg_medio": 0.37,
+   "desplazamiento_mm_medio_si_falla": 26.0
+  },
+  "pared_sin_modelo": {
+   "n": 7,
+   "ok": 5,
+   "estados": {
+    "ok": 5,
+    "vacío": 1,
+    "deslizada": 1
+   },
+   "sin_candidata": 5,
+   "err_pos_mm_medio": 1.13,
+   "err_yaw_deg_medio": 0.29,
+   "desplazamiento_mm_medio_si_falla": 8.2
+  }
+ },
+ "intentos": [
+  {
+   "seed": 300000,
+   "variante": "m12",
+   "pieza": "rojo_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.2,
+   "err_yaw_deg": 0.1,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300000,
+   "variante": "m16",
+   "pieza": "rojo_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 2.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300000,
+   "variante": "m20",
+   "pieza": "rojo_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 2.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300000,
+   "variante": "m16_oraculo",
+   "pieza": "rojo_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.5,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300000,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 300001,
+   "variante": "m12",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300001,
+   "variante": "m16",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300001,
+   "variante": "m20",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300001,
+   "variante": "m16_oraculo",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300001,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 300002,
+   "variante": "m12",
+   "pieza": "verde_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.7,
+   "err_yaw_deg": 0.5,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300002,
+   "variante": "m16",
+   "pieza": "rojo_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300002,
+   "variante": "m20",
+   "pieza": "verde_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.7,
+   "err_yaw_deg": 0.5,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300002,
+   "variante": "m16_oraculo",
+   "pieza": "verde_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.7,
+   "err_yaw_deg": 0.5,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300002,
+   "variante": "pared_sin_modelo",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300003,
+   "variante": "m12",
+   "pieza": "verde_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.2,
+   "err_yaw_deg": 0.3,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300003,
+   "variante": "m16",
+   "pieza": "verde_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.2,
+   "err_yaw_deg": 0.3,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300003,
+   "variante": "m20",
+   "pieza": "verde_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.2,
+   "err_yaw_deg": 0.3,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300003,
+   "variante": "m16_oraculo",
+   "pieza": "verde_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.2,
+   "err_yaw_deg": 0.3,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300003,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 300004,
+   "variante": "m12",
+   "pieza": "azul_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.5,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300004,
+   "variante": "m16",
+   "pieza": "azul_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 1.3,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300004,
+   "variante": "m20",
+   "pieza": "azul_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 1.3,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300004,
+   "variante": "m16_oraculo",
+   "pieza": "azul_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 1.3,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300004,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 300005,
+   "variante": "m12",
+   "pieza": "azul_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300005,
+   "variante": "m16",
+   "pieza": "azul_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300005,
+   "variante": "m20",
+   "pieza": "azul_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300005,
+   "variante": "m16_oraculo",
+   "pieza": "azul_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300005,
+   "variante": "pared_sin_modelo",
+   "pieza": "azul_c3",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300006,
+   "variante": "m12",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 27.3
+  },
+  {
+   "seed": 300006,
+   "variante": "m16",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300006,
+   "variante": "m20",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300006,
+   "variante": "m16_oraculo",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300006,
+   "variante": "pared_sin_modelo",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.4,
+   "err_yaw_deg": 0.1,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300007,
+   "variante": "m12",
+   "pieza": "azul_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300007,
+   "variante": "m16",
+   "pieza": "azul_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.2,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300007,
+   "variante": "m20",
+   "pieza": "azul_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300007,
+   "variante": "m16_oraculo",
+   "pieza": "azul_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.2,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300007,
+   "variante": "pared_sin_modelo",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.2,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300008,
+   "variante": "m12",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 1.2,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 14.2
+  },
+  {
+   "seed": 300008,
+   "variante": "m16",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 7.5
+  },
+  {
+   "seed": 300008,
+   "variante": "m20",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 12.6
+  },
+  {
+   "seed": 300008,
+   "variante": "m16_oraculo",
+   "pieza": "verde_y1",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 1.1,
+   "err_yaw_deg": 0.0,
+   "desplazada_mm": 39.3
+  },
+  {
+   "seed": 300008,
+   "variante": "pared_sin_modelo",
+   "pieza": "verde_c2",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.4,
+   "err_yaw_deg": 0.1,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300009,
+   "variante": "m12",
+   "pieza": "rojo_c2",
+   "z_mm": 801.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.6,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300009,
+   "variante": "m16",
+   "pieza": "rojo_c2",
+   "z_mm": 801.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.6,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300009,
+   "variante": "m20",
+   "pieza": "rojo_c2",
+   "z_mm": 801.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.6,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300009,
+   "variante": "m16_oraculo",
+   "pieza": "rojo_c2",
+   "z_mm": 801.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 0.6,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300009,
+   "variante": "pared_sin_modelo",
+   "estado": "sin candidata"
+  },
+  {
+   "seed": 300010,
+   "variante": "m12",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.5,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300010,
+   "variante": "m16",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.5,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300010,
+   "variante": "m20",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.5,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300010,
+   "variante": "m16_oraculo",
+   "pieza": "verde_c1",
+   "z_mm": 776.5,
+   "estado": "ok",
+   "detalle": "",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.5,
+   "desplazada_mm": null
+  },
+  {
+   "seed": 300010,
+   "variante": "pared_sin_modelo",
+   "pieza": "rojo_c2",
+   "z_mm": 776.5,
+   "estado": "vacío",
+   "detalle": "la pinza cerró sin encontrar la pieza",
+   "err_pos_mm": 1.0,
+   "err_yaw_deg": 1.1,
+   "desplazada_mm": 7.8
+  },
+  {
+   "seed": 300011,
+   "variante": "m12",
+   "pieza": "azul_c1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 0.9,
+   "err_yaw_deg": 0.3,
+   "desplazada_mm": 14.9
+  },
+  {
+   "seed": 300011,
+   "variante": "m16",
+   "pieza": "azul_c1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.3,
+   "desplazada_mm": 11.4
+  },
+  {
+   "seed": 300011,
+   "variante": "m20",
+   "pieza": "azul_c1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.3,
+   "desplazada_mm": 11.1
+  },
+  {
+   "seed": 300011,
+   "variante": "m16_oraculo",
+   "pieza": "azul_c1",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 0.8,
+   "err_yaw_deg": 0.3,
+   "desplazada_mm": 12.8
+  },
+  {
+   "seed": 300011,
+   "variante": "pared_sin_modelo",
+   "pieza": "azul_c2",
+   "z_mm": 776.5,
+   "estado": "deslizada",
+   "detalle": "la pieza se soltó al levantar",
+   "err_pos_mm": 1.2,
+   "err_yaw_deg": 0.3,
+   "desplazada_mm": 8.6
+  }
+ ]
+}
