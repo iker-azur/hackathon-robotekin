@@ -1,0 +1,10 @@
+# Datasets, checkpoints y salidas de ejecución: se recrean con las herramientas
+data/
+outputs/
+out/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Los informes medidos SÍ se guardan
+!results/
