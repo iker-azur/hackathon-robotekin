@@ -1460,7 +1460,9 @@ class StrictExecutor(executor_module.Executor):
             result = original_step(*step_args, **step_kwargs)
             counter["n"] += 1
             label = getattr(self, "_trace_label", None)
-            if not label or label[0] not in ("down", "close", "lift", "carry") or counter["n"] % 12:
+            every = int(os.environ.get("DEMO11_TRACE_PART_EVERY", "12") or 12)
+            if (not label or label[0] not in ("down", "close", "lift", "carry")
+                    or counter["n"] % every):
                 return result
             try:
                 phase, part_prim = label
