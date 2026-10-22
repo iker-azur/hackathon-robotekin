@@ -742,7 +742,7 @@ def test_experimental_gripper_pads_are_opt_in_and_radius_bounded():
     check(gripper_contact_pads.close_command_for(
               "cylinder", (.020, .020, .015), .20, pad_shape="vee") == .20
           and gripper_contact_pads.close_command_for(
-              "triangular_prism", (.020, .020, .018), .20, pad_shape="vee") == .10,
+              "triangular_prism", (.020, .020, .018), .20, pad_shape="vee") == .07,
           "validated 20 mm V profiles use the measured cylinder and triangle close targets")
     check(gripper_contact_pads.close_command_for(
               "ball", (.020, .020, .020), .20, override=.10) == .10
@@ -780,7 +780,7 @@ def test_experimental_gripper_pads_are_opt_in_and_radius_bounded():
               "ball", (.020, .020, .020), 20, ramp_steps=45) == 19,
           "ball close timing can be varied safely for physical A/B trials")
     check(gripper_contact_pads.staged_close_ramp_steps(
-              "triangular_prism", (.020, .020, .016), 90) == 20
+              "triangular_prism", (.020, .020, .016), 90) == 45
           and gripper_contact_pads.staged_close_ramp_steps(
               "triangular_prism", (.030, .030, .024), 90) == 45
         and gripper_contact_pads.staged_close_ramp_steps(

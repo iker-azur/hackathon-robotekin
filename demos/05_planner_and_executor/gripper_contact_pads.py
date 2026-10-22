@@ -17,7 +17,7 @@ PAD_VEE_ANGLE_DEG = 35.0
 # with 45. Keep the experimental override for repeatable A/B runs; the default remains
 # scoped to this one validated profile.
 BALL_CLOSE_RAMP_STEPS = 45
-TRIANGLE_CLOSE_RAMP_STEPS = 20
+TRIANGLE_CLOSE_RAMP_STEPS = 45
 TRIANGLE30_CLOSE_RAMP_STEPS = 45
 CYLINDER30_CLOSE_RAMP_STEPS = 20
 HEXAGON30_CLOSE_RAMP_STEPS = 20
@@ -315,8 +315,10 @@ def close_command_for(kind: str, size_m: tuple[float, ...], default: float,
         # stays below the 0.20 rad setting that over-squeezed this linkage.
         return 0.15
     if kind == "triangular_prism" and size_mm == 20 and pad_shape == "vee":
-        # V45 with close=0.10 and the 20-step close ramp passed randomized cluster carries.
-        return 0.10
+        # Strict top/open 12-scene set (seed 31000): the old 0.10 rad close with a 20-step ramp
+        # passed 7/12 (close shoved the part 9-14 mm, or it sat centred but slipped on lift).
+        # 0.07 rad with the 45-step ramp passed 12/12; either change alone gave 10/12.
+        return 0.07
     if kind == "triangular_prism" and size_mm == 30:
         return 0.15
     return float(default)
