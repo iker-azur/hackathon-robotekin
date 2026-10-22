@@ -97,7 +97,7 @@ enteras (recall 1,0 con ≥ 85 % visible) y sólo pierde las visibles < 35 %. Se
 `commands.parse` es un analizador de reglas sobre un vocabulario cerrado (colores, formas, cantidades, izquierda/derecha, «las demás»), con reparación de erratas de reconocimiento
 (*«isquierda»*) y errores explícitos (color inexistente, exclusiones, contradicciones). No se usa el modelo del demo 05 porque (a) sus destinos son bandejas de color, (b) cargar un modelo
 pesado después de arrancar Isaac rompe el proceso, y (c) con un vocabulario así una regla que falla *lo dice*. **Izquierda/derecha son las del robot** (+y); el panel gira la imagen cenital 90° para
-que coincida. «Recoge todas las piezas azules» sin caja usa la derecha (`--default-box`) **y avisa**.
+que coincida. «Recoge todas las piezas azules» sin caja **no se adivina**: la orden queda «no entendido», el robot pregunta «¿a la izquierda o a la derecha?» y no se mueve (`--default-box` fija una por defecto a propósito y avisa).
 
 La voz es el `Listener` del demo 05 con el idioma fijado a español; se carga **antes** de arrancar Isaac (`voice.VoiceService.load`).
 

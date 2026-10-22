@@ -28,11 +28,21 @@ def test_classify_two_colors_two_boxes():
     assert o.summary() == "rojas → izquierda; verdes → derecha"
 
 
-def test_pick_all_blue_without_box_uses_default_and_warns():
+def test_pick_all_blue_without_box_asks_and_does_not_move():
     o, r = rules("Recoge todas las piezas azules.")
-    assert o.ok and r == [("blue", None, "all", False, "derecha")]
+    assert not o.ok and r == []                    # sin caja no se adivina: el robot no se mueve
+    assert any("a qué caja" in e and "izquierda" in e and "derecha" in e for e in o.errors)
+
+
+def test_box_default_only_when_asked_for_and_it_warns():
+    o, r = rules("Recoge todas las piezas azules.", default_dest="izquierda")
+    assert o.ok and r == [("blue", None, "all", False, "izquierda")]
     assert o.rules[0].dest_defaulted and any("caja" in w for w in o.warnings)
-    assert K.parse("Recoge todas las piezas azules", default_dest="izquierda").rules[0].dest == "izquierda"
+
+
+def test_one_rule_without_box_blocks_the_whole_order():
+    o = K.parse("las rojas a la izquierda y las azules")
+    assert not o.ok and any("a qué caja" in e for e in o.errors)
 
 
 # ---- variantes

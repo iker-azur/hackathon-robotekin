@@ -68,7 +68,7 @@ la tabla de piezas, las etapas y el registro. **Detener**, **Reiniciar** (misma 
 
 Órdenes que entiende (izquierda/derecha son las **del robot**; el panel gira la imagen para que coincida):
 «Coloca las piezas rojas en la caja izquierda» · «Pon las piezas azules en la caja derecha» ·
-«Clasifica las piezas rojas a la izquierda y las verdes a la derecha» · «Recoge todas las piezas azules» (sin caja → la derecha, y lo avisa) ·
+«Clasifica las piezas rojas a la izquierda y las verdes a la derecha» · «Recoge todas las piezas azules en la caja derecha» (sin caja, el robot **pregunta y no se mueve**; `--default-box derecha` fija una por defecto y lo avisa) ·
 «las rojas a la izquierda y las demás a la derecha» · «pon dos piezas rojas en la caja izquierda» · «los cilindros azules a la derecha».
 Lo que no entiende lo dice (colores inexistentes, exclusiones, «defectuosas» —aún sin clasificador—).
 

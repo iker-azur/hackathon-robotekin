@@ -107,7 +107,8 @@ def main() -> int:
     ap.add_argument("--pieces", type=int, default=None)
     ap.add_argument("--layout", default=None, choices=G.MODES)
     ap.add_argument("--name", default=None)
-    ap.add_argument("--default-box", default="derecha", choices=C.DESTINATIONS)
+    ap.add_argument("--default-box", default="derecha", choices=C.DESTINATIONS,
+                    help="caja para las órdenes que no dicen ninguna (la 4.ª del enunciado); el robot en sí no adivina")
     args = ap.parse_args()
 
     if args.policy in ("guion", "scripted"):

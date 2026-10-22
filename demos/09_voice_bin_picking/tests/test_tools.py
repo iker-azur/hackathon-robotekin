@@ -63,7 +63,7 @@ def test_default_orders_are_the_four_from_the_brief_and_all_parse():
     mod = load("eval_sorting")
     assert len(mod.ORDERS) == 4
     for text in mod.ORDERS:
-        assert K.parse(text).ok, text
+        assert K.parse(text, default_dest="derecha").ok, text      # la 4.ª no dice caja: la herramienta de medida la fija
 
 
 def test_adapt_order_swaps_missing_colors_for_present_ones_and_still_parses():

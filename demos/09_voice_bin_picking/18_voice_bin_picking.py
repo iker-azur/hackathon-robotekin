@@ -74,7 +74,8 @@ def main() -> int:
     ap.add_argument("--view", action="store_true", help="cámara 3/4 para el panel (un render más por imagen)")
     ap.add_argument("--realtime", type=float, default=1.0, help="1 = tiempo real; 0 = lo más rápido posible")
     ap.add_argument("--text", default=None, help="ejecutar esta orden y salir (sin panel)")
-    ap.add_argument("--default-box", default="derecha", choices=C.DESTINATIONS, help="caja si la orden no dice ninguna")
+    ap.add_argument("--default-box", default=None, choices=C.DESTINATIONS,
+                    help="caja a usar (y avisar) si la orden no dice ninguna; sin esto, el robot pregunta y no se mueve")
     args = ap.parse_args()
 
     # --- lo pesado se carga ANTES de arrancar Isaac

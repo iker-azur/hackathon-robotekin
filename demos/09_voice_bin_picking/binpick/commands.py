@@ -152,8 +152,11 @@ class SortOrder:
                 "errors": self.errors, "warnings": self.warnings}
 
 
-def parse(text: str, default_dest: str = "derecha") -> SortOrder:
-    """Interpreta una orden. Nunca lanza: los problemas van en ``errors`` y ``warnings`` (en español)."""
+def parse(text: str, default_dest: str | None = None) -> SortOrder:
+    """Interpreta una orden. Nunca lanza: los problemas van en ``errors`` y ``warnings`` (en español).
+
+    Sin caja en la orden no se adivina: es un error y el robot no se mueve. ``default_dest`` sólo existe para
+    quien lo pide a propósito (``--default-box``): entonces se usa esa caja y se avisa."""
     order = SortOrder(text=text)
     words = [_repair(w) for w in normalize(text)]
     if not words:
@@ -242,6 +245,10 @@ def parse(text: str, default_dest: str = "derecha") -> SortOrder:
     rules, leading = _bind(selectors, dests)
     for sel, dest in rules:
         if dest is None:
+            if default_dest is None:
+                order.errors.append(f"No has dicho a qué caja llevar {sel.describe()}: ¿a la izquierda o a la derecha? "
+                                    "Repite la orden diciéndolo.")
+                continue
             dest = default_dest
             order.warnings.append(f"No has dicho a qué caja: uso la caja {default_dest}.")
             defaulted = True
