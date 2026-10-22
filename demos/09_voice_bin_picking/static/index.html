@@ -45,6 +45,7 @@ main{display:grid;gap:16px;padding:16px 20px 28px;grid-template-columns:minmax(0
 .seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
 .viewer{position:relative;background:#0c1117;border-radius:8px;overflow:hidden;min-height:200px}
 .viewer img{display:block;width:100%;height:auto;max-height:68vh;object-fit:contain;margin:0 auto}
+[hidden]{display:none!important}
 .viewer .ph{position:absolute;inset:0;display:grid;place-items:center;color:#8da0b5;font-size:14px;padding:20px;text-align:center}
 .cap{color:var(--muted);font-size:12.5px;margin-top:8px}
 .order{display:flex;gap:8px;flex-wrap:wrap}
@@ -187,13 +188,14 @@ const EXAMPLES = [
   "Clasifica las piezas rojas a la izquierda y las verdes a la derecha",
   "Coloca las piezas rojas en la caja izquierda",
   "Pon las piezas azules en la caja derecha",
-  "Recoge todas las piezas azules",
+  "Recoge todas las piezas azules en la caja derecha",
 ];
 const COLOR = {red:["rojo","var(--red)"], green:["verde","var(--green)"], blue:["azul","var(--blue)"]};
 const REGION = {origen:"contenedor", izquierda:"caja izquierda", derecha:"caja derecha", mesa:"mesa", aire:"en la pinza"};
 const STATUS_CLASS = {ejecutando:"s-ejecutando", completado:"s-completado", incompleto:"s-incompleto", detenido:"s-detenido",
   fallido:"s-fallido", "no entendido":"s-no", "nada que hacer":"s-nada"};
 let view = "cam", state = null, urls = {cam:null, seg:null, vista:null};
+let ws, poll;   // antes de init(): connect() las usa al arrancar
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function toast(t){ const el=$("toast"); el.textContent=t; el.classList.add("on"); setTimeout(()=>el.classList.remove("on"),2600); }
@@ -227,7 +229,6 @@ function showMain(){
 }
 
 // ---------- conexión
-let ws, poll;
 function connect(){
   try{
     ws = new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws");

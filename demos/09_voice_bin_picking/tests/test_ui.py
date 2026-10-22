@@ -172,3 +172,10 @@ def test_annotate_modes_and_jpeg():
 
 def test_static_page_exists():
     assert (STATIC / "index.html").is_file()
+
+
+def test_page_declares_connection_state_before_it_connects():
+    """`let ws, poll` declarado después de init() lanzaba «Cannot access 'poll' before initialization» y el
+    panel se quedaba vacío (sin WebSocket, sin imágenes, sin estado). Es un fallo que sólo se ve en el navegador."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert html.index("let ws, poll") < html.index("(function init()")
