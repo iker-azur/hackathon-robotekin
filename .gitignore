@@ -148,6 +148,12 @@ Desktop.ini
 /demos/roboqc/**/*.export.json
 /demos/roboqc/**/*.inventory.jsonl
 /demos/roboqc/**/*.job.json
+/demos/roboqc/**/augmented_dataset_*/
+
+# Review-app output saved next to the repo: review projects, exported and augmented datasets
+/results/
+/reviewed_dataset_*/
+/augmented_dataset_*/
 
 # Downloaded/trained model binaries, not architecture source directories
 *.pt
