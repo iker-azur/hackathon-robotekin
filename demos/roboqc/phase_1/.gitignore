@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/*.jsonl
+data/*.json
+models/*.joblib
+models/*.pt
+models/*.json
+models/vosk-model-small-es/
+*.wav
+.pytest_cache/
+dist/
+build/
+*.egg-info/
