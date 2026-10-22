@@ -10,6 +10,24 @@ def event(**values):
     print('ROBOQC_EVENT ' + json.dumps(values, default=str), flush=True)
 
 
+# Augmentation keys forwarded to Ultralytics, with the values used when a job file omits them.
+# They equal the former hard-coded values (hue/saturation off, any rotation, flips, light mosaic)
+# plus Ultralytics' own defaults for the rest, so older job files train exactly as before.
+AUGMENTATION_DEFAULTS = dict(
+    fliplr=.5, flipud=.5, degrees=180, translate=.1, scale=.5, shear=0, perspective=0,
+    hsv_h=0, hsv_s=0, hsv_v=.2, mosaic=.2, mixup=0, cutmix=0, copy_paste=0, copy_paste_mode='flip', close_mosaic=10,
+)
+
+
+def augmentation_kwargs(config):
+    """Augmentation arguments for model.train(); accepts the old 'brightness' key for hsv_v."""
+    values = {key: config.get(key, default) for key, default in AUGMENTATION_DEFAULTS.items()}
+    if 'hsv_v' not in config and 'brightness' in config:
+        values['hsv_v'] = config['brightness']
+    values['close_mosaic'] = min(int(values['close_mosaic']), int(config.get('epochs', values['close_mosaic'])))
+    return values
+
+
 def run(config):
     import torch
     import yaml
@@ -40,9 +58,7 @@ def run(config):
         model.train(data=str(resolved), project=str(output), name='train', exist_ok=False,
                     epochs=config['epochs'], imgsz=config['imgsz'], batch=config['batch'],
                     patience=config['patience'], device=device, seed=config['seed'], workers=0,
-                    degrees=config['degrees'], fliplr=config['fliplr'], flipud=config['flipud'],
-                    hsv_h=0, hsv_s=0, hsv_v=config['brightness'], mosaic=config['mosaic'],
-                    close_mosaic=min(10, config['epochs']), mixup=0, overlap_mask=False, **kwargs)
+                    overlap_mask=False, **augmentation_kwargs(config), **kwargs)
         event(status='finished', weights=output / 'train/weights/best.pt')
     else:
         split = config['split']

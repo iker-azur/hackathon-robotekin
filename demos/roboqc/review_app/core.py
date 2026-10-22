@@ -9,9 +9,13 @@ import shutil
 import stat
 import uuid
 import zipfile
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import numpy as np
+
+from .theme import CLASS_COLORS
 
 
 def write_json(path, value):
@@ -36,7 +40,7 @@ def decode_image(data, gray=False):
 
 
 def save_mask(path, mask):
-    ok, data = cv2.imencode('.png', np.asarray(mask, np.uint8) * 255)
+    ok, data = cv2.imencode('.png', np.asarray(mask, np.uint8) * 255)    # OpenCV's default (RLE) is the fastest for masks
     if not ok:
         raise OSError('Mask PNG encoding failed')
     Path(path).write_bytes(data.tobytes())
@@ -108,16 +112,22 @@ class Bundle:
         manifest = self.json(row['candidates'])
         parent = PurePosixPath(row['candidates']).parent
         image = self.by_image[row['image_id']]
-        result = []
-        for candidate in manifest['candidates']:
-            if not candidate.get('kept') or not candidate.get('mask_file'):
-                continue
-            mask = decode_image(self.read((parent / safe_name(candidate['mask_file'])).as_posix()), True)
-            if mask.shape != (image['height'], image['width']) or not np.isin(mask, [0, 1, 255]).all():
+        shape = (image['height'], image['width'])
+        wanted = [c for c in manifest['candidates'] if c.get('kept') and c.get('mask_file')]
+        blobs = [self.read((parent / safe_name(c['mask_file'])).as_posix()) for c in wanted]   # ZIP reads stay serial
+        def decode(blob):
+            mask = decode_image(blob, True)
+            # binary means only 0, 1 or 255 (a range test is ~100x faster than np.isin on 12 MP masks)
+            if mask.shape != shape or cv2.countNonZero(cv2.inRange(mask, 2, 254)):
                 raise ValueError('Expected original-size binary candidate mask')
-            result.append({'id': candidate['id'], 'label': 'part', 'mask': mask > 0,
-                           'keep': True, 'source': candidate})
-        return result
+            return mask > 0
+        if len(blobs) > 3:                       # OpenCV releases the GIL, so decoding scales across threads
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                masks = list(pool.map(decode, blobs))
+        else:
+            masks = [decode(blob) for blob in blobs]
+        return [{'id': c['id'], 'label': 'part', 'mask': mask, 'keep': True, 'source': c}
+                for c, mask in zip(wanted, masks)]
 
 
 class Project:
@@ -150,6 +160,102 @@ class Project:
             result.append({**row, 'mask': mask, 'keep': True})
         return result
 
+    # -- classes, preferences, statistics (all optional keys: old projects still load) --
+
+    def classes(self):
+        return self.state.setdefault('classes', [])
+
+    def class_names(self):
+        return [row['name'] for row in self.classes()]
+
+    def color_of(self, name):
+        for row in self.classes():
+            if row['name'] == name:
+                return row['color']
+        return CLASS_COLORS[len(self.classes()) % len(CLASS_COLORS)]
+
+    def _register(self, name):
+        """Add `name` to the class list (in memory) with the next unused palette colour."""
+        if name in self.class_names():
+            return False
+        used = {row['color'] for row in self.classes()}
+        free = [c for c in CLASS_COLORS if c not in used]
+        color = free[0] if free else CLASS_COLORS[len(self.classes()) % len(CLASS_COLORS)]
+        self.classes().append({'name': name, 'color': color})
+        return True
+
+    def ensure_class(self, name):
+        if self._register(name):
+            write_json(self.index_path, self.state)
+
+    def set_class_color(self, name, color):
+        for row in self.classes():
+            if row['name'] == name:
+                row['color'] = color
+        write_json(self.index_path, self.state)
+
+    def move_class(self, name, offset):
+        """Reorder classes; the first nine get the 1-9 hotkeys."""
+        rows = self.classes()
+        names = self.class_names()
+        index = names.index(name)
+        target = max(0, min(len(rows) - 1, index + offset))
+        rows.insert(target, rows.pop(index))
+        write_json(self.index_path, self.state)
+
+    def class_usage(self):
+        """Instances per class over the current accepted reviews."""
+        return Counter(row['label'] for review in self.state['reviews'].values()
+                       if review['status'] == 'accepted' for row in review['instances'])
+
+    def rename_class(self, old, new):
+        """Relabel `old` as `new` everywhere by saving new immutable revisions (merges if `new` exists)."""
+        new = new.strip()
+        if not new or new == old:
+            raise ValueError('Choose a different, non-empty class name')
+        rows = self.classes()
+        merging = new in self.class_names()
+        if not merging:                       # rename in place: the class keeps its position (hotkey) and colour
+            for row in rows:
+                if row['name'] == old:
+                    row['name'] = new
+        changed = 0
+        for image_id, review in list(self.state['reviews'].items()):
+            if review['status'] != 'accepted' or all(row['label'] != old for row in review['instances']):
+                continue
+            instances = self.load_masks(image_id)
+            for row in instances:
+                if row['label'] == old:
+                    row['label'] = new
+            self.save(image_id, review['proposal_id'], instances, 'accepted', review['group'], review['negative'])
+            changed += 1
+        if merging:
+            rows[:] = [row for row in rows if row['name'] != old]
+        write_json(self.index_path, self.state)
+        return changed
+
+    def delete_class(self, name):
+        used = self.class_usage().get(name, 0)
+        if used:
+            raise ValueError(f'{name} is used by {used} accepted instance(s); merge or rename it first')
+        self.classes()[:] = [row for row in self.classes() if row['name'] != name]
+        write_json(self.index_path, self.state)
+
+    def pref(self, key, default=None):
+        return self.state.setdefault('prefs', {}).get(key, default)
+
+    def set_pref(self, key, value):
+        self.state.setdefault('prefs', {})[key] = value
+        write_json(self.index_path, self.state)
+
+    def stats(self):
+        reviews = self.state['reviews'].values()
+        accepted = sum(1 for r in reviews if r['status'] == 'accepted')
+        excluded = sum(1 for r in reviews if r['status'] == 'excluded')
+        total = len(self.bundle.images)
+        return {'total': total, 'accepted': accepted, 'excluded': excluded,
+                'unreviewed': total - accepted - excluded}
+
     def save(self, image_id, proposal_id, instances, status='accepted', group='', negative=False):
         if status not in ('accepted', 'excluded'):
             raise ValueError('Review must be accepted or excluded')
@@ -165,6 +271,8 @@ class Project:
                 raise ValueError('Every selected instance needs a nonempty original-size bool mask')
             if not row['label'].strip():
                 raise ValueError('Every selected instance needs a class name')
+        for row in selected:
+            self._register(row['label'].strip())
         revision = self.folder / 'revisions' / uuid.uuid4().hex
         revision.mkdir(parents=True, exist_ok=False)
         records = []
