@@ -185,6 +185,8 @@ Prefer single-file or single-test runs during iteration. Full suites are for the
 
 ## 11. Project Learnings
 
+- Before proposing commit text, inspect git log and match the repository's existing subject and body format.
+
 **Accumulated corrections. This section is for the agent to maintain, not just the human.**
 
 When the user corrects your approach, append a one-line rule here before ending the session. Write it concretely ("Always use X for Y"), never abstractly ("be careful with Y"). If an existing line already covers the correction, tighten it instead of adding a new one. Remove lines when the underlying issue goes away (model upgrades, refactors, process changes).
@@ -200,6 +202,7 @@ When the user corrects your approach, append a one-line rule here before ending 
 - Build 04e ZIPs locally with byte progress and single-pass source hashing; export-only helper updates must remain compatible with saved inference settings.
 - When asked for only a replacement export cell, provide a standalone pasteable cell with its own imports/defaults (no bare EXPORT_LOCAL_DIR dependency); leave notebook configuration and inference cells unchanged.
 - For Drive export listing, use scandir metadata and bounded parallel folders, not per-file resolve/is_file/stat calls; checkpoint frozen-output inventories and require refresh after in-place mask edits.
+- With LeRobot 0.6.1, finalize an unsaved episode before clear_episode_buffer so pending image writes finish; LeRobotDataset has no stop_image_writer method.
 
 ---
 
