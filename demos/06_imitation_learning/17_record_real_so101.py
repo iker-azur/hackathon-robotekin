@@ -139,8 +139,7 @@ def main() -> int:
     discard_episode = threading.Event()
     finish_recording = threading.Event()
     upload_requested = threading.Event()
-    reset_extension_lock = threading.Lock()
-    reset_extensions = {"count": 0}
+    restart_reset = threading.Event()
     next_kind = {"value": "pick-cube"}
 
     def on_key(key: str) -> None:
@@ -162,9 +161,8 @@ def main() -> int:
         elif key == "r" and phase["name"] == "recording":
             discard_episode.set()
             end_episode.set()
-        elif key == "t" and phase["name"] == "reset":
-            with reset_extension_lock:
-                reset_extensions["count"] += 1
+        elif key == "t" and phase["name"] == "next_choice":
+            restart_reset.set()
         elif key == "e":
             upload_requested.set()
             finish_recording.set()
@@ -205,13 +203,6 @@ def main() -> int:
         record_interval = 1 / args.fps
         next_record_time = start
         while True:
-            if phase["name"] == "reset" and deadline is not None:
-                with reset_extension_lock:
-                    extensions = reset_extensions["count"]
-                    reset_extensions["count"] = 0
-                if extensions:
-                    deadline = max(deadline, time.perf_counter()) + 5 * extensions
-                    print(f"Reset extended by {5 * extensions} seconds.", flush=True)
             if deadline is not None and time.perf_counter() >= deadline:
                 break
             if (finish_recording.is_set() or (record and end_episode.is_set())
@@ -244,7 +235,7 @@ def main() -> int:
         start_episode.clear()
         listener = create_key_listener(
             on_key,
-            controls_help="Enter=position/start, q=save then q/w=next, t=+5s reset, r=discard, e=finish/upload",
+            controls_help="Enter=position/start, q=save then q/w=next, t=+5s teleop, r=discard, e=finish/upload",
         )
         if listener is None:
             raise RuntimeError("Keyboard controls need an interactive terminal.")
@@ -271,15 +262,23 @@ def main() -> int:
                 while not finish_recording.is_set():
                     if not should_record:
                         phase["name"] = "next_choice"
-                        choose_next.clear()
-                        print(
-                            "Next episode: press q for pick-up or w for up-down; "
-                            "e finishes and uploads.",
-                            flush=True,
-                        )
-                        while not choose_next.wait(0.1):
-                            if finish_recording.is_set():
+                        while True:
+                            choose_next.clear()
+                            restart_reset.clear()
+                            print(
+                                "Next episode: q=pick-up, w=up-down, t=another 5 seconds "
+                                "of teleoperation, e=finish/upload.",
+                                flush=True,
+                            )
+                            while not (choose_next.wait(0.1) or restart_reset.is_set()):
+                                if finish_recording.is_set():
+                                    break
+                            if finish_recording.is_set() or choose_next.is_set():
                                 break
+                            phase["name"] = "reset"
+                            print("Teleoperation active for another 5 seconds.", flush=True)
+                            run_control(5, record=False)
+                            phase["name"] = "next_choice"
                         if finish_recording.is_set():
                             break
                         select_recording(next_kind["value"], encoding_manager)
@@ -319,13 +318,7 @@ def main() -> int:
 
                     if args.reset_seconds:
                         phase["name"] = "reset"
-                        with reset_extension_lock:
-                            reset_extensions["count"] = 0
-                        print(
-                            f"Reset the arm now ({args.reset_seconds:g} seconds); "
-                            "press t for another 5 seconds...",
-                            flush=True,
-                        )
+                        print(f"Teleoperation active for {args.reset_seconds:g} seconds.", flush=True)
                         run_control(args.reset_seconds, record=False)
                     should_record = False
             except KeyboardInterrupt:
