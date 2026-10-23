@@ -16,9 +16,9 @@ def main() -> int:
     parser.add_argument("--leader-port", default="/dev/ttyACM0")
     parser.add_argument("--camera-front", default="/dev/video2")
     parser.add_argument("--camera-wrist", default="/dev/video0")
-    parser.add_argument("--camera-width", type=int, default=1280)
-    parser.add_argument("--camera-height", type=int, default=720)
-    parser.add_argument("--fps", type=int, default=10,
+    parser.add_argument("--camera-width", type=int, default=640)
+    parser.add_argument("--camera-height", type=int, default=480)
+    parser.add_argument("--fps", type=int, default=30,
                         help="camera and dataset frame rate; both cameras must support it")
     parser.add_argument("--reset-seconds", type=float, default=5,
                         help="time to reposition the arm between episodes")
