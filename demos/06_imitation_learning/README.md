@@ -154,6 +154,35 @@ python .\demos\06_imitation_learning\16_evaluate_policy.py `
     --episodes 10 --headless
 ```
 
+### Grabar el SO-101 real con dos cámaras
+
+`17_record_real_so101.py` teleopera el follower con un leader SO-101 y guarda
+observaciones, acciones, las dos cámaras y la instrucción en un dataset LeRobot.
+Pulsa **Enter** una vez para activar la teleoperación y colocar los brazos; vuelve
+a pulsarlo para empezar a grabar. Durante un episodio, **q** lo guarda y **r** lo
+descarta; ambas teclas abren el periodo de reposicionamiento. Pulsa **Enter** para
+empezar el siguiente episodio y **e** para finalizar y subir los episodios guardados.
+El reposicionamiento dura 10 segundos por defecto; cámbialo con `--reset-seconds`.
+También puedes usar **Ctrl+C** para guardar el episodio en curso y finalizar.
+Autentícate antes con `hf auth login`.
+
+```bash
+python demos/06_imitation_learning/17_record_real_so101.py
+```
+
+El script usa los puertos, IDs calibrados, cámaras, repositorio y tarea de este
+equipo por defecto. Añade `--reset-seconds 20` para ampliar la ventana de
+reposicionamiento, `--repo-id USUARIO/dataset` para cambiar el destino, o `--private`
+para crear el dataset privado. Guarda el fotograma completo a 1280 × 720 y 10 FPS
+por defecto, mientras mantiene el control del robot a 30 Hz. El FPS de grabación se
+cambia con `--fps`; ambos valores tienen que ser compatibles con las dos cámaras.
+Si las cámaras admiten otra resolución, indícala con `--camera-width` y
+`--camera-height`, por ejemplo `--camera-width 1920 --camera-height 1080`. Las claves
+de imagen son `observation.images.front` y
+`observation.images.wrist`; el estado y la acción son las articulaciones SO-101
+según la configuración de LeRobot. Este dataset de hardware es independiente del
+dataset del simulador que usan los comandos de entrenamiento de arriba.
+
 ### Comprobar antes de gastar tiempo en el simulador
 
 `tools/22_validate_offline.py` reproduce, **sin simulador**, la orden que daría la política
