@@ -105,7 +105,6 @@ def main() -> int:
         encoder_threads=dataset_cfg.encoder_threads,
         streaming_encoding=dataset_cfg.streaming_encoding,
         encoder_queue_maxsize=dataset_cfg.encoder_queue_maxsize,
-        metadata_buffer_size=1,
     )
 
     phase = {"name": "waiting"}
@@ -177,7 +176,7 @@ def main() -> int:
         print(f"Local path: {dataset.root}")
         print("Press Enter to enable teleoperation and position the arms; press Enter again to record.", flush=True)
 
-        with VideoEncodingManager(dataset):
+        with VideoEncodingManager(dataset) as encoding_manager:
             try:
                 while not start_positioning.wait(0.1):
                     if finish_recording.is_set():
@@ -208,15 +207,33 @@ def main() -> int:
                     print("Recording... q saves locally, r discards, e finalizes and uploads.", flush=True)
                     run_control(None, record=True)
 
+                    episode_saved = False
                     if discard_episode.is_set():
                         dataset.clear_episode_buffer()
                         print("Episode discarded.", flush=True)
                     elif dataset.has_pending_frames():
                         dataset.save_episode()
                         saved_episodes += 1
-                        print(f"Saved episode {saved_episodes} locally at {dataset.root}.", flush=True)
+                        episode_saved = True
                     if finish_recording.is_set():
                         break
+
+                    if episode_saved:
+                        # Close the Parquet footers before starting the next episode.
+                        dataset.finalize()
+                        print(f"Saved episode {saved_episodes} locally at {dataset.root}.", flush=True)
+                        dataset = LeRobotDataset.resume(
+                            repo_id=dataset_cfg.repo_id,
+                            root=dataset.root,
+                            video_backend="pyav",
+                            batch_encoding_size=dataset_cfg.video_encoding_batch_size,
+                            rgb_encoder=dataset_cfg.rgb_encoder,
+                            depth_encoder=dataset_cfg.depth_encoder,
+                            encoder_threads=dataset_cfg.encoder_threads,
+                            streaming_encoding=dataset_cfg.streaming_encoding,
+                            encoder_queue_maxsize=dataset_cfg.encoder_queue_maxsize,
+                        )
+                        encoding_manager.dataset = dataset
 
                     if args.reset_seconds:
                         phase["name"] = "reset"

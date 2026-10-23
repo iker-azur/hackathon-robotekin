@@ -161,7 +161,8 @@ observaciones, acciones, las dos cámaras y la instrucción en un dataset LeRobo
 Pulsa **Enter** una vez para activar la teleoperación y colocar los brazos; vuelve
 a pulsarlo para empezar a grabar. Durante un episodio, **q** lo guarda y **r** lo
 descarta; ambas teclas abren el periodo de reposicionamiento. Pulsa **Enter** para
-empezar el siguiente episodio. Cada episodio guardado queda en el disco local.
+empezar el siguiente episodio. Cada episodio guardado se finaliza en el disco local
+antes de continuar, así un corte posterior no invalida los episodios anteriores.
 Pulsa **e** para finalizar los archivos y subirlos a Hugging Face. **Ctrl+C** guarda
 lo que esté en curso y finaliza localmente sin subir; podrás subirlo después con el
 script de pendientes. El reposicionamiento dura 10 segundos por defecto; cámbialo

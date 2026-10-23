@@ -12,6 +12,7 @@ def main() -> int:
     from huggingface_hub.errors import RepositoryNotFoundError
     from lerobot.datasets import LeRobotDataset
     from lerobot.utils.constants import HF_LEROBOT_HOME
+    import pyarrow.parquet as pq
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -67,6 +68,34 @@ def main() -> int:
             for path in local_root.rglob("*")
             if path.is_file() and not path.relative_to(local_root).as_posix().startswith("images/")
         }
+        parquet_paths = sorted(local_root.rglob("*.parquet"))
+        parquet_rows = {}
+        try:
+            for path in parquet_paths:
+                parquet_rows[path] = pq.read_metadata(path).num_rows
+        except Exception as exc:
+            print(f"Skip {local_root.name}: invalid Parquet {path.relative_to(local_root)} ({exc})")
+            skipped += 1
+            continue
+
+        data_rows = sum(
+            rows
+            for path, rows in parquet_rows.items()
+            if path.relative_to(local_root).parts[0] == "data"
+        )
+        episode_rows = sum(
+            rows
+            for path, rows in parquet_rows.items()
+            if path.relative_to(local_root).parts[:2] == ("meta", "episodes")
+        )
+        if data_rows != info["total_frames"] or episode_rows != info["total_episodes"]:
+            print(
+                f"Skip {local_root.name}: Parquet row counts do not match metadata "
+                f"(frames {data_rows}/{info['total_frames']}, episodes {episode_rows}/{info['total_episodes']})"
+            )
+            skipped += 1
+            continue
+
         video_keys = [
             name for name, feature in info.get("features", {}).items() if feature.get("dtype") == "video"
         ]
