@@ -167,7 +167,8 @@ dataset configurado; up-down usa `up-down_<fecha>` con la tarea
 local antes de continuar, así un corte posterior no invalida los episodios
 anteriores. Pulsa **e** para finalizar y subir todos los datasets de la sesión.
 **Ctrl+C** conserva lo local sin subir; podrás subirlo después con el script de
-pendientes. El reposicionamiento dura 10 segundos por defecto; cámbialo con
+pendientes. El reposicionamiento dura 5 segundos por defecto; pulsa **t** durante
+ese periodo para añadir otros 5 segundos. Puedes cambiar el periodo inicial con
 `--reset-seconds`.
 Autentícate antes con `hf auth login`.
 
