@@ -17,8 +17,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--repo-prefix",
-        default="MikelRubi/so101-pick-cube",
-        help="owner and base dataset name without its timestamp suffix",
+        action="append",
+        help="owner/base dataset prefix (repeat to scan more than one; defaults to pick-cube and up-down)",
     )
     parser.add_argument(
         "--root",
@@ -29,14 +29,20 @@ def main() -> int:
     parser.add_argument("--private", action="store_true")
     args = parser.parse_args()
 
-    if "/" not in args.repo_prefix:
-        parser.error("--repo-prefix must have the form OWNER/DATASET_NAME")
+    repo_prefixes = args.repo_prefix or [
+        "MikelRubi/so101-pick-cube",
+        "MikelRubi/up-down",
+    ]
+    local_datasets = []
+    for repo_prefix in repo_prefixes:
+        if "/" not in repo_prefix:
+            parser.error("--repo-prefix must have the form OWNER/DATASET_NAME")
+        owner, base_name = repo_prefix.split("/", 1)
+        owner_dir = args.root.expanduser() / owner
+        local_datasets.extend((owner, path) for path in sorted(owner_dir.glob(f"{base_name}_*")))
 
-    owner, base_name = args.repo_prefix.split("/", 1)
-    owner_dir = args.root.expanduser() / owner
-    local_datasets = sorted(owner_dir.glob(f"{base_name}_*")) if owner_dir.is_dir() else []
     if not local_datasets:
-        print(f"No local datasets found under {owner_dir}/{base_name}_*")
+        print(f"No local datasets found for: {', '.join(repo_prefixes)}")
         return 0
 
     api = HfApi()
@@ -44,7 +50,7 @@ def main() -> int:
     skipped = 0
     failed = 0
 
-    for local_root in local_datasets:
+    for owner, local_root in local_datasets:
         info_path = local_root / "meta" / "info.json"
         if not info_path.is_file():
             print(f"Skip {local_root.name}: missing meta/info.json")

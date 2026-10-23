@@ -28,6 +28,8 @@ def main() -> int:
         parser.error("--reset-seconds must be non-negative")
     if args.fps <= 0:
         parser.error("--fps must be positive")
+    if "/" not in args.repo_id:
+        parser.error("--repo-id must have the form OWNER/DATASET_NAME")
 
     from lerobot.cameras.opencv import OpenCVCameraConfig
     from lerobot.configs.dataset import DatasetRecordConfig
@@ -79,41 +81,60 @@ def main() -> int:
             use_videos=True,
         ),
     )
-    dataset_cfg = DatasetRecordConfig(
-        repo_id=args.repo_id,
-        single_task=args.task,
-        fps=args.fps,
-        push_to_hub=True,
-        private=args.private,
-        streaming_encoding=True,
-        encoder_threads=2,
-    )
-    dataset_cfg.rgb_encoder.preset = 10  # SVT-AV1 maps preset 12 to 10 on this host.
-    dataset_cfg.stamp_repo_id()
-    dataset = LeRobotDataset.create(
-        repo_id=dataset_cfg.repo_id,
-        fps=dataset_cfg.fps,
-        robot_type=robot.name,
-        features=features,
-        use_videos=True,
-        video_backend="pyav",
-        image_writer_processes=0,
-        image_writer_threads=4 * len(robot.cameras),
-        batch_encoding_size=dataset_cfg.video_encoding_batch_size,
-        rgb_encoder=dataset_cfg.rgb_encoder,
-        depth_encoder=dataset_cfg.depth_encoder,
-        encoder_threads=dataset_cfg.encoder_threads,
-        streaming_encoding=dataset_cfg.streaming_encoding,
-        encoder_queue_maxsize=dataset_cfg.encoder_queue_maxsize,
-    )
+    recordings = {}
+
+    def create_recording(kind: str, repo_id_base: str, task: str) -> dict:
+        config = DatasetRecordConfig(
+            repo_id=repo_id_base,
+            single_task=task,
+            fps=args.fps,
+            push_to_hub=True,
+            private=args.private,
+            streaming_encoding=True,
+            encoder_threads=2,
+        )
+        config.rgb_encoder.preset = 10  # SVT-AV1 maps preset 12 to 10 on this host.
+        config.stamp_repo_id()
+        dataset = LeRobotDataset.create(
+            repo_id=config.repo_id,
+            fps=config.fps,
+            robot_type=robot.name,
+            features=features,
+            use_videos=True,
+            video_backend="pyav",
+            image_writer_processes=0,
+            image_writer_threads=4 * len(robot.cameras),
+            batch_encoding_size=config.video_encoding_batch_size,
+            rgb_encoder=config.rgb_encoder,
+            depth_encoder=config.depth_encoder,
+            encoder_threads=config.encoder_threads,
+            streaming_encoding=config.streaming_encoding,
+            encoder_queue_maxsize=config.encoder_queue_maxsize,
+        )
+        recording = {
+            "kind": kind,
+            "repo_id": config.repo_id,
+            "task": task,
+            "config": config,
+            "dataset": dataset,
+            "needs_resume": False,
+        }
+        recordings[kind] = recording
+        print(f"Local dataset ({kind}): {config.repo_id} at {dataset.root}", flush=True)
+        return recording
+
+    owner = args.repo_id.split("/", 1)[0]
+    active = {"recording": create_recording("pick-cube", args.repo_id, args.task)}
 
     phase = {"name": "waiting"}
     start_positioning = threading.Event()
     start_episode = threading.Event()
+    choose_next = threading.Event()
     end_episode = threading.Event()
     discard_episode = threading.Event()
     finish_recording = threading.Event()
     upload_requested = threading.Event()
+    next_kind = {"value": "pick-cube"}
 
     def on_key(key: str) -> None:
         key = key.lower()
@@ -122,8 +143,15 @@ def main() -> int:
                 start_positioning.set()
             elif phase["name"] in ("positioning", "waiting"):
                 start_episode.set()
-        elif key == "q" and phase["name"] == "recording":
-            end_episode.set()
+        elif key == "q":
+            if phase["name"] == "recording":
+                end_episode.set()
+            elif phase["name"] == "next_choice":
+                next_kind["value"] = "pick-cube"
+                choose_next.set()
+        elif key == "w" and phase["name"] == "next_choice":
+            next_kind["value"] = "up-down"
+            choose_next.set()
         elif key == "r" and phase["name"] == "recording":
             discard_episode.set()
             end_episode.set()
@@ -135,17 +163,44 @@ def main() -> int:
     listener = None
     saved_episodes = 0
 
+    def resume_recording(recording: dict) -> None:
+        config = recording["config"]
+        old_dataset = recording["dataset"]
+        recording["dataset"] = LeRobotDataset.resume(
+            repo_id=recording["repo_id"],
+            root=old_dataset.root,
+            video_backend="pyav",
+            batch_encoding_size=config.video_encoding_batch_size,
+            rgb_encoder=config.rgb_encoder,
+            depth_encoder=config.depth_encoder,
+            encoder_threads=config.encoder_threads,
+            streaming_encoding=config.streaming_encoding,
+            encoder_queue_maxsize=config.encoder_queue_maxsize,
+        )
+        recording["needs_resume"] = False
+
+    def select_recording(kind: str, encoding_manager) -> None:
+        if kind not in recordings:
+            create_recording("up-down", owner + "/up-down", "Move the robot up and down")
+        recording = recordings[kind]
+        if recording["needs_resume"]:
+            resume_recording(recording)
+        active["recording"] = recording
+        encoding_manager.dataset = recording["dataset"]
+
     def run_control(seconds: float | None, record: bool, stop_event=None) -> None:
         start = time.perf_counter()
         deadline = None if seconds is None else start + seconds
         control_interval = 1 / 30
-        record_interval = 1 / dataset_cfg.fps
+        record_interval = 1 / args.fps
         next_record_time = start
         while deadline is None or time.perf_counter() < deadline:
             if (finish_recording.is_set() or (record and end_episode.is_set())
                     or (stop_event is not None and stop_event.is_set())):
                 break
             cycle_start = time.perf_counter()
+            dataset = active["recording"]["dataset"]
+            task = active["recording"]["task"]
             observation = robot.get_observation()
             processed_observation = robot_observation_processor(observation)
             action = teleop.get_action()
@@ -156,7 +211,7 @@ def main() -> int:
             if record and cycle_start >= next_record_time:
                 observation_frame = build_dataset_frame(dataset.features, processed_observation, prefix=OBS_STR)
                 action_frame = build_dataset_frame(dataset.features, processed_action, prefix=ACTION)
-                dataset.add_frame({**observation_frame, **action_frame, "task": args.task})
+                dataset.add_frame({**observation_frame, **action_frame, "task": task})
                 next_record_time = cycle_start + record_interval
 
             precise_sleep(max(control_interval - (time.perf_counter() - cycle_start), 0.0))
@@ -167,16 +222,18 @@ def main() -> int:
         phase["name"] = "initial_wait"
         start_episode.clear()
         listener = create_key_listener(
-            on_key, controls_help="Enter=position then record, q=save locally, r=discard, e=finish/upload"
+            on_key,
+            controls_help="Enter=position/start, q=save then q/w=next dataset, r=discard, e=finish/upload",
         )
         if listener is None:
             raise RuntimeError("Keyboard controls need an interactive terminal.")
 
-        print(f"Dataset: {dataset_cfg.repo_id}")
-        print(f"Local path: {dataset.root}")
+        initial = active["recording"]
+        print(f"Dataset: {initial['repo_id']}")
+        print(f"Local path: {initial['dataset'].root}")
         print("Press Enter to enable teleoperation and position the arms; press Enter again to record.", flush=True)
 
-        with VideoEncodingManager(dataset) as encoding_manager:
+        with VideoEncodingManager(initial["dataset"]) as encoding_manager:
             try:
                 while not start_positioning.wait(0.1):
                     if finish_recording.is_set():
@@ -192,19 +249,28 @@ def main() -> int:
 
                 while not finish_recording.is_set():
                     if not should_record:
-                        phase["name"] = "waiting"
-                        start_episode.clear()
-                        while not start_episode.wait(0.1):
+                        phase["name"] = "next_choice"
+                        choose_next.clear()
+                        print("Next episode: press q for pick-cube or w for up-down; e finishes and uploads.", flush=True)
+                        while not choose_next.wait(0.1):
                             if finish_recording.is_set():
                                 break
                         if finish_recording.is_set():
                             break
+                        select_recording(next_kind["value"], encoding_manager)
+                        should_record = True
 
                     phase["name"] = "recording"
                     should_record = False
+                    recording = active["recording"]
+                    dataset = recording["dataset"]
                     end_episode.clear()
                     discard_episode.clear()
-                    print("Recording... q saves locally, r discards, e finalizes and uploads.", flush=True)
+                    print(
+                        f"Recording {recording['kind']} ({recording['repo_id']})... "
+                        "q saves locally, r discards, e finishes/uploads.",
+                        flush=True,
+                    )
                     run_control(None, record=True)
 
                     episode_saved = False
@@ -221,27 +287,20 @@ def main() -> int:
                     if episode_saved:
                         # Close the Parquet footers before starting the next episode.
                         dataset.finalize()
-                        print(f"Saved episode {saved_episodes} locally at {dataset.root}.", flush=True)
-                        dataset = LeRobotDataset.resume(
-                            repo_id=dataset_cfg.repo_id,
-                            root=dataset.root,
-                            video_backend="pyav",
-                            batch_encoding_size=dataset_cfg.video_encoding_batch_size,
-                            rgb_encoder=dataset_cfg.rgb_encoder,
-                            depth_encoder=dataset_cfg.depth_encoder,
-                            encoder_threads=dataset_cfg.encoder_threads,
-                            streaming_encoding=dataset_cfg.streaming_encoding,
-                            encoder_queue_maxsize=dataset_cfg.encoder_queue_maxsize,
+                        recording["needs_resume"] = True
+                        print(
+                            f"Saved episode {saved_episodes} locally at {dataset.root}.", flush=True
                         )
-                        encoding_manager.dataset = dataset
 
                     if args.reset_seconds:
                         phase["name"] = "reset"
                         print(f"Reset the arm now ({args.reset_seconds:g} seconds)...", flush=True)
                         run_control(args.reset_seconds, record=False)
-                    print("Reset window finished. Press Enter for the next episode, or e to finish.", flush=True)
+                    should_record = False
             except KeyboardInterrupt:
                 finish_recording.set()
+                recording = active["recording"]
+                dataset = recording["dataset"]
                 if discard_episode.is_set():
                     dataset.clear_episode_buffer()
                 elif dataset.has_pending_frames():
@@ -270,29 +329,37 @@ def main() -> int:
                 teleop.disconnect()
             except Exception as exc:
                 print(f"Warning: leader disconnect failed: {exc}", flush=True)
-        dataset_finalized = False
-        try:
-            dataset.finalize()
-            dataset_finalized = True
-        except Exception as exc:
-            print(f"ERROR: dataset finalization failed: {exc}", flush=True)
-        if dataset.num_episodes:
-            if upload_requested.is_set() and dataset_finalized:
-                print(f"Uploading {dataset.num_episodes} episode(s) to {dataset_cfg.repo_id}...", flush=True)
-                try:
-                    dataset.push_to_hub(private=args.private)
-                    print(f"Dataset: https://huggingface.co/datasets/{dataset_cfg.repo_id}", flush=True)
-                except Exception as exc:
-                    print(f"ERROR: dataset upload failed: {exc}", flush=True)
-                    print("The finalized local dataset is kept; retry with 18_upload_pending_so101.py.", flush=True)
+        for recording in recordings.values():
+            dataset = recording["dataset"]
+            dataset_finalized = False
+            try:
+                dataset.finalize()
+                dataset_finalized = True
+            except Exception as exc:
+                print(f"ERROR: finalization failed for {recording['repo_id']}: {exc}", flush=True)
+            if dataset.num_episodes:
+                if upload_requested.is_set() and dataset_finalized:
+                    print(
+                        f"Uploading {dataset.num_episodes} episode(s) to {recording['repo_id']}...",
+                        flush=True,
+                    )
+                    try:
+                        dataset.push_to_hub(private=args.private)
+                        print(
+                            f"Dataset: https://huggingface.co/datasets/{recording['repo_id']}",
+                            flush=True,
+                        )
+                    except Exception as exc:
+                        print(f"ERROR: dataset upload failed for {recording['repo_id']}: {exc}", flush=True)
+                        print("The finalized local dataset is kept; retry with 18_upload_pending_so101.py.", flush=True)
+                else:
+                    print(
+                        f"Kept {dataset.num_episodes} episode(s) locally at {dataset.root}. "
+                        "Run 18_upload_pending_so101.py to upload later.",
+                        flush=True,
+                    )
             else:
-                print(
-                    f"Kept {dataset.num_episodes} episode(s) locally at {dataset.root}. "
-                    "Run 18_upload_pending_so101.py to upload later.",
-                    flush=True,
-                )
-        else:
-            print("No episodes were saved; nothing was uploaded.", flush=True)
+                print(f"No episodes saved for {recording['repo_id']}.", flush=True)
     return 0
 
 

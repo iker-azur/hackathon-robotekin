@@ -159,14 +159,15 @@ python .\demos\06_imitation_learning\16_evaluate_policy.py `
 `17_record_real_so101.py` teleopera el follower con un leader SO-101 y guarda
 observaciones, acciones, las dos cámaras y la instrucción en un dataset LeRobot.
 Pulsa **Enter** una vez para activar la teleoperación y colocar los brazos; vuelve
-a pulsarlo para empezar a grabar. Durante un episodio, **q** lo guarda y **r** lo
-descarta; ambas teclas abren el periodo de reposicionamiento. Pulsa **Enter** para
-empezar el siguiente episodio. Cada episodio guardado se finaliza en el disco local
-antes de continuar, así un corte posterior no invalida los episodios anteriores.
-Pulsa **e** para finalizar los archivos y subirlos a Hugging Face. **Ctrl+C** guarda
-lo que esté en curso y finaliza localmente sin subir; podrás subirlo después con el
-script de pendientes. El reposicionamiento dura 10 segundos por defecto; cámbialo
-con `--reset-seconds`.
+a pulsarlo para grabar el primer episodio. Durante un episodio, **q** lo guarda y
+**r** lo descarta. Después del reposicionamiento, **q** inicia otro episodio en el
+dataset actual; **w** inicia uno en un dataset distinto, `up-down_<fecha>`, con la
+tarea «Move the robot up and down». Cada episodio guardado se finaliza en el disco
+local antes de continuar, así un corte posterior no invalida los episodios
+anteriores. Pulsa **e** para finalizar y subir todos los datasets de la sesión.
+**Ctrl+C** conserva lo local sin subir; podrás subirlo después con el script de
+pendientes. El reposicionamiento dura 10 segundos por defecto; cámbialo con
+`--reset-seconds`.
 Autentícate antes con `hf auth login`.
 
 ```bash
@@ -188,14 +189,16 @@ dataset del simulador que usan los comandos de entrenamiento de arriba.
 
 Los datasets locales se guardan bajo `$HF_LEROBOT_HOME/USUARIO/NOMBRE_CON_FECHA`
 (por defecto, `~/.cache/huggingface/lerobot/`). Para subir más tarde los datasets
-locales pendientes y saltar los que ya estén completos en Hugging Face, ejecuta:
+locales pendientes de `so101-pick-cube` y `up-down`, saltando los que ya estén
+completos en Hugging Face, ejecuta:
 
 ```bash
 python demos/06_imitation_learning/18_upload_pending_so101.py
 ```
 
-Autentícate antes con `hf auth login`. Si grabaste con otro `--repo-id`, pasa el
-prefijo a `--repo-prefix`, por ejemplo `--repo-prefix USUARIO/NOMBRE`.
+Autentícate antes con `hf auth login`. Si grabaste con otro `--repo-id`, pasa su
+prefijo con `--repo-prefix USUARIO/NOMBRE`; puedes repetir el argumento para añadir
+varios prefijos.
 
 ### Comprobar antes de gastar tiempo en el simulador
 
