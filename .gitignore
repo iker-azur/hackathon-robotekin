@@ -170,3 +170,6 @@ Desktop.ini
 # Reference-photo redistribution rights have not been established.
 # These exclusions do NOT remove photos embedded inside notebooks.
 /demos/roboqc/colab/assets/stamped_parts/part_*.png
+
+# Custom environments
+lerobot-env/
