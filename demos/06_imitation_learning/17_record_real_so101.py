@@ -1,4 +1,4 @@
-"""Record SO-101 demonstrations with Enter, q, r, and e controls."""
+"""Record SO-101 demonstrations with keyboard controls."""
 
 from __future__ import annotations
 
@@ -158,6 +158,9 @@ def main() -> int:
         elif key == "w" and phase["name"] == "next_choice":
             next_kind["value"] = "up-down"
             choose_next.set()
+        elif key == "a" and phase["name"] == "next_choice":
+            next_kind["value"] = "up-down-small"
+            choose_next.set()
         elif key == "r" and phase["name"] == "recording":
             discard_episode.set()
             end_episode.set()
@@ -189,7 +192,12 @@ def main() -> int:
 
     def select_recording(kind: str, encoding_manager) -> None:
         if kind not in recordings:
-            create_recording("up-down", owner + "/up-down", "Move the robot up and down")
+            task = (
+                "Move the robot up and down"
+                if kind == "up-down"
+                else "Move the robot up and down with small movements"
+            )
+            create_recording(kind, owner + "/" + kind, task)
         recording = recordings[kind]
         if recording["needs_resume"]:
             resume_recording(recording)
@@ -266,8 +274,8 @@ def main() -> int:
                             choose_next.clear()
                             restart_reset.clear()
                             print(
-                                "Next episode: q=pick-up, w=up-down, t=another 5 seconds "
-                                "of teleoperation, e=finish/upload.",
+                                "Next episode: q=pick-up, w=up-down, a=up-down-small, "
+                                "t=another 5 seconds of teleoperation, e=finish/upload.",
                                 flush=True,
                             )
                             while not (choose_next.wait(0.1) or restart_reset.is_set()):
