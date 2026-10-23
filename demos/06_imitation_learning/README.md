@@ -160,9 +160,10 @@ python .\demos\06_imitation_learning\16_evaluate_policy.py `
 observaciones, acciones, las dos cámaras y la instrucción en un dataset LeRobot.
 Pulsa **Enter** una vez para activar la teleoperación y colocar los brazos; vuelve
 a pulsarlo para grabar el primer episodio. Durante un episodio, **q** lo guarda y
-**r** lo descarta. Después del reposicionamiento, **q** sigue en el dataset actual;
-**w** cambia al otro dataset. Al cambiar desde `pick-cube`, crea `up-down_<fecha>`
-con la tarea «Move the robot up and down». Cada episodio guardado se finaliza en el disco
+**r** lo descarta. Después del reposicionamiento, pulsa **q** para iniciar un
+episodio de pick-up o **w** para iniciar uno de up-down. Pick-up se guarda en el
+dataset configurado; up-down usa `up-down_<fecha>` con la tarea
+«Move the robot up and down». Cada episodio guardado se finaliza en el disco
 local antes de continuar, así un corte posterior no invalida los episodios
 anteriores. Pulsa **e** para finalizar y subir todos los datasets de la sesión.
 **Ctrl+C** conserva lo local sin subir; podrás subirlo después con el script de

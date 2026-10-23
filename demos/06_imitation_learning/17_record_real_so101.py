@@ -147,12 +147,10 @@ def main() -> int:
             if phase["name"] == "recording":
                 end_episode.set()
             elif phase["name"] == "next_choice":
-                next_kind["value"] = active["recording"]["kind"]
+                next_kind["value"] = "pick-cube"
                 choose_next.set()
         elif key == "w" and phase["name"] == "next_choice":
-            next_kind["value"] = (
-                "up-down" if active["recording"]["kind"] == "pick-cube" else "pick-cube"
-            )
+            next_kind["value"] = "up-down"
             choose_next.set()
         elif key == "r" and phase["name"] == "recording":
             discard_episode.set()
@@ -253,10 +251,9 @@ def main() -> int:
                     if not should_record:
                         phase["name"] = "next_choice"
                         choose_next.clear()
-                        other_kind = "up-down" if active["recording"]["kind"] == "pick-cube" else "pick-cube"
                         print(
-                            f"Next episode: q continues {active['recording']['kind']}, "
-                            f"w switches to {other_kind}; e finishes and uploads.",
+                            "Next episode: press q for pick-up or w for up-down; "
+                            "e finishes and uploads.",
                             flush=True,
                         )
                         while not choose_next.wait(0.1):
