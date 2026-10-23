@@ -14,7 +14,11 @@ def main() -> int:
     parser.add_argument("--task", default="Pick up the cube and place it in the bowl")
     parser.add_argument("--follower-port", default="/dev/ttyACM1")
     parser.add_argument("--leader-port", default="/dev/ttyACM0")
-    parser.add_argument("--camera-front", default="/dev/video2")
+    parser.add_argument(
+        "--camera-front",
+        default="auto",
+        help="front camera path, or 'auto' to try /dev/video2 and /dev/video3",
+    )
     parser.add_argument("--camera-wrist", default="/dev/video0")
     parser.add_argument("--camera-width", type=int, default=640)
     parser.add_argument("--camera-height", type=int, default=480)
@@ -31,7 +35,7 @@ def main() -> int:
     if "/" not in args.repo_id:
         parser.error("--repo-id must have the form OWNER/DATASET_NAME")
 
-    from lerobot.cameras.opencv import OpenCVCameraConfig
+    from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
     from lerobot.configs.dataset import DatasetRecordConfig
     from lerobot.configs.video import RGBEncoderConfig
     from lerobot.datasets import (
@@ -52,6 +56,36 @@ def main() -> int:
     from lerobot.utils.robot_utils import precise_sleep
 
     register_third_party_plugins()
+    if args.camera_front == "auto":
+        camera_errors = []
+        front_camera = None
+        for candidate in (Path("/dev/video2"), Path("/dev/video3")):
+            probe = OpenCVCamera(
+                OpenCVCameraConfig(
+                    index_or_path=candidate,
+                    fps=args.fps,
+                    width=args.camera_width,
+                    height=args.camera_height,
+                    warmup_s=1,
+                )
+            )
+            try:
+                probe.connect()
+                front_camera = candidate
+                print(f"Detected front camera: {candidate}", flush=True)
+                break
+            except Exception as exc:
+                camera_errors.append(f"{candidate}: {exc}")
+            finally:
+                if probe.is_connected:
+                    probe.disconnect()
+        if front_camera is None:
+            raise RuntimeError(
+                "Could not detect a working front camera at /dev/video2 or /dev/video3. "
+                + " | ".join(camera_errors)
+            )
+        args.camera_front = str(front_camera)
+
     cameras = {
         "front": OpenCVCameraConfig(
             index_or_path=Path(args.camera_front), fps=args.fps,
