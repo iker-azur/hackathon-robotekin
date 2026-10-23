@@ -181,6 +181,9 @@ reposicionamiento, `--repo-id USUARIO/dataset` para cambiar el destino, o `--pri
 para crear el dataset privado. Guarda el fotograma completo a 1280 × 720 y 10 FPS
 por defecto, mientras mantiene el control del robot a 30 Hz. El FPS de grabación se
 cambia con `--fps`; ambos valores tienen que ser compatibles con las dos cámaras.
+Para reducir la carga del control, solo lee el estado y las cámaras al muestrear un
+frame. Utiliza un codificador hardware disponible (NVENC H.264 en este PC) y AV1
+como fallback.
 Si las cámaras admiten otra resolución, indícala con `--camera-width` y
 `--camera-height`, por ejemplo `--camera-width 1920 --camera-height 1080`. Las claves
 de imagen son `observation.images.front` y

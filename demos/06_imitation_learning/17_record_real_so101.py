@@ -33,6 +33,7 @@ def main() -> int:
 
     from lerobot.cameras.opencv import OpenCVCameraConfig
     from lerobot.configs.dataset import DatasetRecordConfig
+    from lerobot.configs.video import RGBEncoderConfig
     from lerobot.datasets import (
         LeRobotDataset,
         VideoEncodingManager,
@@ -93,7 +94,11 @@ def main() -> int:
             streaming_encoding=True,
             encoder_threads=2,
         )
-        config.rgb_encoder.preset = 10  # SVT-AV1 maps preset 12 to 10 on this host.
+        config.rgb_encoder = RGBEncoderConfig(vcodec="auto")
+        if config.rgb_encoder.vcodec == "h264_nvenc":
+            config.rgb_encoder.preset = "p1"
+        elif config.rgb_encoder.vcodec == "libsvtav1":
+            config.rgb_encoder.preset = 10  # SVT-AV1 maps preset 12 to 10 on this host.
         config.stamp_repo_id()
         dataset = LeRobotDataset.create(
             repo_id=config.repo_id,
@@ -199,16 +204,18 @@ def main() -> int:
                     or (stop_event is not None and stop_event.is_set())):
                 break
             cycle_start = time.perf_counter()
-            dataset = active["recording"]["dataset"]
-            task = active["recording"]["task"]
-            observation = robot.get_observation()
-            processed_observation = robot_observation_processor(observation)
+            record_frame = record and cycle_start >= next_record_time
+            # Avoid a follower-bus read on control cycles that won't be stored.
+            observation = robot.get_observation() if record_frame else None
             action = teleop.get_action()
             processed_action = teleop_action_processor((action, observation))
             robot_action = robot_action_processor((processed_action, observation))
             robot.send_action(robot_action)
 
-            if record and cycle_start >= next_record_time:
+            if record_frame:
+                dataset = active["recording"]["dataset"]
+                task = active["recording"]["task"]
+                processed_observation = robot_observation_processor(observation)
                 observation_frame = build_dataset_frame(dataset.features, processed_observation, prefix=OBS_STR)
                 action_frame = build_dataset_frame(dataset.features, processed_action, prefix=ACTION)
                 dataset.add_frame({**observation_frame, **action_frame, "task": task})
