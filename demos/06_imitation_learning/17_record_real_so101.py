@@ -20,7 +20,7 @@ def main() -> int:
     parser.add_argument("--camera-height", type=int, default=720)
     parser.add_argument("--fps", type=int, default=10,
                         help="camera and dataset frame rate; both cameras must support it")
-    parser.add_argument("--reset-seconds", type=float, default=10,
+    parser.add_argument("--reset-seconds", type=float, default=5,
                         help="time to reposition the arm between episodes")
     parser.add_argument("--private", action="store_true")
     args = parser.parse_args()
@@ -139,6 +139,8 @@ def main() -> int:
     discard_episode = threading.Event()
     finish_recording = threading.Event()
     upload_requested = threading.Event()
+    reset_extension_lock = threading.Lock()
+    reset_extensions = {"count": 0}
     next_kind = {"value": "pick-cube"}
 
     def on_key(key: str) -> None:
@@ -160,6 +162,9 @@ def main() -> int:
         elif key == "r" and phase["name"] == "recording":
             discard_episode.set()
             end_episode.set()
+        elif key == "t" and phase["name"] == "reset":
+            with reset_extension_lock:
+                reset_extensions["count"] += 1
         elif key == "e":
             upload_requested.set()
             finish_recording.set()
@@ -199,7 +204,16 @@ def main() -> int:
         control_interval = 1 / 30
         record_interval = 1 / args.fps
         next_record_time = start
-        while deadline is None or time.perf_counter() < deadline:
+        while True:
+            if phase["name"] == "reset" and deadline is not None:
+                with reset_extension_lock:
+                    extensions = reset_extensions["count"]
+                    reset_extensions["count"] = 0
+                if extensions:
+                    deadline = max(deadline, time.perf_counter()) + 5 * extensions
+                    print(f"Reset extended by {5 * extensions} seconds.", flush=True)
+            if deadline is not None and time.perf_counter() >= deadline:
+                break
             if (finish_recording.is_set() or (record and end_episode.is_set())
                     or (stop_event is not None and stop_event.is_set())):
                 break
@@ -230,7 +244,7 @@ def main() -> int:
         start_episode.clear()
         listener = create_key_listener(
             on_key,
-            controls_help="Enter=position/start, q=save then q/w=next dataset, r=discard, e=finish/upload",
+            controls_help="Enter=position/start, q=save then q/w=next, t=+5s reset, r=discard, e=finish/upload",
         )
         if listener is None:
             raise RuntimeError("Keyboard controls need an interactive terminal.")
@@ -305,7 +319,13 @@ def main() -> int:
 
                     if args.reset_seconds:
                         phase["name"] = "reset"
-                        print(f"Reset the arm now ({args.reset_seconds:g} seconds)...", flush=True)
+                        with reset_extension_lock:
+                            reset_extensions["count"] = 0
+                        print(
+                            f"Reset the arm now ({args.reset_seconds:g} seconds); "
+                            "press t for another 5 seconds...",
+                            flush=True,
+                        )
                         run_control(args.reset_seconds, record=False)
                     should_record = False
             except KeyboardInterrupt:
