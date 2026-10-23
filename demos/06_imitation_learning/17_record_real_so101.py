@@ -87,7 +87,6 @@ def main() -> int:
         private=args.private,
         streaming_encoding=True,
         encoder_threads=2,
-        metadata_buffer_size=1,
     )
     dataset_cfg.rgb_encoder.preset = 10  # SVT-AV1 maps preset 12 to 10 on this host.
     dataset_cfg.stamp_repo_id()
@@ -106,6 +105,7 @@ def main() -> int:
         encoder_threads=dataset_cfg.encoder_threads,
         streaming_encoding=dataset_cfg.streaming_encoding,
         encoder_queue_maxsize=dataset_cfg.encoder_queue_maxsize,
+        metadata_buffer_size=1,
     )
 
     phase = {"name": "waiting"}
