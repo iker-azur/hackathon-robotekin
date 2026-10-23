@@ -87,6 +87,7 @@ def main() -> int:
         private=args.private,
         streaming_encoding=True,
         encoder_threads=2,
+        metadata_buffer_size=1,
     )
     dataset_cfg.rgb_encoder.preset = 10  # SVT-AV1 maps preset 12 to 10 on this host.
     dataset_cfg.stamp_repo_id()
@@ -113,6 +114,7 @@ def main() -> int:
     end_episode = threading.Event()
     discard_episode = threading.Event()
     finish_recording = threading.Event()
+    upload_requested = threading.Event()
 
     def on_key(key: str) -> None:
         key = key.lower()
@@ -127,6 +129,7 @@ def main() -> int:
             discard_episode.set()
             end_episode.set()
         elif key == "e":
+            upload_requested.set()
             finish_recording.set()
             end_episode.set()
 
@@ -165,12 +168,13 @@ def main() -> int:
         phase["name"] = "initial_wait"
         start_episode.clear()
         listener = create_key_listener(
-            on_key, controls_help="Enter=position then record, q=save, r=discard, e=finish"
+            on_key, controls_help="Enter=position then record, q=save locally, r=discard, e=finish/upload"
         )
         if listener is None:
             raise RuntimeError("Keyboard controls need an interactive terminal.")
 
         print(f"Dataset: {dataset_cfg.repo_id}")
+        print(f"Local path: {dataset.root}")
         print("Press Enter to enable teleoperation and position the arms; press Enter again to record.", flush=True)
 
         with VideoEncodingManager(dataset):
@@ -201,7 +205,7 @@ def main() -> int:
                     should_record = False
                     end_episode.clear()
                     discard_episode.clear()
-                    print("Recording... q saves this episode, r discards it, e finishes.", flush=True)
+                    print("Recording... q saves locally, r discards, e finalizes and uploads.", flush=True)
                     run_control(None, record=True)
 
                     if discard_episode.is_set():
@@ -210,7 +214,7 @@ def main() -> int:
                     elif dataset.has_pending_frames():
                         dataset.save_episode()
                         saved_episodes += 1
-                        print(f"Saved episode {saved_episodes}.", flush=True)
+                        print(f"Saved episode {saved_episodes} locally at {dataset.root}.", flush=True)
                     if finish_recording.is_set():
                         break
 
@@ -226,7 +230,7 @@ def main() -> int:
                 elif dataset.has_pending_frames():
                     dataset.save_episode()
                     saved_episodes += 1
-                print("Interrupted safely; finalizing saved episodes.", flush=True)
+                print("Interrupted safely; finalizing saved episodes locally.", flush=True)
 
         print(f"Finalizing {saved_episodes} episode(s)...", flush=True)
     finally:
@@ -249,17 +253,27 @@ def main() -> int:
                 teleop.disconnect()
             except Exception as exc:
                 print(f"Warning: leader disconnect failed: {exc}", flush=True)
+        dataset_finalized = False
         try:
             dataset.finalize()
+            dataset_finalized = True
         except Exception as exc:
             print(f"ERROR: dataset finalization failed: {exc}", flush=True)
         if dataset.num_episodes:
-            print(f"Uploading {dataset.num_episodes} episode(s) to {dataset_cfg.repo_id}...", flush=True)
-            try:
-                dataset.push_to_hub(private=args.private)
-                print(f"Dataset: https://huggingface.co/datasets/{dataset_cfg.repo_id}", flush=True)
-            except Exception as exc:
-                print(f"ERROR: dataset upload failed: {exc}", flush=True)
+            if upload_requested.is_set() and dataset_finalized:
+                print(f"Uploading {dataset.num_episodes} episode(s) to {dataset_cfg.repo_id}...", flush=True)
+                try:
+                    dataset.push_to_hub(private=args.private)
+                    print(f"Dataset: https://huggingface.co/datasets/{dataset_cfg.repo_id}", flush=True)
+                except Exception as exc:
+                    print(f"ERROR: dataset upload failed: {exc}", flush=True)
+                    print("The finalized local dataset is kept; retry with 18_upload_pending_so101.py.", flush=True)
+            else:
+                print(
+                    f"Kept {dataset.num_episodes} episode(s) locally at {dataset.root}. "
+                    "Run 18_upload_pending_so101.py to upload later.",
+                    flush=True,
+                )
         else:
             print("No episodes were saved; nothing was uploaded.", flush=True)
     return 0
