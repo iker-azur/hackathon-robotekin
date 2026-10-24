@@ -1471,6 +1471,218 @@
    "episode": 2,
    "label": "nopin",
    "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_121209",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_121209",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122039",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122039",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 2,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 3,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 4,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 5,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 6,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 7,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 8,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 9,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 10,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 11,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 12,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 13,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_122345",
+   "episode": 14,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 0,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 2,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 3,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 4,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 5,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 6,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 7,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 8,
+   "label": "pin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 9,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 10,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 11,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 12,
+   "label": "exclude",
+   "confidence": "",
+   "note": "the piece is not held at the end"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 13,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 14,
+   "label": "exclude",
+   "confidence": "",
+   "note": "the piece is not held at the end"
+  },
+  {
+   "session": "so101-pick-cube_20261024_124413",
+   "episode": 15,
+   "label": "pin",
+   "confidence": "clear"
   }
  ]
 }

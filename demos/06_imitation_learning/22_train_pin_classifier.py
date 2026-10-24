@@ -81,16 +81,26 @@ class PinNet(nn.Module):
         return (x - 0.5) / 0.25
 
 
-class ResNetPinNet(nn.Module):
-    """Same interface as PinNet, but one ImageNet-pretrained ResNet18 (without its classifier) for both cameras."""
+BACKBONES = ("resnet18", "resnet34", "efficientnet_b0", "mobilenet_v3_large", "convnext_tiny")
 
-    def __init__(self, pretrained: bool = True, dropout: float = 0.3) -> None:
+
+class PretrainedPinNet(nn.Module):
+    """Same interface as PinNet, but one ImageNet-pretrained torchvision network (without its classifier)
+    shared by the cameras in use (``cameras``: both, front or wrist)."""
+
+    def __init__(self, name: str = "resnet18", pretrained: bool = True, cameras: str = "both",
+                 dropout: float = 0.3) -> None:
         super().__init__()
-        from torchvision.models import ResNet18_Weights, resnet18
+        from torchvision.models import get_model, get_model_weights
 
-        net = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1 if pretrained else None)
-        self.backbone = nn.Sequential(*list(net.children())[:-2])
-        self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(4 * 512, 2))
+        net = get_model(name, weights=get_model_weights(name).DEFAULT if pretrained else None)
+        if name.startswith("resnet"):
+            self.backbone, dim = nn.Sequential(*list(net.children())[:-2]), net.fc.in_features
+        else:
+            self.backbone = net.features
+            dim = {"efficientnet_b0": 1280, "mobilenet_v3_large": 960, "convnext_tiny": 768}[name]
+        self.cameras = cameras
+        self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear((4 if cameras == "both" else 2) * dim, 2))
         self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
         self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
 
@@ -98,13 +108,15 @@ class ResNetPinNet(nn.Module):
         return (x - self.mean) / self.std
 
     def forward(self, front, wrist):
+        if self.cameras != "both":
+            return self.head(PinNet.pool(self.backbone(front if self.cameras == "front" else wrist)))
         n = len(front)
         pooled = PinNet.pool(self.backbone(torch.cat([front, wrist])))
         return self.head(torch.cat([pooled[:n], pooled[n:]], 1))
 
 
-def build_model(backbone: str, pretrained: bool = True) -> nn.Module:
-    return ResNetPinNet(pretrained) if backbone == "resnet18" else PinNet()
+def build_model(backbone: str, pretrained: bool = True, cameras: str = "both") -> nn.Module:
+    return PinNet() if backbone == "small" else PretrainedPinNet(backbone, pretrained, cameras)
 
 
 def to_tensor(images: np.ndarray, device) -> torch.Tensor:
@@ -158,13 +170,16 @@ def augment_strong(x: torch.Tensor, generator: torch.Generator) -> torch.Tensor:
 
 
 def train_model(front, wrist, labels, epochs: int, batch: int, lr: float, device, seed: int,
-                backbone: str = "small", augmentation: str = "basic", freeze: bool = False) -> nn.Module:
+                backbone: str = "small", augmentation: str = "basic", freeze: bool = False,
+                cameras: str = "both", label_smoothing: float = 0.0, rows: np.ndarray | None = None) -> nn.Module:
+    """Train on all of ``front`` / ``wrist`` / ``labels``, or only on the sample indices ``rows`` (no copy)."""
     torch.manual_seed(seed)
     generator = torch.Generator().manual_seed(seed)
-    model = build_model(backbone).to(device)
-    counts = np.bincount(labels, minlength=2)
-    weight = torch.tensor(len(labels) / (2 * np.maximum(counts, 1)), dtype=torch.float32, device=device)
-    if backbone == "resnet18":
+    model = build_model(backbone, True, cameras).to(device)
+    rows = np.arange(len(labels)) if rows is None else rows
+    counts = np.bincount(labels[rows], minlength=2)
+    weight = torch.tensor(len(rows) / (2 * np.maximum(counts, 1)), dtype=torch.float32, device=device)
+    if backbone != "small":
         groups = [{"params": model.head.parameters(), "lr": lr}]
         if freeze:
             model.backbone.requires_grad_(False)
@@ -175,7 +190,7 @@ def train_model(front, wrist, labels, epochs: int, batch: int, lr: float, device
     else:
         optimiser = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2)
         max_lr = lr
-    steps = epochs * int(np.ceil(len(labels) / batch))
+    steps = epochs * int(np.ceil(len(rows) / batch))
     schedule = torch.optim.lr_scheduler.OneCycleLR(optimiser, max_lr=max_lr, total_steps=steps)
     targets = torch.from_numpy(labels).to(device)
     rng = np.random.default_rng(seed)
@@ -184,14 +199,14 @@ def train_model(front, wrist, labels, epochs: int, batch: int, lr: float, device
         model.train()
         if freeze:
             model.backbone.eval()
-        order = rng.permutation(len(labels))
+        order = rows[rng.permutation(len(rows))]
         for start in range(0, len(order), batch):
             idx = order[start:start + batch]
             if len(idx) < 2:  # batch norm needs more than one sample
                 continue
             f = model.prepare(augment_fn(to_tensor(front[idx], device), generator))
             w = model.prepare(augment_fn(to_tensor(wrist[idx], device), generator))
-            loss = F.cross_entropy(model(f, w), targets[idx], weight=weight)
+            loss = F.cross_entropy(model(f, w), targets[idx], weight=weight, label_smoothing=label_smoothing)
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
@@ -200,22 +215,28 @@ def train_model(front, wrist, labels, epochs: int, batch: int, lr: float, device
 
 
 @torch.no_grad()
-def predict_proba(model: PinNet, front, wrist, device) -> np.ndarray:
-    """Probability of "pin" for (N, H, W, 3) uint8 front / wrist arrays."""
+def predict_proba(model: PinNet, front, wrist, device, tta: bool = False, rows: np.ndarray | None = None) -> np.ndarray:
+    """Probability of "pin" for (N, H, W, 3) uint8 front / wrist arrays (``tta``: also average the flipped images;
+    ``rows``: only these sample indices)."""
     model.eval()
+    rows = np.arange(len(front)) if rows is None else rows
     out = []
-    for start in range(0, len(front), 64):
-        f = model.prepare(to_tensor(front[start:start + 64], device))
-        w = model.prepare(to_tensor(wrist[start:start + 64], device))
-        out.append(torch.softmax(model(f, w), 1)[:, 1].cpu().numpy())
+    for start in range(0, len(rows), 64):
+        chunk = rows[start:start + 64]
+        f = model.prepare(to_tensor(front[chunk], device))
+        w = model.prepare(to_tensor(wrist[chunk], device))
+        p = torch.softmax(model(f, w), 1)[:, 1]
+        if tta:
+            p = (p + torch.softmax(model(f.flip(3), w.flip(3)), 1)[:, 1]) / 2
+        out.append(p.cpu().numpy())
     return np.concatenate(out)
 
 
 def load_model(path: Path, device="cpu") -> tuple[PinNet, dict]:
     saved = torch.load(path, map_location=device, weights_only=True)
     backbone = saved.get("backbone", "small")
-    model = (build_model(backbone, pretrained=False) if backbone == "resnet18"
-             else PinNet(tuple(saved["channels"]))).to(device)
+    model = (PinNet(tuple(saved["channels"])) if backbone == "small"
+             else build_model(backbone, False, saved.get("cameras", "both"))).to(device)
     model.load_state_dict(saved["state_dict"])
     return model.eval(), saved
 
@@ -257,16 +278,25 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--lr", type=float, default=None, help="head learning rate (default 3e-3 small, 1e-3 resnet18)")
-    parser.add_argument("--backbone", choices=("small", "resnet18"), default="small")
+    parser.add_argument("--backbone", choices=("small",) + BACKBONES, default="small")
     parser.add_argument("--augment", choices=("basic", "strong"), default="strong")
-    parser.add_argument("--freeze", action="store_true", help="resnet18: train only the classifier head")
+    parser.add_argument("--freeze", action="store_true", help="pretrained backbone: train only the classifier head")
+    parser.add_argument("--cameras", choices=("both", "front", "wrist"), default="both",
+                        help="pretrained backbone: which camera(s) the model looks at")
+    parser.add_argument("--label-smoothing", type=float, default=0.0)
+    parser.add_argument("--tta", action="store_true", help="cross-validation: average each prediction with its flipped image")
+    parser.add_argument("--train-sources", choices=("episode", "snapshot", "both"), default="both",
+                        help="train on the episode last frames, the snapshots, or both")
+    parser.add_argument("--test-sources", choices=("episode", "snapshot", "both"), default="both",
+                        help="cross-validation: test on the episode last frames, the snapshots, or both")
+    parser.add_argument("--no-final", action="store_true", help="only cross-validate: skip the final model (experiments)")
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--output", default="pin_classifier",
                         help="folder under outputs/ (an existing one is refused)")
     args = parser.parse_args()
     if args.lr is None:
-        args.lr = 1e-3 if args.backbone == "resnet18" else 3e-3
+        args.lr = 3e-3 if args.backbone == "small" else 1e-3
 
     root = DATA_DIR / args.dataset
     if not (root / "pin_cls.npz").exists():
@@ -284,33 +314,45 @@ def main() -> int:
     data = np.load(root / "pin_cls.npz")
     samples = json.loads((root / "samples.json").read_text(encoding="utf-8"))
     keep = np.array([not args.clear_only or s["confidence"] == "clear" for s in samples])
-    front, wrist, labels = data["front"][keep], data["wrist"][keep], data["label"][keep]
+    front, wrist, labels = data["front"], data["wrist"], data["label"]
+    if not keep.all():
+        front, wrist, labels = front[keep], wrist[keep], labels[keep]
     samples = [s for s, k in zip(samples, keep) if k]
     height, width = front.shape[1:3]
     episodes = {(s["session"], s["episode"]) for s in samples}
     print(f"{len(samples)} samples, {len(episodes)} episodes, {width}x{height}, "
           f"nopin {int((labels == 0).sum())} / pin {int((labels == 1).sum())} frames")
-    print(f"parameters: {sum(p.numel() for p in build_model(args.backbone, pretrained=False).parameters()):,} "
-          f"({args.backbone}, {args.augment} augmentation{', frozen backbone' if args.freeze else ''})")
+    print(f"parameters: {sum(p.numel() for p in build_model(args.backbone, False, args.cameras).parameters()):,} "
+          f"({args.backbone}, {args.augment} augmentation{', frozen backbone' if args.freeze else ''}, "
+          f"cameras {args.cameras}, train on {args.train_sources}, test on {args.test_sources})")
 
     report: dict = {"clear_only": args.clear_only, "episodes": len(episodes), "samples": len(samples),
-                    "backbone": args.backbone, "augment": args.augment, "freeze": args.freeze}
+                    "backbone": args.backbone, "augment": args.augment, "freeze": args.freeze,
+                    "cameras": args.cameras, "label_smoothing": args.label_smoothing, "tta": args.tta,
+                    "train_sources": args.train_sources, "test_sources": args.test_sources, "epochs": args.epochs}
     fit_args = (args.epochs, args.batch, args.lr, device)
-    train_kwargs = {"backbone": args.backbone, "augmentation": args.augment, "freeze": args.freeze}
+    train_kwargs = {"backbone": args.backbone, "augmentation": args.augment, "freeze": args.freeze,
+                    "cameras": args.cameras, "label_smoothing": args.label_smoothing}
     sessions = sorted({s["session"] for s in samples})
+    sources = np.array([s.get("source", "episode") for s in samples])
+    train_ok = np.isin(sources, ("episode", "snapshot") if args.train_sources == "both" else (args.train_sources,))
+    test_ok = np.isin(sources, ("episode", "snapshot") if args.test_sources == "both" else (args.test_sources,))
     if args.folds > 1:
         folds = min(args.folds, len(sessions))
         fold_of = {session: i % folds for i, session in enumerate(sessions)}
         prob = np.full(len(samples), np.nan)
         started = time.time()
         for fold in range(folds):
-            test = np.array([fold_of[s["session"]] == fold for s in samples])
-            if len(set(labels[~test])) < 2:
-                print(f"  fold {fold}: the training part has one class only, skipped")
+            held_out = np.array([fold_of[s["session"]] == fold for s in samples])
+            train, test = ~held_out & train_ok, held_out & test_ok
+            if len(set(labels[train])) < 2 or not test.any():
+                print(f"  fold {fold}: nothing to train or test on, skipped")
                 continue
-            model = train_model(front[~test], wrist[~test], labels[~test], *fit_args, args.seed + fold,
+            model = train_model(front, wrist, labels, *fit_args, args.seed + fold, rows=np.flatnonzero(train),
                                 **train_kwargs)
-            prob[test] = predict_proba(model, front[test], wrist[test], device)
+            prob[test] = predict_proba(model, front, wrist, device, args.tta, rows=np.flatnonzero(test))
+            del model
+            torch.cuda.empty_cache()
             fold_acc = float(((prob[test] >= 0.5) == labels[test]).mean())
             print(f"  fold {fold}: {int(test.sum())} frames from {sum(1 for v in fold_of.values() if v == fold)} "
                   f"session(s), accuracy {fold_acc:.2f}", flush=True)
@@ -324,7 +366,6 @@ def main() -> int:
             "per_episode": summarise(ep_truth, ep_prob),
             "per_episode_clear_labels_only": summarise(ep_truth[ep_clear], ep_prob[ep_clear]) if ep_clear.any() else None,
         }
-        sources = np.array([s.get("source", "episode") for s in samples])
         report["cross_validation"].update({
             f"per_frame_{name}_only": summarise(labels[done & (sources == name)], prob[done & (sources == name)])
             for name in sorted(set(sources[done]))})
@@ -335,15 +376,19 @@ def main() -> int:
                 print(f"  {name:30s} n={r['n']:3d} accuracy {r['accuracy']:.2f} (baseline {r['baseline']:.2f}) "
                       f"balanced {r['balanced_accuracy']:.2f}  {r['confusion']}")
 
-    model = train_model(front, wrist, labels, *fit_args, args.seed, **train_kwargs)
-    fit_prob = predict_proba(model, front, wrist, device)
-    report["training_set_accuracy"] = float(((fit_prob >= 0.5) == labels).mean())
     output.mkdir(parents=True)
+    if args.no_final:
+        (output / "metrics.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        return 0
+    model = train_model(front, wrist, labels, *fit_args, args.seed, rows=np.flatnonzero(train_ok), **train_kwargs)
+    fit_prob = predict_proba(model, front, wrist, device, rows=np.flatnonzero(train_ok))
+    report["training_set_accuracy"] = float(((fit_prob >= 0.5) == labels[train_ok]).mean())
     torch.save({"state_dict": model.state_dict(), "channels": list(CHANNELS), "height": int(height),
-                "width": int(width), "classes": list(CLASS_NAMES), "backbone": args.backbone}, output / "model.pt")
+                "width": int(width), "classes": list(CLASS_NAMES), "backbone": args.backbone,
+                "cameras": args.cameras}, output / "model.pt")
     (output / "metrics.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(f"final model (trained on everything, training-set accuracy {report['training_set_accuracy']:.2f}, "
-          f"not a test result): {output / 'model.pt'}")
+    print(f"final model (trained on all the {args.train_sources} data, training-set accuracy "
+          f"{report['training_set_accuracy']:.2f}, not a test result): {output / 'model.pt'}")
     return 0
 
 
