@@ -1,5 +1,5 @@
 {
- "description": "Held piece at the end of each pick-cube episode: pin (perno/tornillo) or nopin. Labelled by visual inspection of the last frame of both cameras (Claude, 2026-10-24); 'moderate' = judged from a blurred or partial view, 'unsure'/'exclude' are not used for training.",
+ "description": "Held piece at the end of each pick-cube episode: pin (perno/tornillo) or nopin. Labelled by visual inspection of the last frame of both cameras (Claude, 2026-10-24; sessions of 2026-10-24 08:45 onward labelled the same day after the snapshots showed what a pin looks like); 'moderate' = judged from a blurred or partial view, 'unsure'/'exclude' are not used for training.",
  "episodes": [
   {
    "session": "so101-pick-cube_20261023_191626",
@@ -728,6 +728,749 @@
    "label": "unsure",
    "confidence": "",
    "note": "pin hidden, blurred or piece not in view in the last frames"
+  },
+  {
+   "session": "so101-pick-cube_20261024_084532",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_084532",
+   "episode": 1,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_084532",
+   "episode": 2,
+   "label": "unsure",
+   "confidence": "",
+   "note": "pin hidden, blurred or piece not in view in the last frame"
+  },
+  {
+   "session": "so101-pick-cube_20261024_084532",
+   "episode": 3,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_084532",
+   "episode": 4,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_084532",
+   "episode": 5,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_085325",
+   "episode": 0,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_085554",
+   "episode": 0,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_085829",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_090220",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_090220",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_090220",
+   "episode": 2,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_090220",
+   "episode": 3,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_090900",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_090900",
+   "episode": 1,
+   "label": "pin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_090900",
+   "episode": 2,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_090900",
+   "episode": 3,
+   "label": "unsure",
+   "confidence": "",
+   "note": "pin hidden, blurred or piece not in view in the last frame"
+  },
+  {
+   "session": "so101-pick-cube_20261024_091415",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_091415",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_091415",
+   "episode": 2,
+   "label": "pin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_092742",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_094405",
+   "episode": 0,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_094405",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_094405",
+   "episode": 2,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_094405",
+   "episode": 3,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_094405",
+   "episode": 4,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_094405",
+   "episode": 5,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_095901",
+   "episode": 0,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_095901",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_095901",
+   "episode": 2,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_095901",
+   "episode": 3,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_095901",
+   "episode": 4,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_095901",
+   "episode": 5,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_095901",
+   "episode": 6,
+   "label": "pin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_095901",
+   "episode": 7,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_095901",
+   "episode": 8,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_095901",
+   "episode": 9,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_102241",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_102241",
+   "episode": 1,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_102241",
+   "episode": 2,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_102241",
+   "episode": 3,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_102241",
+   "episode": 4,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_103318",
+   "episode": 0,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_103634",
+   "episode": 0,
+   "label": "unsure",
+   "confidence": "",
+   "note": "pin hidden, blurred or piece not in view in the last frame"
+  },
+  {
+   "session": "so101-pick-cube_20261024_103634",
+   "episode": 1,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_103634",
+   "episode": 2,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_103634",
+   "episode": 3,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_103634",
+   "episode": 4,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_104618",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_104618",
+   "episode": 1,
+   "label": "pin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_104618",
+   "episode": 2,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_104618",
+   "episode": 3,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_104618",
+   "episode": 4,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_104618",
+   "episode": 5,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_105854",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_105854",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_105854",
+   "episode": 2,
+   "label": "unsure",
+   "confidence": "",
+   "note": "pin hidden, blurred or piece not in view in the last frame"
+  },
+  {
+   "session": "so101-pick-cube_20261024_105854",
+   "episode": 3,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_105854",
+   "episode": 4,
+   "label": "pin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_105854",
+   "episode": 5,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_105854",
+   "episode": 6,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_105854",
+   "episode": 7,
+   "label": "unsure",
+   "confidence": "",
+   "note": "pin hidden, blurred or piece not in view in the last frame"
+  },
+  {
+   "session": "so101-pick-cube_20261024_110840",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_110840",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_110840",
+   "episode": 2,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_110840",
+   "episode": 3,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_110840",
+   "episode": 4,
+   "label": "pin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 2,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 3,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 4,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 5,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 6,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 7,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 8,
+   "label": "pin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 9,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 10,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 11,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 12,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 13,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 14,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_111303",
+   "episode": 15,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_112511",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_112511",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_112511",
+   "episode": 2,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_112511",
+   "episode": 3,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_112511",
+   "episode": 4,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_112511",
+   "episode": 5,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_112511",
+   "episode": 6,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_112511",
+   "episode": 7,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_112511",
+   "episode": 8,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_112511",
+   "episode": 9,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_113237",
+   "episode": 0,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_113237",
+   "episode": 1,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_113237",
+   "episode": 2,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_113237",
+   "episode": 3,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_113237",
+   "episode": 4,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_113237",
+   "episode": 5,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_113237",
+   "episode": 6,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_113237",
+   "episode": 7,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_113237",
+   "episode": 8,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_113237",
+   "episode": 9,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_113237",
+   "episode": 10,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_113237",
+   "episode": 11,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 0,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 2,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 3,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 4,
+   "label": "pin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 5,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 6,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 7,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 8,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 9,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 10,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 11,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 12,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 13,
+   "label": "pin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_114214",
+   "episode": 14,
+   "label": "nopin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_115532",
+   "episode": 0,
+   "label": "pin",
+   "confidence": "clear"
+  },
+  {
+   "session": "so101-pick-cube_20261024_115532",
+   "episode": 1,
+   "label": "nopin",
+   "confidence": "moderate"
+  },
+  {
+   "session": "so101-pick-cube_20261024_115532",
+   "episode": 2,
+   "label": "nopin",
+   "confidence": "moderate"
   }
  ]
 }
