@@ -227,47 +227,64 @@ def patch_live_validation(args, cfg) -> None:
         }
         train_loss = train_values.get("l1_loss", 0.0) + args.kl_weight * train_values.get("kld_loss", 0.0)
         preprocessor = state["preprocessor"]
-        if preprocessor is None:
-            print(f"Live validation unavailable at step {step}: ACT preprocessor is not ready.", flush=True)
-            return train_metrics, output_dict
-
         loss_sum = 0.0
         component_sums = {}
         sample_count = 0
-        was_training = policy.training
-        policy.eval()
-        try:
-            cuda_devices = [torch.cuda.current_device()] if args.device == "cuda" and torch.cuda.is_available() else []
-            with torch.random.fork_rng(devices=cuda_devices):
-                torch.manual_seed(args.seed)
-                if cuda_devices:
-                    torch.cuda.manual_seed_all(args.seed)
-                with torch.no_grad(), accelerator.autocast():
-                    for validation_batch in validation_loader:
-                        validation_batch = preprocessor(validation_batch)
-                        loss, components = policy.forward(validation_batch)
-                        count = int(validation_batch[ACTION_KEY].shape[0])
-                        loss_sum += float(loss.detach().float().item()) * count
-                        sample_count += count
-                        for key in ("l1_loss", "kld_loss"):
-                            if key in components:
-                                component_sums[key] = component_sums.get(key, 0.0) + float(components[key]) * count
-        except Exception as error:
-            print(f"Live validation unavailable at step {step}: {error}", flush=True)
-            return train_metrics, output_dict
-        finally:
-            policy.train(was_training)
+        validation_error = None
+        if preprocessor is None:
+            validation_error = "ACT preprocessor is not ready"
+        else:
+            was_training = policy.training
+            policy.eval()
+            try:
+                policy_module = getattr(policy, "module", policy)
+                if getattr(policy_module.config, "use_vae", False):
+                    # ACT only returns the VAE posterior parameters while its inner model
+                    # is in training mode. Keep dropout and other layers in eval mode,
+                    # but enable the posterior path needed to compute validation KL loss.
+                    act_model = getattr(policy_module, "model", None)
+                    if act_model is None:
+                        raise RuntimeError("Could not access the ACT model for VAE validation.")
+                    act_model.training = True
+                cuda_devices = [torch.cuda.current_device()] if args.device == "cuda" and torch.cuda.is_available() else []
+                with torch.random.fork_rng(devices=cuda_devices):
+                    torch.manual_seed(args.seed)
+                    if cuda_devices:
+                        torch.cuda.manual_seed_all(args.seed)
+                    with torch.no_grad(), accelerator.autocast():
+                        for validation_batch in validation_loader:
+                            validation_batch = preprocessor(validation_batch)
+                            loss, components = policy.forward(validation_batch)
+                            count = int(validation_batch[ACTION_KEY].shape[0])
+                            loss_sum += float(loss.detach().float().item()) * count
+                            sample_count += count
+                            for key in ("l1_loss", "kld_loss"):
+                                if key in components and components[key] is not None:
+                                    component_sums[key] = component_sums.get(key, 0.0) + float(components[key]) * count
+                if sample_count == 0:
+                    validation_error = "the fixed validation sample produced no batches"
+            except Exception as error:
+                validation_error = str(error)
+                print(f"Live validation traceback at step {step}:", flush=True)
+                import traceback
+
+                traceback.print_exc(file=sys.stdout)
+            finally:
+                policy.train(was_training)
 
         fields = [f"step: {step}", f"loss: {train_loss:.6f}"]
         if "l1_loss" in train_values:
             fields.append(f"train_l1_loss: {train_values['l1_loss']:.6f}")
         if "kld_loss" in train_values:
             fields.append(f"train_kld_loss: {train_values['kld_loss']:.6f}")
-        fields.append(f"eval_loss: {loss_sum / sample_count:.6f}")
-        if "l1_loss" in component_sums:
-            fields.append(f"eval_l1_loss: {component_sums['l1_loss'] / sample_count:.6f}")
-        if "kld_loss" in component_sums:
-            fields.append(f"eval_kld_loss: {component_sums['kld_loss'] / sample_count:.6f}")
+        if validation_error is None:
+            fields.append(f"eval_loss: {loss_sum / sample_count:.6f}")
+            if "l1_loss" in component_sums:
+                fields.append(f"eval_l1_loss: {component_sums['l1_loss'] / sample_count:.6f}")
+            if "kld_loss" in component_sums:
+                fields.append(f"eval_kld_loss: {component_sums['kld_loss'] / sample_count:.6f}")
+        else:
+            print(f"Live validation unavailable at step {step}: {validation_error}", flush=True)
         fields.append(f"grad_norm: {train_metrics.grad_norm.val:.6f}")
         fields.append(f"lr: {train_metrics.lr.val:.8g}")
         elapsed = train_metrics.update_s.val + train_metrics.dataloading_s.val
