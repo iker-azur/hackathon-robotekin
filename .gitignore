@@ -1,3 +1,30 @@
-# Python runtime caches
+# Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+
+# Logs and run markers
+*.log
+*.out
+*.done
+
+# Run outputs
+out/
+out[0-9]*/
+outputs/
+results_smoke/
+perception_frames/
+demos/results/
+/results/
+
+# Datasets, models and checkpoints (large; live on Hugging Face or are rebuilt)
+/data/
+demos/10_bin_intent_model/data/
+models/
+*.pt
+*.pth
+*.onnx
