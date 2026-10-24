@@ -12,6 +12,7 @@ Se da el error absoluto medio por articulación y por paso del bloque, y se comp
 **Qué dice y qué no.** Que el error sea mucho menor que el de «copiar el estado» a horizontes largos es una buena señal de que la red
 aprendió algo. NO dice que agarre: un error pequeño en la trayectoria no garantiza un agarre por fricción de 25 mm, y una política con
 error pequeño puede fallar en lazo cerrado por desviaciones acumuladas (demo 06). El juez es ``tools/eval_sorting.py`` en Isaac.
+Cuando el checkpoint activa el ensamble temporal, se evalúa secuencialmente una acción por observación y se informa el error del primer paso.
 
 No importa ``binpick``: sólo ``lerobot`` y numpy, para poder usarlo tal cual en Colab.
 """
@@ -65,6 +66,10 @@ def main() -> int:
     pre, post = make_pre_post_processors(policy_cfg=policy.config, pretrained_path=args.policy,
                                          preprocessor_overrides={"device_processor": {"device": device}})
     chunk = policy.config.chunk_size
+    temporal_ensemble = policy.config.temporal_ensemble_coeff is not None
+    if temporal_ensemble and args.stride != 1:
+        print("ACT temporal ensembling needs consecutive observations; changing evaluation stride to 1.", flush=True)
+        args.stride = 1
     fps = 30
     ds = LeRobotDataset(repo_id, root=str(root), episodes=parse_episodes(args.episodes),
                         delta_timestamps={ACTION_KEY: [i / fps for i in range(chunk)]})
@@ -73,17 +78,26 @@ def main() -> int:
     base_state = np.zeros((6, chunk))
     base_last = np.zeros((6, chunk))
     n = 0
+    previous_episode = None
     for i in range(0, len(ds), args.stride):
         item = ds[i]
+        episode_id = int(item["episode_index"])
+        if temporal_ensemble and episode_id != previous_episode:
+            policy.reset()
+        previous_episode = episode_id
         valid = ~item["action_is_pad"].numpy() if "action_is_pad" in item else np.ones(chunk, bool)
         batch = {k: (v.unsqueeze(0) if hasattr(v, "unsqueeze") else v) for k, v in item.items()
                  if k.startswith("observation.")}
         with torch.no_grad():
-            pred = post(policy.predict_action_chunk(pre(batch)))            # (1, chunk, 6) desnormalizado
-        pred = pred.squeeze(0).cpu().numpy()
+            pred = post(policy.select_action(pre(batch))) if temporal_ensemble else post(policy.predict_action_chunk(pre(batch)))
+        if temporal_ensemble:
+            pred = pred.squeeze(0).cpu().numpy()[None, :]
+        else:
+            pred = pred.squeeze(0).cpu().numpy()
         truth = item[ACTION_KEY].numpy()
         state = item[STATE_KEY].numpy()
-        for t in range(chunk):
+        horizons = (0,) if temporal_ensemble else range(chunk)
+        for t in horizons:
             if not valid[t]:
                 continue
             err[:, t] += np.abs(pred[t] - truth[t])
@@ -93,13 +107,15 @@ def main() -> int:
     names = ["pan", "lift", "elbow", "wrist_flex", "wrist_roll", "pinza"]
     rep = {"episodios": args.episodes, "fotogramas_evaluados": n, "bloque": chunk, "unidades": "LeRobot (−100…100; pinza 0…100)",
            "error_medio_por_articulación_y_paso": {}}
-    for h in [x for x in HORIZONS if x < chunk]:
+    evaluated_horizons = (0,) if temporal_ensemble else tuple(x for x in HORIZONS if x < chunk)
+    rep["modo_evaluacion"] = "ACT temporal ensemble (sequential actions)" if temporal_ensemble else "ACT action chunks"
+    for h in evaluated_horizons:
         rep["error_medio_por_articulación_y_paso"][f"paso {h}"] = {
             "política": dict(zip(names, (err[:, h] / n).round(2).tolist())),
             "copiar_el_estado": dict(zip(names, (base_state[:, h] / n).round(2).tolist())),
             "mantener_la_última_acción": dict(zip(names, (base_last[:, h] / n).round(2).tolist())),
         }
-    pol, cp = err.mean() / n, base_state.mean() / n
+    pol, cp = err[:, evaluated_horizons].mean() / n, base_state[:, evaluated_horizons].mean() / n
     rep["resumen"] = {"error_política": round(float(pol), 3), "error_copiar_estado": round(float(cp), 3),
                       "mejora_frente_a_copiar_el_estado": round(float(1 - pol / cp), 3) if cp else None}
     print(json.dumps(rep, indent=1, ensure_ascii=False))

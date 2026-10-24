@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QProcess, QProcessEnvironment, QTimer, Qt, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QTextCursor, QTransform
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -56,62 +56,7 @@ BINPICK_RESULTS_DIR = BINPICK_DIR / "results"
 BINPICK_OUTPUTS_DIR = BINPICK_DIR / "outputs"
 EVALUATIONS_DIR = BINPICK_RESULTS_DIR
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-
-
-class TilingCanvas(QLabel):
-    """Draw a source image with the overlapping tile windows used in the preview."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.image = QImage()
-        self.tile_size = 256
-        self.overlap = 0.1
-        self.setMinimumSize(480, 340)
-        self.setAlignment(Qt.AlignCenter)
-
-    def set_preview(self, image: QImage, tile_size: int, overlap: float, enabled: bool = True) -> None:
-        self.image = image
-        self.tile_size = tile_size
-        self.overlap = overlap
-        self.enabled = enabled
-        self.update()
-
-    @staticmethod
-    def _positions(length: int, tile_size: int, overlap: float) -> list[int]:
-        tile = min(length, tile_size)
-        stride = max(1, int(tile * (1 - overlap)))
-        positions = list(range(0, max(1, length - tile + 1), stride))
-        edge = max(0, length - tile)
-        if not positions or positions[-1] != edge:
-            positions.append(edge)
-        return positions
-
-    def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), Qt.black)
-        if self.image.isNull():
-            painter.setPen(Qt.white)
-            painter.drawText(self.rect(), Qt.AlignCenter, "Select a camera frame to preview tile coverage")
-            return
-        bounds = self.rect().adjusted(12, 12, -12, -12)
-        target = self.image.size().scaled(bounds.size(), Qt.KeepAspectRatio)
-        left = bounds.center().x() - target.width() / 2
-        top = bounds.center().y() - target.height() / 2
-        painter.drawImage(int(left), int(top), self.image.scaled(target, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        if not getattr(self, "enabled", True):
-            painter.end()
-            return
-        tile = min(self.tile_size, self.image.width(), self.image.height())
-        x_positions = self._positions(self.image.width(), tile, self.overlap)
-        y_positions = self._positions(self.image.height(), tile, self.overlap)
-        scale = min(target.width() / self.image.width(), target.height() / self.image.height())
-        painter.setPen(QPen(Qt.yellow, 2))
-        for y_position in y_positions:
-            for x_position in x_positions:
-                painter.drawRect(
-                    int(left + x_position * scale), int(top + y_position * scale),
-                    int(tile * scale), int(tile * scale),
-                )
+OUTPUT_TASKS = ("Pick-up", "Up-down")
 
 
 class LiveLossChart(QWidget):
@@ -259,19 +204,17 @@ class TrainingWindow(QMainWindow):
         ("DATA", (
             ("Dataset", 1, None),
             ("Processing", 2, None),
-            ("Tiling Preview", 3, None),
-            ("Augmentation", 4, None),
         )),
         ("TRAINING", (
-            ("Setup", 5, None),
-            ("Dashboard", 7, None),
-            ("Training History", 6, 0),
+            ("Setup", 3, None),
+            ("Dashboard", 5, None),
+            ("Training History", 4, 0),
         )),
         ("RESULTS", (
-            ("Experiments", 6, 1),
-            ("Inference", 6, 0),
+            ("Experiments", 4, 1),
+            ("Inference", 4, 0),
         )),
-        ("SETTINGS", (("Runtime Environment", 5, None),)),
+        ("SETTINGS", (("Runtime Environment", 3, None),)),
     )
 
     def __init__(self) -> None:
@@ -300,6 +243,10 @@ class TrainingWindow(QMainWindow):
         self.hub_process.errorOccurred.connect(self._hub_process_error)
         self._hub_action = ""
         self._hub_output = ""
+        self._hub_download_queue: list[str] = []
+        self._hub_downloaded: list[str] = []
+        self._hub_download_failed: list[str] = []
+        self._hub_current_repo = ""
 
         shell = QWidget()
         shell_layout = QHBoxLayout(shell)
@@ -311,8 +258,6 @@ class TrainingWindow(QMainWindow):
         self.pages.addWidget(self._build_overview())
         self.pages.addWidget(self._build_datasets())
         self.pages.addWidget(self._build_preparation())
-        self.pages.addWidget(self._build_tiling_preview())
-        self.pages.addWidget(self._build_augmentation())
         self.pages.addWidget(self._build_training())
         self.pages.addWidget(self._build_results())
         self.pages.addWidget(self._build_console())
@@ -449,7 +394,7 @@ class TrainingWindow(QMainWindow):
         copy.addWidget(detail)
         self.go_training_button = QPushButton("Configure training  →")
         self.go_training_button.setObjectName("primaryButton")
-        self.go_training_button.clicked.connect(lambda: self._show_page(5))
+        self.go_training_button.clicked.connect(lambda: self._show_page(3))
         hero_layout.addLayout(copy, 1)
         hero_layout.addWidget(self.go_training_button, 0, Qt.AlignBottom)
         layout.addWidget(hero)
@@ -487,15 +432,6 @@ class TrainingWindow(QMainWindow):
         pipeline_layout.addLayout(steps)
         layout.addWidget(pipeline)
 
-        notice, notice_layout = self._card("Dataset previews", "PREVIEW ONLY")
-        notice_text = QLabel(
-            "Tiling Preview lets you inspect camera-frame crops without changing data. "
-            "ACT training uses full RGB and target-mask frames; augmentation controls are preview-only."
-        )
-        notice_text.setObjectName("mutedText")
-        notice_text.setWordWrap(True)
-        notice_layout.addWidget(notice_text)
-        layout.addWidget(notice)
         layout.addStretch(1)
         return page
 
@@ -516,19 +452,13 @@ class TrainingWindow(QMainWindow):
             "Browse local LeRobot datasets recorded for the bin-picking ACT policy.",
         )
         actions = QHBoxLayout()
-        refresh = QPushButton("Refresh list")
+        refresh = QPushButton("Refresh local datasets")
         refresh.clicked.connect(self._refresh_datasets)
         actions.addWidget(refresh)
         actions.addStretch(1)
         layout.addLayout(actions)
 
         columns = QHBoxLayout()
-        list_card, list_layout = self._card("Available datasets")
-        self.dataset_list = QListWidget()
-        self.dataset_list.currentItemChanged.connect(self._dataset_selected)
-        list_layout.addWidget(self.dataset_list)
-        columns.addWidget(list_card, 1)
-
         hub_card, hub_layout = self._card(
             "Hugging Face · MikelRubi",
             "Browse datasets in the supplied profile and download LeRobot datasets into the local training data folder."
@@ -536,17 +466,28 @@ class TrainingWindow(QMainWindow):
         hub_actions = QHBoxLayout()
         self.hub_refresh_button = QPushButton("Refresh Hub list")
         self.hub_refresh_button.clicked.connect(self._refresh_hub_datasets)
-        self.hub_download_button = QPushButton("Download selected")
+        self.hub_download_button = QPushButton("Download checked")
         self.hub_download_button.setEnabled(False)
         self.hub_download_button.clicked.connect(self._download_hub_dataset)
+        self.hub_select_all_button = QPushButton("Select all")
+        self.hub_select_all_button.clicked.connect(lambda: self._set_hub_selection(True))
+        self.hub_clear_button = QPushButton("Clear selection")
+        self.hub_clear_button.clicked.connect(lambda: self._set_hub_selection(False))
         hub_open = QPushButton("Open profile")
         hub_open.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://huggingface.co/MikelRubi/datasets")))
         hub_actions.addWidget(self.hub_refresh_button)
         hub_actions.addWidget(self.hub_download_button)
-        hub_actions.addWidget(hub_open)
+        hub_actions.addStretch(1)
         hub_layout.addLayout(hub_actions)
+        hub_selection_actions = QHBoxLayout()
+        hub_selection_actions.addWidget(self.hub_select_all_button)
+        hub_selection_actions.addWidget(self.hub_clear_button)
+        hub_selection_actions.addWidget(hub_open)
+        hub_selection_actions.addStretch(1)
+        hub_layout.addLayout(hub_selection_actions)
         self.hub_dataset_list = QListWidget()
         self.hub_dataset_list.currentItemChanged.connect(self._hub_dataset_selected)
+        self.hub_dataset_list.itemChanged.connect(self._hub_dataset_selection_changed)
         hub_layout.addWidget(self.hub_dataset_list, 1)
         self.hub_status = QLabel("Use Refresh Hub list to load the repositories.")
         self.hub_status.setObjectName("mutedText")
@@ -560,14 +501,39 @@ class TrainingWindow(QMainWindow):
         columns.addWidget(hub_card, 1)
 
         detail_card, detail_layout = self._card("Dataset details")
+        detail_layout.addWidget(QLabel("Local dataset for the next training run"))
+        self.local_dataset_combo = QComboBox()
+        self.local_dataset_combo.currentIndexChanged.connect(self._dataset_selected)
+        detail_layout.addWidget(self.local_dataset_combo)
         self.dataset_details = QPlainTextEdit()
         self.dataset_details.setReadOnly(True)
         self.dataset_details.setPlaceholderText("Select a dataset to view its metadata.")
         detail_layout.addWidget(self.dataset_details)
+        detail_layout.addWidget(QLabel("Task groups to include (all selected by default)"))
+        self.task_group_list = QListWidget()
+        self.task_group_list.setMaximumHeight(150)
+        self.task_group_list.itemChanged.connect(self._task_group_changed)
+        detail_layout.addWidget(self.task_group_list)
+        detail_layout.addWidget(QLabel("Episodes to include in the training split"))
+        episode_actions = QHBoxLayout()
+        select_episodes = QPushButton("Select all")
+        select_episodes.clicked.connect(lambda: self._set_episode_selection(True))
+        clear_episodes = QPushButton("Clear selection")
+        clear_episodes.clicked.connect(lambda: self._set_episode_selection(False))
+        episode_actions.addWidget(select_episodes)
+        episode_actions.addWidget(clear_episodes)
+        self.episode_selection_status = QLabel("Select a local dataset to list its episodes.")
+        self.episode_selection_status.setObjectName("mutedText")
+        episode_actions.addWidget(self.episode_selection_status, 1)
+        detail_layout.addLayout(episode_actions)
+        self.episode_selection_list = QListWidget()
+        self.episode_selection_list.setMaximumHeight(210)
+        self.episode_selection_list.itemChanged.connect(self._update_episode_selection_status)
+        detail_layout.addWidget(self.episode_selection_list)
         self.use_dataset_button = QPushButton("Use dataset for training")
-        self.use_dataset_button.clicked.connect(lambda: self._show_page(5))
+        self.use_dataset_button.clicked.connect(lambda: self._show_page(3))
         detail_layout.addWidget(self.use_dataset_button)
-        columns.addWidget(detail_card, 2)
+        columns.addWidget(detail_card, 1)
         layout.addLayout(columns, 1)
         return page
 
@@ -596,301 +562,8 @@ class TrainingWindow(QMainWindow):
         data_layout.addWidget(self.preparation_status)
         layout.addWidget(data_card)
 
-        preview_card, preview_layout = self._card(
-            "Camera and mask previews",
-            "Inspect the recorded camera view and target mask. The ACT bin-picking trainer consumes full recorded observations; tiling and image augmentation remain preview-only.",
-        )
-        preview_buttons = QHBoxLayout()
-        tiling_button = QPushButton("Open Tiling Preview")
-        tiling_button.clicked.connect(lambda: self._show_page(3))
-        augmentation_button = QPushButton("Open Augmentation Preview")
-        augmentation_button.clicked.connect(lambda: self._show_page(4))
-        preview_buttons.addWidget(tiling_button)
-        preview_buttons.addWidget(augmentation_button)
-        preview_layout.addLayout(preview_buttons)
-        layout.addWidget(preview_card)
         layout.addStretch(1)
         return page
-
-    def _build_tiling_preview(self) -> QWidget:
-        page, layout = self._new_page(
-            "Tiling Preview",
-            "Preview overlapping crops from a bin-picking camera frame. Tiling does not alter ACT training inputs.",
-        )
-        source_card, source_layout = self._card(
-            "Preview image",
-            "Select a local PNG or JPEG camera frame. This preview does not modify the dataset or training pipeline.",
-        )
-        source_row = QHBoxLayout()
-        self.preview_image_path = QLineEdit()
-        self.preview_image_path.setReadOnly(True)
-        self.preview_image_path.setPlaceholderText("No camera frame selected")
-        browse_image = QPushButton("Choose image…")
-        browse_image.clicked.connect(lambda: self._choose_preview_image(self.tiling_canvas))
-        source_row.addWidget(self.preview_image_path, 1)
-        source_row.addWidget(browse_image)
-        source_layout.addLayout(source_row)
-        controls = QGridLayout()
-        self.tiling_enabled = QCheckBox("Enable tiling in preview")
-        self.tiling_enabled.setChecked(True)
-        self.tiling_enabled.setToolTip("This switch affects only the visualization. ACT training still consumes full camera frames.")
-        controls.addWidget(self.tiling_enabled, 0, 0, 1, 2)
-        self.tile_size = self._spin(64, 1024, 256)
-        self.tile_overlap = self._spin(0, 75, 25)
-        for col, (label, widget) in enumerate((
-            ("Tile size (px)", self.tile_size),
-            ("Overlap (%)", self.tile_overlap),
-        )):
-            controls.addWidget(QLabel(label), 1, col)
-            controls.addWidget(widget, 2, col)
-            widget.valueChanged.connect(self._update_tiling_preview)
-        tiling_extras = QLabel(
-            "SkinEye also filters tiles by visible defect area and black background, and can add positive crops with position jitter. "
-            "Those label-based controls are unavailable for SO-101 trajectories: this dataset has no defect boxes or positive/negative classes."
-        )
-        tiling_extras.setWordWrap(True)
-        tiling_extras.setObjectName("mutedText")
-        source_layout.addWidget(tiling_extras)
-        label_controls = QGridLayout()
-        self.tile_min_visible = self._spin(0, 100, 50)
-        self.tile_max_black = self._spin(0, 100, 70)
-        self.tile_extra_positive = self._spin(0, 20, 0)
-        self.tile_position_jitter = self._spin(0, 100, 0)
-        for column, (label, widget) in enumerate((
-            ("Min visible defect (%)", self.tile_min_visible),
-            ("Max black background (%)", self.tile_max_black),
-            ("Extra positive crops per defect", self.tile_extra_positive),
-            ("Crop position jitter (%)", self.tile_position_jitter),
-        )):
-            widget.setEnabled(False)
-            widget.setToolTip("Requires defect boxes and labels; this SO-101 task dataset contains robot trajectories.")
-            label_controls.addWidget(QLabel(label), 0, column)
-            label_controls.addWidget(widget, 1, column)
-        source_layout.addLayout(label_controls)
-        self.tiling_enabled.toggled.connect(self._update_tiling_preview)
-        source_layout.addLayout(controls)
-        self.tiling_canvas = TilingCanvas()
-        source_layout.addWidget(self.tiling_canvas)
-        self.tile_summary = QLabel("Tile preview: 256 px · 25% overlap")
-        self.tile_summary.setObjectName("mutedText")
-        source_layout.addWidget(self.tile_summary)
-        layout.addWidget(source_card, 1)
-        return page
-
-    def _build_augmentation(self) -> QWidget:
-        page, layout = self._new_page(
-            "Augmentation and Preview",
-            "Preview image transforms and configure supported camera-frame augmentation for training.",
-        )
-        card, card_layout = self._card(
-            "Image transform preview",
-            "Choose a local camera frame and compare simple visual transforms. Robot-space and action labels are unchanged here.",
-        )
-        source_row = QHBoxLayout()
-        self.augmentation_image_path = QLineEdit()
-        self.augmentation_image_path.setReadOnly(True)
-        self.augmentation_image_path.setPlaceholderText("No camera frame selected")
-        browse = QPushButton("Choose image…")
-        browse.clicked.connect(lambda: self._choose_preview_image(self.augmentation_canvas))
-        source_row.addWidget(self.augmentation_image_path, 1)
-        source_row.addWidget(browse)
-        card_layout.addLayout(source_row)
-        control_row = QHBoxLayout()
-        control_row.addWidget(QLabel("Transform"))
-        self.augmentation_method = QComboBox()
-        self.augmentation_method.addItems([
-            "Original", "Horizontal flip", "Vertical flip", "Rotate +10°", "Rotate -10°",
-            "Brightness +20%", "Brightness -20%",
-        ])
-        self.augmentation_method.currentIndexChanged.connect(self._update_augmentation_preview)
-        control_row.addWidget(self.augmentation_method)
-        control_row.addStretch(1)
-        card_layout.addLayout(control_row)
-        self.augmentation_canvas = QLabel("Select a camera frame to preview transforms")
-        self.augmentation_canvas.setAlignment(Qt.AlignCenter)
-        self.augmentation_canvas.setMinimumSize(480, 360)
-        self.augmentation_canvas.setStyleSheet("background: #20232b; color: white; border-radius: 8px;")
-        card_layout.addWidget(self.augmentation_canvas, 1)
-        self.augmentation_note = QLabel(
-            "ACT bin-picking training currently uses the recorded RGB and target-mask inputs without online image transforms."
-        )
-        self.augmentation_note.setObjectName("mutedText")
-        self.augmentation_note.setWordWrap(True)
-        card_layout.addWidget(self.augmentation_note)
-
-        training_card, training_layout = self._card(
-            "Training-time image augmentation",
-            "Online image transforms are disabled for the bin-picking ACT trainer. The original dataset remains unchanged.",
-        )
-        self.augmentation_enabled = QCheckBox("Enable random image transforms during training")
-        self.augmentation_enabled.setEnabled(False)
-        self.augmentation_enabled.setToolTip("The bin-picking ACT training script does not expose image transforms.")
-        training_layout.addWidget(self.augmentation_enabled)
-        top_row = QHBoxLayout()
-        top_row.addWidget(QLabel("Maximum transforms per frame"))
-        self.max_transforms = self._spin(1, 6, 3)
-        top_row.addWidget(self.max_transforms)
-        self.random_transform_order = QCheckBox("Randomize transform order")
-        top_row.addWidget(self.random_transform_order)
-        top_row.addStretch(1)
-        training_layout.addLayout(top_row)
-        self.augmentation_controls = {}
-        augmentation_grid = QGridLayout()
-        for col, heading in enumerate(("Transform", "Magnitude", "Sampling weight")):
-            augmentation_grid.addWidget(QLabel(heading), 0, col)
-        for row, (key, title, transform, magnitude, maximum, step) in enumerate((
-            ("brightness", "Brightness", "ColorJitter", 0.20, 0.80, 0.05),
-            ("contrast", "Contrast", "ColorJitter", 0.20, 0.80, 0.05),
-            ("saturation", "Saturation", "ColorJitter", 0.30, 1.00, 0.05),
-            ("hue", "Hue", "ColorJitter", 0.03, 0.20, 0.01),
-            ("sharpness", "Sharpness", "SharpnessJitter", 0.30, 1.00, 0.05),
-            ("affine", "Small affine jitter", "RandomAffine", 3.0, 20.0, 1.0),
-        )):
-            enabled = QCheckBox(title)
-            strength = QDoubleSpinBox()
-            strength.setRange(0.0, maximum)
-            strength.setSingleStep(step)
-            strength.setValue(magnitude)
-            strength.setDecimals(2)
-            weight = self._spin(0, 100, 100)
-            augmentation_grid.addWidget(enabled, row + 1, 0)
-            augmentation_grid.addWidget(strength, row + 1, 1)
-            augmentation_grid.addWidget(weight, row + 1, 2)
-            self.augmentation_controls[key] = (enabled, strength, transform, weight)
-        training_layout.addLayout(augmentation_grid)
-        categories_card, categories_layout = self._card(
-            "SkinEye technique catalogue",
-            "SkinEye stores an independent probability and minimum/maximum magnitude for each dataset augmentation."
-        )
-        catalogue = QGridLayout()
-        catalogue.addWidget(QLabel("Technique"), 0, 0)
-        catalogue.addWidget(QLabel("Probability"), 0, 1)
-        catalogue.addWidget(QLabel("Magnitude min / max"), 0, 2)
-        self.skin_augmentation_controls = {}
-        for row, (key, title, p, low, high) in enumerate((
-            ("horizontal_flip", "Horizontal flip", .5, 1, 1),
-            ("vertical_flip", "Vertical flip", 0, 1, 1),
-            ("rotate", "Rotate", .2, -10, 10),
-            ("translate", "Translate", .2, 0, .1),
-            ("scale", "Scale", .2, .9, 1.1),
-            ("stretch", "Stretch", 0, .9, 1.1),
-            ("shear", "Shear", 0, -2, 2),
-            ("perspective", "Perspective", 0, 0, .0005),
-            ("gaussian_noise", "Gaussian noise", .1, 0, .02),
-            ("intensity_scale", "Intensity scale", .2, .8, 1.2),
-            ("cutout", "Cutout", 0, 0, .2),
-        ), 1):
-            label = QLabel(title)
-            probability = QDoubleSpinBox()
-            probability.setRange(0, 1)
-            probability.setSingleStep(.05)
-            probability.setDecimals(2)
-            probability.setValue(p)
-            magnitude_min = QDoubleSpinBox()
-            magnitude_max = QDoubleSpinBox()
-            for widget, value in ((magnitude_min, low), (magnitude_max, high)):
-                widget.setRange(-100, 100)
-                widget.setDecimals(4)
-                widget.setValue(value)
-                widget.setEnabled(False)
-            probability.setEnabled(False)
-            reason = "SkinEye catalogue reference. These per-technique probability/range values are not stored or applied by ACT's current LeRobot transform pipeline."
-            label.setToolTip(reason)
-            probability.setToolTip(reason)
-            magnitude_min.setToolTip(reason)
-            magnitude_max.setToolTip(reason)
-            range_row = QHBoxLayout()
-            range_row.addWidget(magnitude_min)
-            range_row.addWidget(QLabel("to"))
-            range_row.addWidget(magnitude_max)
-            catalogue.addWidget(label, row, 0)
-            catalogue.addWidget(probability, row, 1)
-            catalogue.addLayout(range_row, row, 2)
-            self.skin_augmentation_controls[key] = (probability, magnitude_min, magnitude_max)
-        categories_layout.addLayout(catalogue)
-        training_layout.addWidget(categories_card)
-        online_card, online_layout = self._card(
-            "Online expansion",
-            "Mosaic, MixUp and Copy-paste are detection-label transforms and cannot be applied to action chunks."
-        )
-        online_row = QHBoxLayout()
-        self.online_expansion_controls = []
-        for label in ("Mosaic", "MixUp", "Copy-paste"):
-            probability = QDoubleSpinBox()
-            probability.setRange(0, 1)
-            probability.setSingleStep(.05)
-            probability.setDecimals(2)
-            probability.setEnabled(False)
-            probability.setToolTip("Requires object-detection labels; disabled for SO-101 imitation learning.")
-            online_row.addWidget(QLabel(label))
-            online_row.addWidget(probability)
-            self.online_expansion_controls.append(probability)
-        online_layout.addLayout(online_row)
-        training_layout.addWidget(online_card)
-        layout.addWidget(card, 1)
-        layout.addWidget(training_card)
-        return page
-
-    def _choose_preview_image(self, target: QWidget) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select a camera frame", str(DATA_DIR), "Images (*.png *.jpg *.jpeg *.bmp)"
-        )
-        if not path:
-            return
-        image = QImage(path)
-        if image.isNull():
-            self._show_error("Could not load the selected image file.")
-            return
-        image = image.scaled(1600, 1200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self._preview_source = image
-        self.preview_image_path.setText(path)
-        self.augmentation_image_path.setText(path)
-        self._update_tiling_preview()
-        self._update_augmentation_preview()
-
-    def _update_tiling_preview(self, *_args) -> None:
-        if not hasattr(self, "tile_size"):
-            return
-        size, overlap = self.tile_size.value(), self.tile_overlap.value() / 100
-        image = getattr(self, "_preview_source", QImage())
-        enabled = self.tiling_enabled.isChecked()
-        self.tiling_canvas.set_preview(image, size, overlap, enabled)
-        columns = len(TilingCanvas._positions(image.width(), size, overlap)) if not image.isNull() else 0
-        rows = len(TilingCanvas._positions(image.height(), size, overlap)) if not image.isNull() else 0
-        self.tile_summary.setText(
-            f"Tile preview: {size} px · {overlap:.0%} overlap · approximately {rows * columns} crops"
-            if enabled else "Tiling preview disabled · displaying the full camera frame"
-        )
-
-    def _update_augmentation_preview(self, *_args) -> None:
-        if not hasattr(self, "augmentation_canvas"):
-            return
-        image = getattr(self, "_preview_source", QImage())
-        if image.isNull():
-            self.augmentation_canvas.setText("Select a camera frame to preview transforms")
-            return
-        method = self.augmentation_method.currentText()
-        if method == "Horizontal flip":
-            image = image.mirrored(True, False)
-        elif method == "Vertical flip":
-            image = image.mirrored(False, True)
-        elif method.startswith("Rotate"):
-            transform = QTransform().rotate(10 if "+" in method else -10)
-            image = image.transformed(transform, Qt.SmoothTransformation)
-        elif method.startswith("Brightness"):
-            factor = 1.2 if "+" in method else 0.8
-            image = image.convertToFormat(QImage.Format_ARGB32)
-            for y in range(image.height()):
-                for x in range(image.width()):
-                    color = image.pixelColor(x, y)
-                    color.setRed(min(255, int(color.red() * factor)))
-                    color.setGreen(min(255, int(color.green() * factor)))
-                    color.setBlue(min(255, int(color.blue() * factor)))
-                    image.setPixelColor(x, y, color)
-        pixmap = QPixmap.fromImage(image).scaled(
-            self.augmentation_canvas.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )
-        self.augmentation_canvas.setPixmap(pixmap)
 
     def _build_training(self) -> QWidget:
         page, layout = self._new_page(
@@ -919,6 +592,7 @@ class TrainingWindow(QMainWindow):
 
         dataset_card, dataset_layout = self._card("Training dataset")
         self.dataset = QLineEdit("bin_pick_v1")
+        self.dataset.setReadOnly(True)
         self.dataset.textChanged.connect(self._update_dataset_status)
         dataset_layout.addWidget(QLabel("Dataset folder inside demos/09_voice_bin_picking/data"))
         dataset_layout.addWidget(self.dataset)
@@ -937,8 +611,8 @@ class TrainingWindow(QMainWindow):
         self.policy_model.addItem("ACT — Action Chunking Transformer", "act")
         self.policy_model.setEnabled(False)
         self.backbone = QComboBox()
-        self.backbone.addItem("ResNet18 (bin-picking ACT configuration)")
-        self.backbone.setEnabled(False)
+        for backbone in ("resnet18", "resnet34", "resnet50"):
+            self.backbone.addItem(backbone.upper(), backbone)
         model_grid.addWidget(QLabel("Policy"), 0, 0)
         model_grid.addWidget(self.policy_model, 1, 0)
         model_grid.addWidget(QLabel("Vision backbone"), 0, 1)
@@ -966,24 +640,27 @@ class TrainingWindow(QMainWindow):
         self.pretrained_backbone = QCheckBox("Initialize backbone with ImageNet weights")
         self.pretrained_backbone.setChecked(True)
         model_layout.addWidget(self.pretrained_backbone)
-        model_note = QLabel("The bin-picking ACT configuration uses a ResNet18 visual encoder and recorded RGB/mask observations.")
+        model_note = QLabel("Larger ResNet backbones use more GPU memory and training time. ImageNet weights are available for all listed backbones.")
         model_note.setObjectName("mutedText")
         model_note.setWordWrap(True)
         model_layout.addWidget(model_note)
         layout.addWidget(model_card)
 
-        params_card, params_layout = self._card("Training configuration")
+        params_card, params_layout = self._card(
+            "Training configuration",
+            "Suggested first run: 10,000 steps, batch 8, 50-action chunks and replan every 10 actions. Start with ResNet18 and the ACT defaults below.",
+        )
         params = QGridLayout()
-        self.steps = self._spin(1, 1_000_000, 50_000)
-        self.batch = self._spin(1, 512, 16)
+        self.steps = self._spin(1, 1_000_000, 10_000)
+        self.batch = self._spin(1, 512, 8)
         self.chunk = self._spin(1, 1000, 50)
-        self.action_steps = self._spin(1, 1000, 25)
+        self.action_steps = self._spin(1, 1000, 10)
         self.seed = self._spin(0, 2_147_483_647, 1000)
         self.device = QComboBox()
         self.device.addItems(["cuda", "cpu"])
         self.learning_rate = QLineEdit("1e-5")
         self.episodes = QLineEdit()
-        self.episodes.setPlaceholderText("All episodes; optional: 0-39")
+        self.episodes.setPlaceholderText("Optional additional filter: 0-39")
         fields = (
             ("Training steps", self.steps),
             ("Batch size", self.batch),
@@ -1060,28 +737,36 @@ class TrainingWindow(QMainWindow):
         advanced_card, advanced_layout = self._card("ACT architecture options", "Policy architecture settings that do not appear in SkinEye's detector training form.")
         advanced = QGridLayout()
         self.weight_decay = QLineEdit("1e-4")
-        self.weight_decay.setEnabled(False)
-        self.weight_decay.setToolTip("Weight decay cannot be overridden by the bin-picking ACT trainer CLI.")
-        self.backbone_lr = QLineEdit("1e-4")
-        self.backbone_lr.setEnabled(False)
-        self.backbone_lr.setToolTip("The bin-picking ACT trainer uses its fixed ResNet18 learning-rate preset.")
+        self.weight_decay.setToolTip("AdamW weight decay. Set 0 to disable this regularization.")
+        self.backbone_lr = QLineEdit("1e-5")
+        self.backbone_lr.setToolTip("Separate learning rate for the pretrained ResNet vision backbone.")
         self.dropout = QLineEdit("0.1")
-        self.dropout.setEnabled(False)
-        self.dropout.setToolTip("This ACT training script does not expose a dropout override.")
+        self.dropout.setToolTip("Dropout probability used inside ACT's transformer.")
         self.kl_weight = QLineEdit("10.0")
         self.dim_model = self._spin(64, 2048, 512)
-        self.dim_model.setEnabled(False)
         self.encoder_layers = self._spin(1, 16, 4)
-        self.encoder_layers.setEnabled(False)
         self.decoder_layers = self._spin(1, 8, 1)
-        self.decoder_layers.setEnabled(False)
         self.attention_heads = self._spin(1, 32, 8)
-        self.attention_heads.setEnabled(False)
         self.latent_dim = self._spin(1, 512, 32)
-        self.latent_dim.setEnabled(False)
+        self.feedforward_dim = self._spin(128, 16384, 3200)
+        self.vae_encoder_layers = self._spin(1, 16, 4)
+        self.feedforward_activation = QComboBox()
+        self.feedforward_activation.addItems(["relu", "gelu"])
+        self.replace_final_stride = QCheckBox("Use dilation in the final ResNet stage")
+        self.replace_final_stride.setToolTip("Preserves more spatial detail and increases compute/memory use.")
+        self.temporal_ensemble = QCheckBox("Enable temporal action ensembling")
+        self.temporal_ensemble.setToolTip("Smooths overlapping action chunks at inference; requires one action per prediction.")
+        self.temporal_ensemble_coeff = QDoubleSpinBox()
+        self.temporal_ensemble_coeff.setRange(0.001, 1.0)
+        self.temporal_ensemble_coeff.setSingleStep(0.01)
+        self.temporal_ensemble_coeff.setDecimals(3)
+        self.temporal_ensemble_coeff.setValue(0.01)
+        self.temporal_ensemble_coeff.setEnabled(False)
+        self.temporal_ensemble.toggled.connect(self.temporal_ensemble_coeff.setEnabled)
+        self.pre_norm = QCheckBox("Pre-normalize transformer inputs")
+        self.pre_norm.setToolTip("Changes transformer normalization order; retain the default unless comparing a separate experiment.")
         self.use_amp = QCheckBox("Use mixed precision when supported")
-        self.use_amp.setEnabled(False)
-        self.use_amp.setToolTip("Mixed precision is not exposed by this bin-picking ACT trainer.")
+        self.use_amp.setToolTip("Uses lower precision on supported CUDA devices to reduce memory and often improve throughput.")
         self.optimizer = QComboBox()
         self.optimizer.addItem("AdamW (ACT policy preset)")
         self.optimizer.setEnabled(False)
@@ -1100,10 +785,13 @@ class TrainingWindow(QMainWindow):
             ("Dropout", self.dropout),
             ("KL loss weight", self.kl_weight),
             ("Transformer hidden dimension", self.dim_model),
+            ("Transformer feed-forward dimension", self.feedforward_dim),
+            ("Feed-forward activation", self.feedforward_activation),
             ("Transformer encoder layers", self.encoder_layers),
             ("Transformer decoder layers", self.decoder_layers),
             ("Attention heads", self.attention_heads),
             ("VAE latent dimension", self.latent_dim),
+            ("VAE encoder layers", self.vae_encoder_layers),
             ("Optimizer", self.optimizer),
             ("Log metrics every N steps", self.log_freq),
         )
@@ -1112,6 +800,11 @@ class TrainingWindow(QMainWindow):
             cell.addWidget(QLabel(label))
             cell.addWidget(widget)
             advanced.addLayout(cell, index // 3, index % 3)
+        advanced.addWidget(self.pre_norm, 4, 0, 1, 2)
+        advanced.addWidget(self.use_amp, 4, 2)
+        advanced.addWidget(self.replace_final_stride, 5, 0, 1, 3)
+        advanced.addWidget(self.temporal_ensemble, 6, 0, 1, 2)
+        advanced.addWidget(self.temporal_ensemble_coeff, 6, 2)
         advanced_layout.addLayout(advanced)
         self.deterministic = QCheckBox("Deterministic run (more reproducible; may be slower)")
         self.deterministic.setEnabled(False)
@@ -1130,8 +823,8 @@ class TrainingWindow(QMainWindow):
         wandb_form.addRow("W&B entity", self.wandb_entity)
         advanced_layout.addLayout(wandb_form)
         supported_note = QLabel(
-            "Enabled ACT controls map to this trainer: learning rate, KL weight, VAE, observation inputs, "
-            "dataset episode selection, worker count and checkpoint/log intervals. Other architecture values are fixed by the policy config."
+            "ACT architecture, optimizer regularization, observation inputs, data selection, mixed precision and run intervals are passed to the trainer. "
+            "The script checks the selected LeRobot version and reports unsupported options before training."
         )
         supported_note.setWordWrap(True)
         supported_note.setObjectName("mutedText")
@@ -1139,7 +832,14 @@ class TrainingWindow(QMainWindow):
         layout.addWidget(advanced_card)
 
         output_card, output_layout = self._card("Experiment output")
-        self.output_name = QLineEdit("act_rgb_mask_run")
+        self.output_stage = QComboBox()
+        self.output_stage.addItem("Pick-up — grasp and present", "Pick-up")
+        self.output_stage.addItem("Up-down — sort into bins", "Up-down")
+        self.output_stage.setToolTip("Selects the output folder for this run. Choose task groups and episodes separately in Datasets.")
+        self.output_stage.currentIndexChanged.connect(self._update_output_path)
+        output_layout.addWidget(QLabel("Training task / output folder"))
+        output_layout.addWidget(self.output_stage)
+        self.output_name = QLineEdit("act_baseline_10k")
         self.output_name.textChanged.connect(self._update_output_path)
         output_layout.addWidget(QLabel("Use a new name; existing runs will not be overwritten"))
         output_layout.addWidget(self.output_name)
@@ -1154,7 +854,7 @@ class TrainingWindow(QMainWindow):
         self.start_button.setObjectName("primaryButton")
         self.start_button.clicked.connect(self._start_training)
         go_console = QPushButton("Open console")
-        go_console.clicked.connect(lambda: self._show_page(7))
+        go_console.clicked.connect(lambda: self._show_page(5))
         controls.addWidget(self.start_button)
         controls.addWidget(go_console)
         controls.addStretch(1)
@@ -1427,12 +1127,17 @@ class TrainingWindow(QMainWindow):
         total = int(metadata.get("total_episodes", 0))
         if total < 1:
             raise ValueError("The selected dataset does not report any episodes.")
-        available = list(range(total))
+        available = self._selected_dataset_episode_ids()
+        if not available:
+            raise ValueError("Select at least one episode from the dataset page.")
         selected_text = self.episodes.text().strip()
         if selected_text:
-            available = self._parse_episode_ids(selected_text)
-            if any(index < 0 or index >= total for index in available):
+            requested_ids = self._parse_episode_ids(selected_text)
+            if any(index < 0 or index >= total for index in requested_ids):
                 raise ValueError(f"Episode IDs must be between 0 and {total - 1}.")
+            if not set(requested_ids).issubset(available):
+                raise ValueError("The episode list includes episodes outside the selected task groups.")
+            available = requested_ids
         if self.split_mode.currentData() == "manual":
             train_text, validation_text, test_text = (edit.text().strip() for edit in self.manual_episode_edits)
             if not train_text:
@@ -1445,6 +1150,8 @@ class TrainingWindow(QMainWindow):
                 raise ValueError("Training, validation and test episode lists must not overlap.")
             if any(index < 0 or index >= total for ids in sets for index in ids):
                 raise ValueError(f"Episode IDs must be between 0 and {total - 1}.")
+            if any(not ids.issubset(available) for ids in sets):
+                raise ValueError("Manual episode lists must stay within the selected task groups and episode filter.")
         else:
             percentages = [widget.value() for widget in self.split_percent_widgets]
             if sum(percentages) != 100 or percentages[0] <= 0:
@@ -1469,6 +1176,10 @@ class TrainingWindow(QMainWindow):
         return {
             "dataset": self.dataset.text().strip(),
             "repo_id": self._dataset_repo_id(),
+            "task_groups": sorted({
+                group for episode in available
+                for group in self._episode_group_map.get(episode, set())
+            }),
             "total_episodes": total,
             "train_episodes": sorted(train_ids),
             "validation_episodes": sorted(validation_ids),
@@ -1552,8 +1263,7 @@ class TrainingWindow(QMainWindow):
         except ValueError:
             weight_decay_value = 1e-4
         weight_decay = float_control(weight_decay_value, 0.0, 1.0, 0.0001, 6)
-        weight_decay.setEnabled(False)
-        weight_decay.setToolTip("The bin-picking trainer does not expose a weight-decay CLI option.")
+        weight_decay.setToolTip("AdamW weight decay; set to 0 to disable.")
         form.addRow("Weight decay", weight_decay)
         warmup_epochs = float_control(self.warmup_epochs, 0.0, 1000.0, 0.5, 1)
         warmup_epochs.setEnabled(False)
@@ -1584,8 +1294,8 @@ class TrainingWindow(QMainWindow):
         for key, label, checked, enabled, tip in (
             ("cos_lr", "Cosine learning-rate schedule", self.cosine_schedule, False,
              "This bin-picking ACT trainer does not expose scheduler overrides."),
-            ("amp", "Automatic mixed precision", self.use_amp.isChecked(), False,
-             "This bin-picking ACT trainer does not expose mixed precision."),
+            ("amp", "Automatic mixed precision", self.use_amp.isChecked(), True,
+             "Uses mixed precision on supported CUDA devices."),
             ("deterministic", "Deterministic training", self.deterministic.isChecked(), False,
              "This bin-picking ACT trainer does not expose a deterministic-mode flag."),
             ("cache", "Cache training images", False, False,
@@ -1609,36 +1319,12 @@ class TrainingWindow(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
         self.learning_rate.setText(f"{lr0.value():.8g}")
+        self.weight_decay.setText(f"{weight_decay.value():.8g}")
+        self.use_amp.setChecked(checks["amp"].isChecked())
         self.dataset_fraction = dataset_fraction.value()
         self.workers.setValue(workers.value())
         self.save_freq.setValue(save_period.value())
         self.statusBar().showMessage("Advanced training options saved for the next run")
-
-    def _image_transform_payload(self) -> dict | None:
-        if not self.augmentation_enabled.isChecked():
-            return None
-        transforms = {}
-        for key, (enabled, strength, transform, weight) in self.augmentation_controls.items():
-            if not enabled.isChecked() or weight.value() <= 0:
-                continue
-            amount = strength.value()
-            if key in {"brightness", "contrast", "saturation"}:
-                kwargs = {key: (max(0.0, 1.0 - amount), 1.0 + amount)}
-            elif key == "hue":
-                kwargs = {"hue": (-amount, amount)}
-            elif key == "sharpness":
-                kwargs = {"sharpness": (max(0.0, 1.0 - amount), 1.0 + amount)}
-            else:
-                kwargs = {"degrees": (-amount, amount), "translate": (0.05, 0.05)}
-            transforms[key] = {"weight": weight.value() / 100, "type": transform, "kwargs": kwargs}
-        if not transforms:
-            raise ValueError("Enable at least one transform and give it a sampling weight above zero.")
-        return {
-            "enable": True,
-            "max_num_transforms": min(self.max_transforms.value(), len(transforms)),
-            "random_order": self.random_transform_order.isChecked(),
-            "tfs": transforms,
-        }
 
     def _dataset_dir(self) -> Path:
         return DATA_DIR / self.dataset.text().strip()
@@ -1669,7 +1355,8 @@ class TrainingWindow(QMainWindow):
             self.preparation_status.setStyleSheet("color: #26734d;" if ready else "color: #9a5a00;")
 
     def _refresh_datasets(self) -> None:
-        self.dataset_list.clear()
+        previous_dataset = self.dataset.text().strip()
+        self.local_dataset_combo.clear()
         datasets = []
         if DATA_DIR.is_dir():
             datasets = sorted(
@@ -1677,34 +1364,76 @@ class TrainingWindow(QMainWindow):
                 if folder.is_dir() and (folder / "meta" / "info.json").is_file()
             )
         for folder in datasets:
-            item = QListWidgetItem(folder.name)
-            item.setData(Qt.ItemDataRole.UserRole, str(folder))
-            self.dataset_list.addItem(item)
-        if not datasets:
+            self.local_dataset_combo.addItem(folder.name, str(folder))
+        if datasets:
+            selected_index = self.local_dataset_combo.findText(previous_dataset)
+            self.local_dataset_combo.setCurrentIndex(max(0, selected_index))
+        else:
+            self.dataset.clear()
             self.dataset_details.setPlainText(
                 "No local datasets found yet.\n\n"
                 "Use demos/09_voice_bin_picking/tools/collect_demos.py to record and validate bin-picking episodes before training."
             )
+            self.task_group_list.clear()
+            self.episode_selection_list.clear()
+            self._update_episode_selection_status()
         self._update_summary()
 
     def _refresh_hub_datasets(self) -> None:
         self._launch_hub_action("list")
 
     def _hub_dataset_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+        self._hub_dataset_selection_changed(current)
+
+    def _hub_dataset_selection_changed(self, *_args, update_status: bool = True) -> None:
+        selected = sum(
+            self.hub_dataset_list.item(row).checkState() == Qt.CheckState.Checked
+            for row in range(self.hub_dataset_list.count())
+        )
+        total = self.hub_dataset_list.count()
+        if update_status:
+            self.hub_status.setText(f"{selected} of {total} datasets checked.")
         self.hub_download_button.setEnabled(
-            current is not None and bool(current.data(Qt.ItemDataRole.UserRole))
-            and self.hub_process.state() == QProcess.NotRunning
+            selected > 0 and self.hub_process.state() == QProcess.NotRunning
         )
 
-    def _download_hub_dataset(self) -> None:
-        item = self.hub_dataset_list.currentItem()
-        if item is None:
-            return
-        repo_id = item.data(Qt.ItemDataRole.UserRole)
-        if repo_id:
-            self._launch_hub_action("download", repo_id=repo_id)
+    def _set_hub_selection(self, selected: bool) -> None:
+        state = Qt.CheckState.Checked if selected else Qt.CheckState.Unchecked
+        self.hub_dataset_list.blockSignals(True)
+        for row in range(self.hub_dataset_list.count()):
+            self.hub_dataset_list.item(row).setCheckState(state)
+        self.hub_dataset_list.blockSignals(False)
+        self._hub_dataset_selection_changed()
 
-    def _launch_hub_action(self, action: str, repo_id: str | None = None) -> None:
+    def _download_hub_dataset(self) -> None:
+        self._hub_download_queue = [
+            str(item.data(Qt.ItemDataRole.UserRole))
+            for row in range(self.hub_dataset_list.count())
+            if (item := self.hub_dataset_list.item(row)).checkState() == Qt.CheckState.Checked
+        ]
+        if not self._hub_download_queue:
+            return
+        self._hub_downloaded = []
+        self._hub_download_failed = []
+        self._download_next_hub_dataset()
+
+    def _download_next_hub_dataset(self) -> None:
+        if self._hub_download_queue:
+            self._hub_current_repo = self._hub_download_queue.pop(0)
+            self._launch_hub_action("download", repo_id=self._hub_current_repo, clear_log=False)
+            self.hub_status.setText(
+                f"Downloading {self._hub_current_repo} ({len(self._hub_downloaded) + len(self._hub_download_failed) + 1} of "
+                f"{len(self._hub_downloaded) + len(self._hub_download_failed) + len(self._hub_download_queue) + 1})…"
+            )
+            return
+        summary = f"Finished: {len(self._hub_downloaded)} downloaded"
+        if self._hub_download_failed:
+            summary += f", {len(self._hub_download_failed)} failed"
+        self.hub_status.setText(summary + ". Select one downloaded dataset in the local list for each training run.")
+        self.hub_refresh_button.setEnabled(True)
+        self._hub_dataset_selection_changed(update_status=False)
+
+    def _launch_hub_action(self, action: str, repo_id: str | None = None, clear_log: bool = True) -> None:
         if self.hub_process.state() != QProcess.NotRunning:
             return
         if not HF_DATASET_HELPER.is_file():
@@ -1715,7 +1444,8 @@ class TrainingWindow(QMainWindow):
             args.extend(["--repo-id", str(repo_id)])
         self._hub_action = action
         self._hub_output = ""
-        self.hub_log.clear()
+        if clear_log:
+            self.hub_log.clear()
         self.hub_status.setText("Loading Hugging Face datasets…" if action == "list" else f"Downloading {repo_id}…")
         self.hub_refresh_button.setEnabled(False)
         self.hub_download_button.setEnabled(False)
@@ -1741,8 +1471,15 @@ class TrainingWindow(QMainWindow):
         self.hub_refresh_button.setEnabled(True)
         if not result or not result.get("ok") or exit_code != 0:
             message = result.get("error") if result else "Could not read the Hugging Face helper response."
-            self.hub_status.setText(f"Hugging Face request failed: {message} Sign in with `hf auth login` if the dataset is private.")
-            self._hub_dataset_selected(self.hub_dataset_list.currentItem(), None)
+            if self._hub_action == "download":
+                self._hub_download_failed.append(self._hub_current_repo)
+                self.hub_log.appendPlainText(f"Download failed for {self._hub_current_repo}: {message}")
+                self._download_next_hub_dataset()
+            else:
+                self.hub_status.setText(
+                    f"Hugging Face request failed: {message} Sign in with `hf auth login` if the dataset is private."
+                )
+                self._hub_dataset_selected(self.hub_dataset_list.currentItem(), None)
             return
         if self._hub_action == "list":
             datasets = result.get("datasets", [])
@@ -1753,33 +1490,46 @@ class TrainingWindow(QMainWindow):
                 size_text = self._format_byte_size(storage) if isinstance(storage, (int, float)) else "size unknown"
                 visibility = "private" if dataset.get("private") else "public"
                 item = QListWidgetItem(f"{repo_id}  ·  {visibility}  ·  {size_text}")
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Unchecked)
                 item.setData(Qt.ItemDataRole.UserRole, repo_id)
                 self.hub_dataset_list.addItem(item)
             self.hub_status.setText(
                 f"Found {len(datasets)} dataset repositories for {result.get('author', 'MikelRubi')}. "
-                "Private repositories require a Hugging Face login on this computer."
+                "Check the repositories you want to download. Private repositories require a Hugging Face login on this computer."
             )
         elif self._hub_action == "download":
             local_name = result.get("local_name", "")
-            self.hub_status.setText(
-                f"Dataset ready: {result.get('repo_id')} · {result.get('episodes', '—')} episodes · {result.get('frames', '—')} frames"
-                if not result.get("already_downloaded") else f"Already downloaded: {result.get('repo_id')}"
-            )
+            if result.get("repo_id"):
+                self._hub_downloaded.append(str(result["repo_id"]))
             self._refresh_datasets()
             if local_name:
-                self.dataset.setText(local_name)
-                for row in range(self.dataset_list.count()):
-                    item = self.dataset_list.item(row)
-                    if Path(item.data(Qt.ItemDataRole.UserRole)).name == local_name:
-                        self.dataset_list.setCurrentItem(item)
-                        break
+                local_index = self.local_dataset_combo.findText(local_name)
+                if local_index >= 0:
+                    self.local_dataset_combo.setCurrentIndex(local_index)
+            for row in range(self.hub_dataset_list.count()):
+                item = self.hub_dataset_list.item(row)
+                if item.data(Qt.ItemDataRole.UserRole) == result.get("repo_id"):
+                    item.setCheckState(Qt.CheckState.Unchecked)
+                    break
+            if self._hub_download_queue:
+                self._download_next_hub_dataset()
+                return
+            self._download_next_hub_dataset()
+            return
         self._hub_dataset_selected(self.hub_dataset_list.currentItem(), None)
 
     def _hub_process_error(self, error: QProcess.ProcessError) -> None:
         if error == QProcess.ProcessError.FailedToStart:
             self.hub_refresh_button.setEnabled(True)
-            self._hub_dataset_selected(self.hub_dataset_list.currentItem(), None)
-            self.hub_status.setText(f"Could not start Hugging Face helper: {self.hub_process.errorString()}")
+            message = f"Could not start Hugging Face helper: {self.hub_process.errorString()}"
+            if self._hub_action == "download":
+                self._hub_download_failed.append(self._hub_current_repo)
+                self.hub_log.appendPlainText(message)
+                self._download_next_hub_dataset()
+            else:
+                self._hub_dataset_selected(self.hub_dataset_list.currentItem(), None)
+                self.hub_status.setText(message)
 
     @staticmethod
     def _format_byte_size(value: int | float) -> str:
@@ -1790,16 +1540,19 @@ class TrainingWindow(QMainWindow):
             size /= 1024
         return f"{size:.1f} TB"
 
-    def _dataset_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
-        if current is None:
+    def _dataset_selected(self, index: int) -> None:
+        if index < 0:
             return
-        folder = Path(current.data(Qt.ItemDataRole.UserRole))
+        folder = Path(self.local_dataset_combo.currentData())
         self.dataset.setText(folder.name)
         info_path = folder / "meta" / "info.json"
         try:
             info = json.loads(info_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             self.dataset_details.setPlainText(f"Could not read dataset metadata:\n{exc}")
+            self.task_group_list.clear()
+            self.episode_selection_list.clear()
+            self._update_episode_selection_status()
             return
         features = info.get("features") or {}
         feature_names = list(features) if isinstance(features, dict) else []
@@ -1823,13 +1576,177 @@ class TrainingWindow(QMainWindow):
             except (OSError, ValueError):
                 details.append("Hugging Face manifest: could not be read")
         self.dataset_details.setPlainText("\n".join(details))
+        self._refresh_task_groups(folder)
         self._update_dataset_status()
         self._update_summary()
+
+    def _refresh_task_groups(self, folder: Path) -> None:
+        self.task_group_list.clear()
+        groups: dict[str, set[int]] = {}
+        metadata_dir = folder / "meta"
+
+        tasks_path = metadata_dir / "tasks.parquet"
+        task_names: dict[int, str] = {}
+        legacy_tasks = metadata_dir / "tasks.jsonl"
+        if legacy_tasks.is_file():
+            try:
+                for line in legacy_tasks.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    task_index = row.get("task_index", row.get("index"))
+                    task_name = row.get("task") or row.get("name")
+                    if task_index is not None and task_name:
+                        task_names[int(task_index)] = str(task_name)
+            except (OSError, ValueError, TypeError):
+                task_names.clear()
+        if tasks_path.is_file():
+            try:
+                import pyarrow.parquet as pq
+                for row in pq.read_table(tasks_path).to_pylist():
+                    task_index = row.get("task_index")
+                    task_name = row.get("task") or row.get("name")
+                    if task_index is not None and task_name:
+                        task_names[int(task_index)] = str(task_name)
+            except (ImportError, OSError, ValueError):
+                pass
+
+        episode_files = sorted((metadata_dir / "episodes").glob("chunk-*/file-*.parquet"))
+        if episode_files:
+            try:
+                import pyarrow.parquet as pq
+                for path in episode_files:
+                    for row in pq.read_table(path).to_pylist():
+                        episode = int(row.get("episode_index", -1))
+                        if episode < 0:
+                            continue
+                        values = row.get("tasks") or []
+                        if isinstance(values, str):
+                            values = [values]
+                        for value in values:
+                            if isinstance(value, int):
+                                value = task_names.get(value, str(value))
+                            if isinstance(value, dict):
+                                value = value.get("task") or value.get("name")
+                            if value:
+                                groups.setdefault(str(value), set()).add(episode)
+                        task_index = row.get("task_index")
+                        if task_index is not None and not values:
+                            name = task_names.get(int(task_index), str(task_index))
+                            groups.setdefault(name, set()).add(episode)
+            except (ImportError, OSError, ValueError, TypeError):
+                groups.clear()
+
+        legacy_episodes = metadata_dir / "episodes.jsonl"
+        if not groups and legacy_episodes.is_file():
+            try:
+                for line in legacy_episodes.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    episode = int(row.get("episode_index", -1))
+                    values = row.get("tasks") or []
+                    if isinstance(values, str):
+                        values = [values]
+                    for value in values:
+                        if isinstance(value, int):
+                            value = task_names.get(value, str(value))
+                        if isinstance(value, dict):
+                            value = value.get("task") or value.get("name")
+                        if value and episode >= 0:
+                            groups.setdefault(str(value), set()).add(episode)
+            except (OSError, ValueError, TypeError):
+                groups.clear()
+
+        if not groups:
+            self.task_group_list.addItem("No task groups found; all dataset episodes will be available.")
+        else:
+            self.task_group_list.blockSignals(True)
+            for name, episode_ids in sorted(groups.items()):
+                item = QListWidgetItem(f"{name} ({len(episode_ids)} episodes)")
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked)
+                item.setData(Qt.ItemDataRole.UserRole, sorted(episode_ids))
+                item.setData(Qt.ItemDataRole.UserRole + 1, name)
+                self.task_group_list.addItem(item)
+            self.task_group_list.blockSignals(False)
+        self._episode_group_map = {
+            episode: {name for name, ids in groups.items() if episode in ids}
+            for ids in groups.values() for episode in ids
+        }
+        self._populate_episode_selection(folder, self._episode_group_map)
+
+    def _selected_task_group_names(self) -> list[str]:
+        return [
+            str(item.data(Qt.ItemDataRole.UserRole + 1))
+            for row in range(self.task_group_list.count())
+            if (item := self.task_group_list.item(row)).flags() & Qt.ItemFlag.ItemIsUserCheckable
+            and item.checkState() == Qt.CheckState.Checked
+        ]
+
+    def _populate_episode_selection(self, folder: Path, episode_groups: dict[int, set[str]]) -> None:
+        self.episode_selection_list.blockSignals(True)
+        self.episode_selection_list.clear()
+        try:
+            info = json.loads((folder / "meta" / "info.json").read_text(encoding="utf-8"))
+            count = int(info.get("total_episodes", 0))
+        except (OSError, ValueError, TypeError):
+            count = 0
+        for episode in range(count):
+            groups = sorted(episode_groups.get(episode, set()))
+            group_text = f" · {' / '.join(groups)}" if groups else " · ungrouped"
+            item = QListWidgetItem(f"Episode {episode:04d}{group_text}")
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
+            item.setData(Qt.ItemDataRole.UserRole, episode)
+            self.episode_selection_list.addItem(item)
+        self.episode_selection_list.blockSignals(False)
+        self._update_episode_selection_status()
+
+    def _task_group_changed(self, _item: QListWidgetItem) -> None:
+        selected_groups = set(self._selected_task_group_names())
+        self.episode_selection_list.blockSignals(True)
+        for row in range(self.episode_selection_list.count()):
+            episode_item = self.episode_selection_list.item(row)
+            episode = int(episode_item.data(Qt.ItemDataRole.UserRole))
+            groups = self._episode_group_map.get(episode, set())
+            if groups:
+                episode_item.setCheckState(
+                    Qt.CheckState.Checked if groups & selected_groups else Qt.CheckState.Unchecked
+                )
+        self.episode_selection_list.blockSignals(False)
+        self._update_episode_selection_status()
+
+    def _set_episode_selection(self, selected: bool) -> None:
+        state = Qt.CheckState.Checked if selected else Qt.CheckState.Unchecked
+        self.episode_selection_list.blockSignals(True)
+        for row in range(self.episode_selection_list.count()):
+            self.episode_selection_list.item(row).setCheckState(state)
+        self.episode_selection_list.blockSignals(False)
+        self._update_episode_selection_status()
+
+    def _update_episode_selection_status(self, *_args) -> None:
+        if not hasattr(self, "episode_selection_status"):
+            return
+        total = self.episode_selection_list.count()
+        selected = sum(
+            self.episode_selection_list.item(row).checkState() == Qt.CheckState.Checked
+            for row in range(total)
+        )
+        self.episode_selection_status.setText(f"{selected} of {total} episodes selected")
+
+    def _selected_dataset_episode_ids(self) -> list[int]:
+        return [
+            int(item.data(Qt.ItemDataRole.UserRole))
+            for row in range(self.episode_selection_list.count())
+            if (item := self.episode_selection_list.item(row)).checkState() == Qt.CheckState.Checked
+        ]
 
     def _update_output_path(self) -> None:
         name = self.output_name.text().strip()
         if _NAME.fullmatch(name):
-            path = OUTPUTS_DIR / name
+            stage = self.output_stage.currentData() if hasattr(self, "output_stage") else OUTPUT_TASKS[0]
+            path = OUTPUTS_DIR / str(stage) / name
             suffix = " — already exists; it will not be overwritten" if path.exists() else ""
             self.output_path.setText(str(path) + suffix)
         else:
@@ -1840,15 +1757,14 @@ class TrainingWindow(QMainWindow):
             return
         self.results_list.clear()
         runs = []
-        if OUTPUTS_DIR.is_dir():
-            for folder in OUTPUTS_DIR.iterdir():
-                checkpoint = folder / "checkpoints" / "last" / "pretrained_model"
-                if folder.is_dir():
-                    runs.append((folder, checkpoint if checkpoint.is_dir() else None))
+        for folder in self._training_run_dirs():
+            checkpoint = folder / "checkpoints" / "last" / "pretrained_model"
+            runs.append((folder, checkpoint if checkpoint.is_dir() else None))
         for folder, checkpoint in sorted(runs, key=lambda row: row[0].stat().st_mtime, reverse=True):
             modified = datetime.fromtimestamp(folder.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
             status = "checkpoint ready" if checkpoint else "no final checkpoint"
-            item = QListWidgetItem(f"{folder.name}    ·    {modified}    ·    {status}")
+            stage = folder.parent.name if folder.parent.name in OUTPUT_TASKS else "Legacy"
+            item = QListWidgetItem(f"[{stage}]  {folder.name}    ·    {modified}    ·    {status}")
             item.setData(Qt.ItemDataRole.UserRole, str(checkpoint) if checkpoint else None)
             item.setData(Qt.ItemDataRole.UserRole + 1, str(folder))
             self.results_list.addItem(item)
@@ -1860,6 +1776,22 @@ class TrainingWindow(QMainWindow):
         self._refresh_binpick_reports()
         self._result_selected(self.results_list.currentItem(), None)
         self._update_summary()
+
+    @staticmethod
+    def _training_run_dirs() -> list[Path]:
+        if not OUTPUTS_DIR.is_dir():
+            return []
+        runs = []
+        for entry in OUTPUTS_DIR.iterdir():
+            if not entry.is_dir():
+                continue
+            candidates = entry.iterdir() if entry.name in OUTPUT_TASKS else (entry,)
+            for folder in candidates:
+                if folder.is_dir() and (
+                    (folder / "checkpoints").is_dir() or (folder / "studio_run_config.json").is_file()
+                ):
+                    runs.append(folder)
+        return runs
 
     def _refresh_evaluation_reports(self) -> None:
         self.evaluation_list.clear()
@@ -2140,9 +2072,16 @@ class TrainingWindow(QMainWindow):
                     f"  observations: {studio_config.get('observation_mode', '—')}",
                     f"  episodes train/validation/test: {len(studio_config.get('train_episodes', []))} / "
                     f"{len(studio_config.get('validation_episodes', []))} / {len(studio_config.get('test_episodes', []))}",
+                    f"  selected task groups: {', '.join(studio_config.get('task_groups', [])) or 'all'}",
                     f"  steps / batch / chunk: {studio_config.get('steps', '—')} / {studio_config.get('batch', '—')} / "
                     f"{studio_config.get('action_chunk', '—')}",
                     f"  learning rate: {studio_config.get('learning_rate', '—')}",
+                    f"  backbone / hidden size / heads: {studio_config.get('vision_backbone', '—')} / "
+                    f"{studio_config.get('dim_model', '—')} / {studio_config.get('attention_heads', '—')}",
+                    f"  encoder / decoder layers: {studio_config.get('encoder_layers', '—')} / "
+                    f"{studio_config.get('decoder_layers', '—')} · dropout {studio_config.get('dropout', '—')}",
+                    f"  batch / AMP / weight decay: {studio_config.get('batch', '—')} / "
+                    f"{studio_config.get('use_amp', '—')} / {studio_config.get('weight_decay', '—')}",
                 ))
             except (OSError, ValueError):
                 lines.append("ACT bin-picking setup could not be read.")
@@ -2274,25 +2213,37 @@ class TrainingWindow(QMainWindow):
         if not _NAME.fullmatch(output):
             self._show_error("Run names may contain only letters, numbers, periods, hyphens and underscores.")
             return
-        output_dir = OUTPUTS_DIR / output
+        task_stage = str(self.output_stage.currentData())
+        output_dir = OUTPUTS_DIR / task_stage / output
         if output_dir.exists():
             self._show_error(f"The output folder already exists and will not be overwritten:\n{output_dir}")
             return
-        if learning_rate:
-            try:
-                if float(learning_rate) <= 0:
-                    raise ValueError
-            except ValueError:
-                self._show_error("Learning rate must be a number greater than zero.")
-                return
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
         try:
-            if float(self.kl_weight.text().strip()) < 0:
+            learning_rate_value = float(learning_rate)
+            weight_decay_value = float(self.weight_decay.text().strip())
+            backbone_lr_value = float(self.backbone_lr.text().strip())
+            dropout_value = float(self.dropout.text().strip())
+            kl_weight_value = float(self.kl_weight.text().strip())
+            if learning_rate_value <= 0 or backbone_lr_value <= 0:
                 raise ValueError
         except ValueError:
-            self._show_error("KL loss weight must be a number greater than or equal to zero.")
+            self._show_error("Learning rates must be positive, weight decay nonnegative, and numeric ACT settings must be valid.")
+            return
+        if weight_decay_value < 0 or kl_weight_value < 0:
+            self._show_error("Weight decay and KL loss weight must be greater than or equal to zero.")
+            return
+        if not 0.0 <= dropout_value < 1.0:
+            self._show_error("Dropout must be at least 0 and less than 1.")
+            return
+        if self.dim_model.value() % self.attention_heads.value():
+            self._show_error("Transformer hidden dimension must be divisible by the number of attention heads.")
             return
         if self.action_steps.value() > self.chunk.value():
             self._show_error("Actions per prediction cannot exceed the action chunk size.")
+            return
+        if self.temporal_ensemble.isChecked() and self.action_steps.value() != 1:
+            self._show_error("Temporal action ensembling requires exactly 1 action per prediction.")
             return
         if self.training_mode.currentData() == "transfer":
             pretrained = Path(self.pretrained_policy.text().strip().strip('"'))
@@ -2320,6 +2271,18 @@ class TrainingWindow(QMainWindow):
             "--seed", str(self.seed.value()),
             "--obs-mode", str(self.observation_mode.currentData()),
             "--kl-weight", self.kl_weight.text().strip(),
+            "--vision-backbone", str(self.backbone.currentData()),
+            "--feedforward-activation", self.feedforward_activation.currentText(),
+            "--weight-decay", str(weight_decay_value),
+            "--backbone-lr", str(backbone_lr_value),
+            "--dropout", str(dropout_value),
+            "--dim-model", str(self.dim_model.value()),
+            "--attention-heads", str(self.attention_heads.value()),
+            "--feedforward-dim", str(self.feedforward_dim.value()),
+            "--encoder-layers", str(self.encoder_layers.value()),
+            "--decoder-layers", str(self.decoder_layers.value()),
+            "--latent-dim", str(self.latent_dim.value()),
+            "--vae-encoder-layers", str(self.vae_encoder_layers.value()),
             "--workers", str(self.workers.value()),
             "--save-freq", str(self.save_freq.value()),
             "--log-freq", str(self.log_freq.value()),
@@ -2328,23 +2291,52 @@ class TrainingWindow(QMainWindow):
         args.extend(["--lr", learning_rate])
         if not self.pretrained_backbone.isChecked():
             args.append("--no-pretrained-backbone")
+        if self.pre_norm.isChecked():
+            args.append("--pre-norm")
+        if self.replace_final_stride.isChecked():
+            args.append("--replace-final-stride")
+        if self.use_amp.isChecked():
+            args.append("--use-amp")
+        if self.temporal_ensemble.isChecked():
+            args.extend(["--temporal-ensemble-coeff", str(self.temporal_ensemble_coeff.value())])
         if self.training_mode.currentData() == "transfer":
             args.extend(["--init-from", str(pretrained)])
         if self.no_vae.isChecked():
             args.append("--no-vae")
         if not self.use_robot_state.isChecked():
             args.append("--no-state")
-        if self.no_vae.isChecked():
-            args.append("--no-vae")
         self._pending_training_metadata = {
             **episode_split,
             "output": str(output_dir),
+            "task_stage": task_stage,
+            "device": self.device.currentText(),
             "steps": self.steps.value(),
             "batch": self.batch.value(),
+            "workers": self.workers.value(),
+            "save_freq": self.save_freq.value(),
+            "log_freq": self.log_freq.value(),
+            "dataset_fraction": self.dataset_fraction,
             "action_chunk": self.chunk.value(),
             "action_steps": self.action_steps.value(),
-            "learning_rate": float(learning_rate),
-            "kl_weight": float(self.kl_weight.text().strip()),
+            "learning_rate": learning_rate_value,
+            "kl_weight": kl_weight_value,
+            "vision_backbone": self.backbone.currentData(),
+            "feedforward_activation": self.feedforward_activation.currentText(),
+            "replace_final_stride_with_dilation": self.replace_final_stride.isChecked(),
+            "pretrained_backbone_weights": self.pretrained_backbone.isChecked(),
+            "weight_decay": weight_decay_value,
+            "backbone_learning_rate": backbone_lr_value,
+            "dropout": dropout_value,
+            "dim_model": self.dim_model.value(),
+            "attention_heads": self.attention_heads.value(),
+            "feedforward_dim": self.feedforward_dim.value(),
+            "encoder_layers": self.encoder_layers.value(),
+            "decoder_layers": self.decoder_layers.value(),
+            "latent_dim": self.latent_dim.value(),
+            "vae_encoder_layers": self.vae_encoder_layers.value(),
+            "pre_norm": self.pre_norm.isChecked(),
+            "use_amp": self.use_amp.isChecked(),
+            "temporal_ensemble_coeff": self.temporal_ensemble_coeff.value() if self.temporal_ensemble.isChecked() else None,
             "use_vae": not self.no_vae.isChecked(),
             "use_robot_state": self.use_robot_state.isChecked(),
             "fine_tuned_from": str(pretrained) if self.training_mode.currentData() == "transfer" else None,
@@ -2451,7 +2443,7 @@ class TrainingWindow(QMainWindow):
         self.evaluate_button.setEnabled(False)
         self.start_button.setEnabled(False)
         self.statusBar().showMessage(f"{kind.title()} running")
-        self._show_page(7)
+        self._show_page(5)
 
     def _stop_process(self) -> None:
         if self.process.state() == QProcess.NotRunning:
@@ -2572,7 +2564,7 @@ class TrainingWindow(QMainWindow):
         )
         latest = None
         if OUTPUTS_DIR.is_dir():
-            folders = [path for path in OUTPUTS_DIR.iterdir() if path.is_dir()]
+            folders = self._training_run_dirs()
             if folders:
                 latest = max(folders, key=lambda path: path.stat().st_mtime)
         self.stat_latest_run[1].setText(latest.name if latest else "—")

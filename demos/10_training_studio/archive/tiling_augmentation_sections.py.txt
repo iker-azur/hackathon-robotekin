@@ -1,0 +1,368 @@
+# Archived Tiling Preview and Augmentation UI code
+# Extracted from demos/10_training_studio/app.py before removing those pages.
+# This file is a recovery reference; it is not imported by the active application.
+
+# Integration notes: restore TilingCanvas, these TrainingWindow methods, their Qt imports,
+# the page builders in the QStackedWidget, the NAV_GROUPS entries, and the Overview links.
+# The old page indices were Tiling Preview=3, Augmentation=4, Setup=5, Results=6, Dashboard=7.
+
+class TilingCanvas(QLabel):
+    """Draw a source image with the overlapping tile windows used in the preview."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.image = QImage()
+        self.tile_size = 256
+        self.overlap = 0.1
+        self.setMinimumSize(480, 340)
+        self.setAlignment(Qt.AlignCenter)
+
+    def set_preview(self, image: QImage, tile_size: int, overlap: float, enabled: bool = True) -> None:
+        self.image = image
+        self.tile_size = tile_size
+        self.overlap = overlap
+        self.enabled = enabled
+        self.update()
+
+    @staticmethod
+    def _positions(length: int, tile_size: int, overlap: float) -> list[int]:
+        tile = min(length, tile_size)
+        stride = max(1, int(tile * (1 - overlap)))
+        positions = list(range(0, max(1, length - tile + 1), stride))
+        edge = max(0, length - tile)
+        if not positions or positions[-1] != edge:
+            positions.append(edge)
+        return positions
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), Qt.black)
+        if self.image.isNull():
+            painter.setPen(Qt.white)
+            painter.drawText(self.rect(), Qt.AlignCenter, "Select a camera frame to preview tile coverage")
+            return
+        bounds = self.rect().adjusted(12, 12, -12, -12)
+        target = self.image.size().scaled(bounds.size(), Qt.KeepAspectRatio)
+        left = bounds.center().x() - target.width() / 2
+        top = bounds.center().y() - target.height() / 2
+        painter.drawImage(int(left), int(top), self.image.scaled(target, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        if not getattr(self, "enabled", True):
+            painter.end()
+            return
+        tile = min(self.tile_size, self.image.width(), self.image.height())
+        x_positions = self._positions(self.image.width(), tile, self.overlap)
+        y_positions = self._positions(self.image.height(), tile, self.overlap)
+        scale = min(target.width() / self.image.width(), target.height() / self.image.height())
+        painter.setPen(QPen(Qt.yellow, 2))
+        for y_position in y_positions:
+            for x_position in x_positions:
+                painter.drawRect(
+                    int(left + x_position * scale), int(top + y_position * scale),
+                    int(tile * scale), int(tile * scale),
+                )
+
+    def _build_tiling_preview(self) -> QWidget:
+        page, layout = self._new_page(
+            "Tiling Preview",
+            "Preview overlapping crops from a bin-picking camera frame. Tiling does not alter ACT training inputs.",
+        )
+        source_card, source_layout = self._card(
+            "Preview image",
+            "Select a local PNG or JPEG camera frame. This preview does not modify the dataset or training pipeline.",
+        )
+        source_row = QHBoxLayout()
+        self.preview_image_path = QLineEdit()
+        self.preview_image_path.setReadOnly(True)
+        self.preview_image_path.setPlaceholderText("No camera frame selected")
+        browse_image = QPushButton("Choose image…")
+        browse_image.clicked.connect(lambda: self._choose_preview_image(self.tiling_canvas))
+        source_row.addWidget(self.preview_image_path, 1)
+        source_row.addWidget(browse_image)
+        source_layout.addLayout(source_row)
+        controls = QGridLayout()
+        self.tiling_enabled = QCheckBox("Enable tiling in preview")
+        self.tiling_enabled.setChecked(True)
+        self.tiling_enabled.setToolTip("This switch affects only the visualization. ACT training still consumes full camera frames.")
+        controls.addWidget(self.tiling_enabled, 0, 0, 1, 2)
+        self.tile_size = self._spin(64, 1024, 256)
+        self.tile_overlap = self._spin(0, 75, 25)
+        for col, (label, widget) in enumerate((
+            ("Tile size (px)", self.tile_size),
+            ("Overlap (%)", self.tile_overlap),
+        )):
+            controls.addWidget(QLabel(label), 1, col)
+            controls.addWidget(widget, 2, col)
+            widget.valueChanged.connect(self._update_tiling_preview)
+        tiling_extras = QLabel(
+            "SkinEye also filters tiles by visible defect area and black background, and can add positive crops with position jitter. "
+            "Those label-based controls are unavailable for SO-101 trajectories: this dataset has no defect boxes or positive/negative classes."
+        )
+        tiling_extras.setWordWrap(True)
+        tiling_extras.setObjectName("mutedText")
+        source_layout.addWidget(tiling_extras)
+        label_controls = QGridLayout()
+        self.tile_min_visible = self._spin(0, 100, 50)
+        self.tile_max_black = self._spin(0, 100, 70)
+        self.tile_extra_positive = self._spin(0, 20, 0)
+        self.tile_position_jitter = self._spin(0, 100, 0)
+        for column, (label, widget) in enumerate((
+            ("Min visible defect (%)", self.tile_min_visible),
+            ("Max black background (%)", self.tile_max_black),
+            ("Extra positive crops per defect", self.tile_extra_positive),
+            ("Crop position jitter (%)", self.tile_position_jitter),
+        )):
+            widget.setEnabled(False)
+            widget.setToolTip("Requires defect boxes and labels; this SO-101 task dataset contains robot trajectories.")
+            label_controls.addWidget(QLabel(label), 0, column)
+            label_controls.addWidget(widget, 1, column)
+        source_layout.addLayout(label_controls)
+        self.tiling_enabled.toggled.connect(self._update_tiling_preview)
+        source_layout.addLayout(controls)
+        self.tiling_canvas = TilingCanvas()
+        source_layout.addWidget(self.tiling_canvas)
+        self.tile_summary = QLabel("Tile preview: 256 px · 25% overlap")
+        self.tile_summary.setObjectName("mutedText")
+        source_layout.addWidget(self.tile_summary)
+        layout.addWidget(source_card, 1)
+        return page
+
+    def _build_augmentation(self) -> QWidget:
+        page, layout = self._new_page(
+            "Augmentation and Preview",
+            "Preview image transforms and configure supported camera-frame augmentation for training.",
+        )
+        card, card_layout = self._card(
+            "Image transform preview",
+            "Choose a local camera frame and compare simple visual transforms. Robot-space and action labels are unchanged here.",
+        )
+        source_row = QHBoxLayout()
+        self.augmentation_image_path = QLineEdit()
+        self.augmentation_image_path.setReadOnly(True)
+        self.augmentation_image_path.setPlaceholderText("No camera frame selected")
+        browse = QPushButton("Choose image…")
+        browse.clicked.connect(lambda: self._choose_preview_image(self.augmentation_canvas))
+        source_row.addWidget(self.augmentation_image_path, 1)
+        source_row.addWidget(browse)
+        card_layout.addLayout(source_row)
+        control_row = QHBoxLayout()
+        control_row.addWidget(QLabel("Transform"))
+        self.augmentation_method = QComboBox()
+        self.augmentation_method.addItems([
+            "Original", "Horizontal flip", "Vertical flip", "Rotate +10°", "Rotate -10°",
+            "Brightness +20%", "Brightness -20%",
+        ])
+        self.augmentation_method.currentIndexChanged.connect(self._update_augmentation_preview)
+        control_row.addWidget(self.augmentation_method)
+        control_row.addStretch(1)
+        card_layout.addLayout(control_row)
+        self.augmentation_canvas = QLabel("Select a camera frame to preview transforms")
+        self.augmentation_canvas.setAlignment(Qt.AlignCenter)
+        self.augmentation_canvas.setMinimumSize(480, 360)
+        self.augmentation_canvas.setStyleSheet("background: #20232b; color: white; border-radius: 8px;")
+        card_layout.addWidget(self.augmentation_canvas, 1)
+        self.augmentation_note = QLabel(
+            "ACT bin-picking training currently uses the recorded RGB and target-mask inputs without online image transforms."
+        )
+        self.augmentation_note.setObjectName("mutedText")
+        self.augmentation_note.setWordWrap(True)
+        card_layout.addWidget(self.augmentation_note)
+
+        training_card, training_layout = self._card(
+            "Training-time image augmentation",
+            "Online image transforms are disabled for the bin-picking ACT trainer. The original dataset remains unchanged.",
+        )
+        self.augmentation_enabled = QCheckBox("Enable random image transforms during training")
+        self.augmentation_enabled.setEnabled(False)
+        self.augmentation_enabled.setToolTip("The bin-picking ACT training script does not expose image transforms.")
+        training_layout.addWidget(self.augmentation_enabled)
+        top_row = QHBoxLayout()
+        top_row.addWidget(QLabel("Maximum transforms per frame"))
+        self.max_transforms = self._spin(1, 6, 3)
+        top_row.addWidget(self.max_transforms)
+        self.random_transform_order = QCheckBox("Randomize transform order")
+        top_row.addWidget(self.random_transform_order)
+        top_row.addStretch(1)
+        training_layout.addLayout(top_row)
+        self.augmentation_controls = {}
+        augmentation_grid = QGridLayout()
+        for col, heading in enumerate(("Transform", "Magnitude", "Sampling weight")):
+            augmentation_grid.addWidget(QLabel(heading), 0, col)
+        for row, (key, title, transform, magnitude, maximum, step) in enumerate((
+            ("brightness", "Brightness", "ColorJitter", 0.20, 0.80, 0.05),
+            ("contrast", "Contrast", "ColorJitter", 0.20, 0.80, 0.05),
+            ("saturation", "Saturation", "ColorJitter", 0.30, 1.00, 0.05),
+            ("hue", "Hue", "ColorJitter", 0.03, 0.20, 0.01),
+            ("sharpness", "Sharpness", "SharpnessJitter", 0.30, 1.00, 0.05),
+            ("affine", "Small affine jitter", "RandomAffine", 3.0, 20.0, 1.0),
+        )):
+            enabled = QCheckBox(title)
+            strength = QDoubleSpinBox()
+            strength.setRange(0.0, maximum)
+            strength.setSingleStep(step)
+            strength.setValue(magnitude)
+            strength.setDecimals(2)
+            weight = self._spin(0, 100, 100)
+            augmentation_grid.addWidget(enabled, row + 1, 0)
+            augmentation_grid.addWidget(strength, row + 1, 1)
+            augmentation_grid.addWidget(weight, row + 1, 2)
+            self.augmentation_controls[key] = (enabled, strength, transform, weight)
+        training_layout.addLayout(augmentation_grid)
+        categories_card, categories_layout = self._card(
+            "SkinEye technique catalogue",
+            "SkinEye stores an independent probability and minimum/maximum magnitude for each dataset augmentation."
+        )
+        catalogue = QGridLayout()
+        catalogue.addWidget(QLabel("Technique"), 0, 0)
+        catalogue.addWidget(QLabel("Probability"), 0, 1)
+        catalogue.addWidget(QLabel("Magnitude min / max"), 0, 2)
+        self.skin_augmentation_controls = {}
+        for row, (key, title, p, low, high) in enumerate((
+            ("horizontal_flip", "Horizontal flip", .5, 1, 1),
+            ("vertical_flip", "Vertical flip", 0, 1, 1),
+            ("rotate", "Rotate", .2, -10, 10),
+            ("translate", "Translate", .2, 0, .1),
+            ("scale", "Scale", .2, .9, 1.1),
+            ("stretch", "Stretch", 0, .9, 1.1),
+            ("shear", "Shear", 0, -2, 2),
+            ("perspective", "Perspective", 0, 0, .0005),
+            ("gaussian_noise", "Gaussian noise", .1, 0, .02),
+            ("intensity_scale", "Intensity scale", .2, .8, 1.2),
+            ("cutout", "Cutout", 0, 0, .2),
+        ), 1):
+            label = QLabel(title)
+            probability = QDoubleSpinBox()
+            probability.setRange(0, 1)
+            probability.setSingleStep(.05)
+            probability.setDecimals(2)
+            probability.setValue(p)
+            magnitude_min = QDoubleSpinBox()
+            magnitude_max = QDoubleSpinBox()
+            for widget, value in ((magnitude_min, low), (magnitude_max, high)):
+                widget.setRange(-100, 100)
+                widget.setDecimals(4)
+                widget.setValue(value)
+                widget.setEnabled(False)
+            probability.setEnabled(False)
+            reason = "SkinEye catalogue reference. These per-technique probability/range values are not stored or applied by ACT's current LeRobot transform pipeline."
+            label.setToolTip(reason)
+            probability.setToolTip(reason)
+            magnitude_min.setToolTip(reason)
+            magnitude_max.setToolTip(reason)
+            range_row = QHBoxLayout()
+            range_row.addWidget(magnitude_min)
+            range_row.addWidget(QLabel("to"))
+            range_row.addWidget(magnitude_max)
+            catalogue.addWidget(label, row, 0)
+            catalogue.addWidget(probability, row, 1)
+            catalogue.addLayout(range_row, row, 2)
+            self.skin_augmentation_controls[key] = (probability, magnitude_min, magnitude_max)
+        categories_layout.addLayout(catalogue)
+        training_layout.addWidget(categories_card)
+        online_card, online_layout = self._card(
+            "Online expansion",
+            "Mosaic, MixUp and Copy-paste are detection-label transforms and cannot be applied to action chunks."
+        )
+        online_row = QHBoxLayout()
+        self.online_expansion_controls = []
+        for label in ("Mosaic", "MixUp", "Copy-paste"):
+            probability = QDoubleSpinBox()
+            probability.setRange(0, 1)
+            probability.setSingleStep(.05)
+            probability.setDecimals(2)
+            probability.setEnabled(False)
+            probability.setToolTip("Requires object-detection labels; disabled for SO-101 imitation learning.")
+            online_row.addWidget(QLabel(label))
+            online_row.addWidget(probability)
+            self.online_expansion_controls.append(probability)
+        online_layout.addLayout(online_row)
+        training_layout.addWidget(online_card)
+        layout.addWidget(card, 1)
+        layout.addWidget(training_card)
+        return page
+
+    def _choose_preview_image(self, target: QWidget) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select a camera frame", str(DATA_DIR), "Images (*.png *.jpg *.jpeg *.bmp)"
+        )
+        if not path:
+            return
+        image = QImage(path)
+        if image.isNull():
+            self._show_error("Could not load the selected image file.")
+            return
+        image = image.scaled(1600, 1200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._preview_source = image
+        self.preview_image_path.setText(path)
+        self.augmentation_image_path.setText(path)
+        self._update_tiling_preview()
+        self._update_augmentation_preview()
+
+    def _update_tiling_preview(self, *_args) -> None:
+        if not hasattr(self, "tile_size"):
+            return
+        size, overlap = self.tile_size.value(), self.tile_overlap.value() / 100
+        image = getattr(self, "_preview_source", QImage())
+        enabled = self.tiling_enabled.isChecked()
+        self.tiling_canvas.set_preview(image, size, overlap, enabled)
+        columns = len(TilingCanvas._positions(image.width(), size, overlap)) if not image.isNull() else 0
+        rows = len(TilingCanvas._positions(image.height(), size, overlap)) if not image.isNull() else 0
+        self.tile_summary.setText(
+            f"Tile preview: {size} px · {overlap:.0%} overlap · approximately {rows * columns} crops"
+            if enabled else "Tiling preview disabled · displaying the full camera frame"
+        )
+
+    def _update_augmentation_preview(self, *_args) -> None:
+        if not hasattr(self, "augmentation_canvas"):
+            return
+        image = getattr(self, "_preview_source", QImage())
+        if image.isNull():
+            self.augmentation_canvas.setText("Select a camera frame to preview transforms")
+            return
+        method = self.augmentation_method.currentText()
+        if method == "Horizontal flip":
+            image = image.mirrored(True, False)
+        elif method == "Vertical flip":
+            image = image.mirrored(False, True)
+        elif method.startswith("Rotate"):
+            transform = QTransform().rotate(10 if "+" in method else -10)
+            image = image.transformed(transform, Qt.SmoothTransformation)
+        elif method.startswith("Brightness"):
+            factor = 1.2 if "+" in method else 0.8
+            image = image.convertToFormat(QImage.Format_ARGB32)
+            for y in range(image.height()):
+                for x in range(image.width()):
+                    color = image.pixelColor(x, y)
+                    color.setRed(min(255, int(color.red() * factor)))
+                    color.setGreen(min(255, int(color.green() * factor)))
+                    color.setBlue(min(255, int(color.blue() * factor)))
+                    image.setPixelColor(x, y, color)
+        pixmap = QPixmap.fromImage(image).scaled(
+            self.augmentation_canvas.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self.augmentation_canvas.setPixmap(pixmap)
+
+    def _image_transform_payload(self) -> dict | None:
+        if not self.augmentation_enabled.isChecked():
+            return None
+        transforms = {}
+        for key, (enabled, strength, transform, weight) in self.augmentation_controls.items():
+            if not enabled.isChecked() or weight.value() <= 0:
+                continue
+            amount = strength.value()
+            if key in {"brightness", "contrast", "saturation"}:
+                kwargs = {key: (max(0.0, 1.0 - amount), 1.0 + amount)}
+            elif key == "hue":
+                kwargs = {"hue": (-amount, amount)}
+            elif key == "sharpness":
+                kwargs = {"sharpness": (max(0.0, 1.0 - amount), 1.0 + amount)}
+            else:
+                kwargs = {"degrees": (-amount, amount), "translate": (0.05, 0.05)}
+            transforms[key] = {"weight": weight.value() / 100, "type": transform, "kwargs": kwargs}
+        if not transforms:
+            raise ValueError("Enable at least one transform and give it a sampling weight above zero.")
+        return {
+            "enable": True,
+            "max_num_transforms": min(self.max_transforms.value(), len(transforms)),
+            "random_order": self.random_transform_order.isChecked(),
+            "tfs": transforms,
+        }

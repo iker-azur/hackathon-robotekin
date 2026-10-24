@@ -25,6 +25,8 @@ recorte, segmentador, unidades) que ``binpick/policy.py`` comprueba al cargar. N
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import inspect
 import json
 import sys
 import time
@@ -92,11 +94,69 @@ def build_cfg(args):
         raise SystemExit(f"el dataset no tiene {sorted(missing)}; ¿se grabó con tools/collect_demos.py?")
     output_features = {k: v for k, v in pf.items() if v.type is FeatureType.ACTION}
     input_features = {k: v for k, v in pf.items() if k in keep}
+    optional_policy_values = {
+        "vision_backbone": args.vision_backbone,
+        "temporal_ensemble_coeff": args.temporal_ensemble_coeff,
+        "replace_final_stride_with_dilation": args.replace_final_stride,
+        "feedforward_activation": args.feedforward_activation,
+        "optimizer_weight_decay": args.weight_decay,
+        "optimizer_lr_backbone": args.backbone_lr,
+        "dropout": args.dropout,
+        "dim_model": args.dim_model,
+        "n_heads": args.attention_heads,
+        "dim_feedforward": args.feedforward_dim,
+        "n_encoder_layers": args.encoder_layers,
+        "n_decoder_layers": args.decoder_layers,
+        "latent_dim": args.latent_dim,
+        "n_vae_encoder_layers": args.vae_encoder_layers,
+        "pre_norm": args.pre_norm,
+        "use_amp": args.use_amp,
+    }
+    baseline_policy_values = {
+        "vision_backbone": "resnet18",
+        "temporal_ensemble_coeff": None,
+        "replace_final_stride_with_dilation": False,
+        "feedforward_activation": "relu",
+        "optimizer_weight_decay": 1e-4,
+        "optimizer_lr_backbone": 1e-5,
+        "dropout": 0.1,
+        "dim_model": 512,
+        "n_heads": 8,
+        "dim_feedforward": 3200,
+        "n_encoder_layers": 4,
+        "n_decoder_layers": 1,
+        "latent_dim": 32,
+        "n_vae_encoder_layers": 4,
+        "pre_norm": False,
+        "use_amp": False,
+    }
+    try:
+        supported = {field.name for field in dataclasses.fields(ACTConfig)}
+    except TypeError:
+        supported = set(inspect.signature(ACTConfig).parameters)
+    unsupported = [
+        f"{name} (requested {value!r}, baseline {baseline_policy_values[name]!r})"
+        for name, value in optional_policy_values.items()
+        if name not in supported and value != baseline_policy_values[name]
+    ]
+    if unsupported:
+        raise SystemExit(
+            "La versión instalada de LeRobot no admite estos ajustes ACT: "
+            + ", ".join(unsupported)
+            + ". Instala la versión indicada por el proyecto o restaura esos valores a su base."
+        )
+    policy_values = {name: value for name, value in optional_policy_values.items() if name in supported}
     policy = ACTConfig(
         input_features=input_features, output_features=output_features, device=args.device,
         chunk_size=args.chunk, n_action_steps=min(args.action_steps, args.chunk), use_vae=not args.no_vae,
         kl_weight=args.kl_weight, optimizer_lr=args.lr, push_to_hub=False,
-        pretrained_backbone_weights=None if args.no_pretrained_backbone else "ResNet18_Weights.IMAGENET1K_V1")
+        pretrained_backbone_weights=None if args.no_pretrained_backbone else {
+            "resnet18": "ResNet18_Weights.IMAGENET1K_V1",
+            "resnet34": "ResNet34_Weights.IMAGENET1K_V1",
+            "resnet50": "ResNet50_Weights.IMAGENET1K_V1",
+        }[args.vision_backbone],
+        **policy_values,
+    )
     if args.init_from:
         policy.pretrained_path = Path(args.init_from)
     out = Path(args.output).resolve()
@@ -112,6 +172,16 @@ def write_info(args, root: Path, out: Path) -> None:
     info = json.loads(src.read_text(encoding="utf-8")) if src.is_file() else {}
     info.update({"obs_mode": args.obs_mode, "trained_on": root.name, "steps": args.steps, "batch": args.batch, "chunk": args.chunk,
                  "n_action_steps": min(args.action_steps, args.chunk), "use_vae": not args.no_vae, "use_state": not args.no_state, "lr": args.lr,
+                 "act_parameters": {"weight_decay": args.weight_decay, "backbone_lr": args.backbone_lr, "dropout": args.dropout,
+                                    "vision_backbone": args.vision_backbone,
+                                    "temporal_ensemble_coeff": args.temporal_ensemble_coeff,
+                                    "replace_final_stride_with_dilation": args.replace_final_stride,
+                                    "feedforward_activation": args.feedforward_activation,
+                                    "dim_model": args.dim_model, "attention_heads": args.attention_heads,
+                                    "feedforward_dim": args.feedforward_dim, "encoder_layers": args.encoder_layers,
+                                    "decoder_layers": args.decoder_layers, "latent_dim": args.latent_dim,
+                                    "vae_encoder_layers": args.vae_encoder_layers, "pre_norm": args.pre_norm,
+                                    "use_amp": args.use_amp, "kl_weight": args.kl_weight},
                  "episodes": args.episodes or "todos", "lerobot": _lerobot_version()})
     text = json.dumps(info, indent=2, ensure_ascii=False)
     (out / "binpick_info.json").write_text(text, encoding="utf-8")
@@ -135,6 +205,22 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=50000)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--lr", type=float, default=1e-5)
+    ap.add_argument("--vision-backbone", choices=("resnet18", "resnet34", "resnet50"), default="resnet18")
+    ap.add_argument("--temporal-ensemble-coeff", type=float, default=None)
+    ap.add_argument("--replace-final-stride", action="store_true")
+    ap.add_argument("--feedforward-activation", choices=("relu", "gelu"), default="relu")
+    ap.add_argument("--weight-decay", type=float, default=1e-4)
+    ap.add_argument("--backbone-lr", type=float, default=1e-5)
+    ap.add_argument("--dropout", type=float, default=0.1)
+    ap.add_argument("--dim-model", type=int, default=512)
+    ap.add_argument("--attention-heads", type=int, default=8)
+    ap.add_argument("--feedforward-dim", type=int, default=3200)
+    ap.add_argument("--encoder-layers", type=int, default=4)
+    ap.add_argument("--decoder-layers", type=int, default=1)
+    ap.add_argument("--latent-dim", type=int, default=32)
+    ap.add_argument("--vae-encoder-layers", type=int, default=4)
+    ap.add_argument("--pre-norm", action="store_true")
+    ap.add_argument("--use-amp", action="store_true")
     ap.add_argument("--chunk", type=int, default=50)
     ap.add_argument("--action-steps", type=int, default=25)
     ap.add_argument("--no-vae", action="store_true")
@@ -150,6 +236,16 @@ def main() -> int:
     ap.add_argument("--init-from", default=None, help="carpeta pretrained_model desde la que continuar (afinado)")
     ap.add_argument("--no-pretrained-backbone", action="store_true", help="no descargar los pesos ImageNet del ResNet (sin red)")
     args = ap.parse_args()
+
+    if args.dim_model % args.attention_heads:
+        ap.error("--dim-model must be divisible by --attention-heads")
+    if not 0.0 <= args.dropout < 1.0:
+        ap.error("--dropout must be in the range [0, 1)")
+    if args.weight_decay < 0 or args.backbone_lr <= 0 or args.lr <= 0:
+        ap.error("learning rates must be positive and weight decay cannot be negative")
+    if args.temporal_ensemble_coeff is not None:
+        if args.temporal_ensemble_coeff <= 0 or args.action_steps != 1:
+            ap.error("temporal ensembling requires a positive coefficient and --action-steps 1")
 
     import torch
 
