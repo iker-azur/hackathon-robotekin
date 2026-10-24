@@ -59,6 +59,67 @@ _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 OUTPUT_TASKS = ("Pick-up", "Up-down")
 
 
+class KeyboardOnlyComboBox(QComboBox):
+    """Keep Setup choices keyboard-editable without mouse dropdown changes."""
+
+    def mousePressEvent(self, event) -> None:
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        event.accept()
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
+class KeyboardOnlyCheckBox(QCheckBox):
+    """Allow Space/keyboard toggles while preventing accidental mouse toggles."""
+
+    def mousePressEvent(self, event) -> None:
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        event.accept()
+
+
+class KeyboardOnlyLineEdit(QLineEdit):
+    """Let mouse clicks focus a value without placing/editing its text."""
+
+    def mousePressEvent(self, event) -> None:
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        event.accept()
+
+    def contextMenuEvent(self, event) -> None:
+        event.accept()
+
+
+class KeyboardOnlySpinBox(QSpinBox):
+    def mousePressEvent(self, event) -> None:
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        event.accept()
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
+class KeyboardOnlyDoubleSpinBox(QDoubleSpinBox):
+    def mousePressEvent(self, event) -> None:
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        event.accept()
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
 class LiveLossChart(QWidget):
     """Small dependency-free line chart for train and validation loss."""
 
@@ -611,14 +672,14 @@ class TrainingWindow(QMainWindow):
 
         model_card, model_layout = self._card("Model and architecture", "Policy architecture for imitation learning.")
         model_grid = QGridLayout()
-        self.training_mode = QComboBox()
+        self.training_mode = KeyboardOnlyComboBox()
         self.training_mode.addItem("New training", "new")
         self.training_mode.addItem("Fine-tune from checkpoint", "transfer")
         self.training_mode.currentIndexChanged.connect(self._training_mode_changed)
-        self.policy_model = QComboBox()
+        self.policy_model = KeyboardOnlyComboBox()
         self.policy_model.addItem("ACT — Action Chunking Transformer", "act")
         self.policy_model.setEnabled(False)
-        self.backbone = QComboBox()
+        self.backbone = KeyboardOnlyComboBox()
         for backbone in ("resnet18", "resnet34", "resnet50"):
             self.backbone.addItem(backbone.upper(), backbone)
         model_grid.addWidget(QLabel("Policy"), 0, 0)
@@ -627,7 +688,7 @@ class TrainingWindow(QMainWindow):
         model_grid.addWidget(self.backbone, 1, 1)
         model_grid.addWidget(QLabel("Training mode"), 0, 2)
         model_grid.addWidget(self.training_mode, 1, 2)
-        self.observation_mode = QComboBox()
+        self.observation_mode = KeyboardOnlyComboBox()
         self.observation_mode.addItem("RGB + target mask (recommended)", "rgb_mask")
         self.observation_mode.addItem("RGB only (comparison)", "rgb_only")
         self.observation_mode.addItem("Target mask only (comparison)", "mask_only")
@@ -645,7 +706,7 @@ class TrainingWindow(QMainWindow):
         checkpoint_row.addWidget(self.pretrained_policy, 1)
         checkpoint_row.addWidget(browse_policy)
         model_layout.addLayout(checkpoint_row)
-        self.pretrained_backbone = QCheckBox("Initialize backbone with ImageNet weights")
+        self.pretrained_backbone = KeyboardOnlyCheckBox("Initialize backbone with ImageNet weights")
         self.pretrained_backbone.setChecked(True)
         model_layout.addWidget(self.pretrained_backbone)
         model_note = QLabel("Larger ResNet backbones use more GPU memory and training time. ImageNet weights are available for all listed backbones.")
@@ -656,7 +717,8 @@ class TrainingWindow(QMainWindow):
 
         params_card, params_layout = self._card(
             "Training configuration",
-            "Suggested first run: 10,000 steps, batch 8, 50-action chunks and replan every 10 actions. Start with ResNet18 and the ACT defaults below.",
+            "First-run profile: 10,000 steps, batch 8, chunk 50, replan every 10 actions, learning rate 1e-5 and pretrained ResNet18. "
+            "Change model and training parameters with the keyboard; dataset and output folder selection still use the mouse.",
         )
         params = QGridLayout()
         self.steps = self._spin(1, 1_000_000, 10_000)
@@ -664,9 +726,9 @@ class TrainingWindow(QMainWindow):
         self.chunk = self._spin(1, 1000, 50)
         self.action_steps = self._spin(1, 1000, 10)
         self.seed = self._spin(0, 2_147_483_647, 1000)
-        self.device = QComboBox()
+        self.device = KeyboardOnlyComboBox()
         self.device.addItems(["cuda", "cpu"])
-        self.learning_rate = QLineEdit("1e-5")
+        self.learning_rate = KeyboardOnlyLineEdit("1e-5")
         self.episodes = QLineEdit()
         self.episodes.setPlaceholderText("Optional additional filter: 0-39")
         fields = (
@@ -675,6 +737,7 @@ class TrainingWindow(QMainWindow):
             ("Action chunk size", self.chunk),
             ("Actions per prediction", self.action_steps),
             ("Device", self.device),
+            ("Learning rate", self.learning_rate),
             ("Random seed", self.seed),
             ("Episodes", self.episodes),
         )
@@ -688,7 +751,7 @@ class TrainingWindow(QMainWindow):
             "Dataset split",
             "Match SkinEye's automatic/manual split workflow. Splits are episode-based to keep robot trajectories intact."
         )
-        self.split_mode = QComboBox()
+        self.split_mode = KeyboardOnlyComboBox()
         self.split_mode.addItem("Automatic split", "automatic")
         self.split_mode.addItem("Manual episode lists", "manual")
         split_layout.addWidget(self.split_mode)
@@ -732,11 +795,10 @@ class TrainingWindow(QMainWindow):
         self.advanced_options_button = QPushButton("More training options…")
         self.advanced_options_button.clicked.connect(self._open_advanced_training_options)
         params_layout.addWidget(self.advanced_options_button)
-        self.no_vae = QCheckBox("Disable VAE (recommended for the demo's small dataset)")
-        self.no_vae.setText("Disable ACT VAE (ablation option)")
+        self.no_vae = KeyboardOnlyCheckBox("Disable ACT VAE (ablation option)")
         self.no_vae.setChecked(False)
         params_layout.addWidget(self.no_vae)
-        self.use_robot_state = QCheckBox("Include robot joint state as ACT input")
+        self.use_robot_state = KeyboardOnlyCheckBox("Include robot joint state as ACT input")
         self.use_robot_state.setChecked(True)
         self.use_robot_state.setToolTip("Disable as an ablation to measure whether the policy relies too strongly on its current pose.")
         params_layout.addWidget(self.use_robot_state)
@@ -744,13 +806,13 @@ class TrainingWindow(QMainWindow):
 
         advanced_card, advanced_layout = self._card("ACT architecture options", "Policy architecture settings that do not appear in SkinEye's detector training form.")
         advanced = QGridLayout()
-        self.weight_decay = QLineEdit("1e-4")
+        self.weight_decay = KeyboardOnlyLineEdit("1e-4")
         self.weight_decay.setToolTip("AdamW weight decay. Set 0 to disable this regularization.")
-        self.backbone_lr = QLineEdit("1e-5")
+        self.backbone_lr = KeyboardOnlyLineEdit("1e-5")
         self.backbone_lr.setToolTip("Separate learning rate for the pretrained ResNet vision backbone.")
-        self.dropout = QLineEdit("0.1")
+        self.dropout = KeyboardOnlyLineEdit("0.1")
         self.dropout.setToolTip("Dropout probability used inside ACT's transformer.")
-        self.kl_weight = QLineEdit("10.0")
+        self.kl_weight = KeyboardOnlyLineEdit("10.0")
         self.dim_model = self._spin(64, 2048, 512)
         self.encoder_layers = self._spin(1, 16, 4)
         self.decoder_layers = self._spin(1, 8, 1)
@@ -758,27 +820,27 @@ class TrainingWindow(QMainWindow):
         self.latent_dim = self._spin(1, 512, 32)
         self.feedforward_dim = self._spin(128, 16384, 3200)
         self.vae_encoder_layers = self._spin(1, 16, 4)
-        self.feedforward_activation = QComboBox()
+        self.feedforward_activation = KeyboardOnlyComboBox()
         self.feedforward_activation.addItems(["relu", "gelu"])
-        self.replace_final_stride = QCheckBox("Use dilation in the final ResNet stage")
+        self.replace_final_stride = KeyboardOnlyCheckBox("Use dilation in the final ResNet stage")
         self.replace_final_stride.setToolTip("Preserves more spatial detail and increases compute/memory use.")
-        self.temporal_ensemble = QCheckBox("Enable temporal action ensembling")
+        self.temporal_ensemble = KeyboardOnlyCheckBox("Enable temporal action ensembling")
         self.temporal_ensemble.setToolTip("Smooths overlapping action chunks at inference; requires one action per prediction.")
-        self.temporal_ensemble_coeff = QDoubleSpinBox()
+        self.temporal_ensemble_coeff = KeyboardOnlyDoubleSpinBox()
         self.temporal_ensemble_coeff.setRange(0.001, 1.0)
         self.temporal_ensemble_coeff.setSingleStep(0.01)
         self.temporal_ensemble_coeff.setDecimals(3)
         self.temporal_ensemble_coeff.setValue(0.01)
         self.temporal_ensemble_coeff.setEnabled(False)
         self.temporal_ensemble.toggled.connect(self.temporal_ensemble_coeff.setEnabled)
-        self.pre_norm = QCheckBox("Pre-normalize transformer inputs")
+        self.pre_norm = KeyboardOnlyCheckBox("Pre-normalize transformer inputs")
         self.pre_norm.setToolTip("Changes transformer normalization order; retain the default unless comparing a separate experiment.")
-        self.use_amp = QCheckBox("Use mixed precision when supported")
+        self.use_amp = KeyboardOnlyCheckBox("Use mixed precision when supported")
         self.use_amp.setToolTip("Uses lower precision on supported CUDA devices to reduce memory and often improve throughput.")
-        self.optimizer = QComboBox()
+        self.optimizer = KeyboardOnlyComboBox()
         self.optimizer.addItem("AdamW (ACT policy preset)")
         self.optimizer.setEnabled(False)
-        self.save_freq = self._spin(1, 1_000_000, 10000)
+        self.save_freq = self._spin(1, 1_000_000, 2500)
         self.log_freq = self._spin(1, 100_000, 200)
         self.workers = self._spin(0, 64, 4)
         self.lr_final_fraction = 0.01
@@ -802,6 +864,8 @@ class TrainingWindow(QMainWindow):
             ("VAE encoder layers", self.vae_encoder_layers),
             ("Optimizer", self.optimizer),
             ("Log metrics every N steps", self.log_freq),
+            ("Data loader workers", self.workers),
+            ("Checkpoint period (steps)", self.save_freq),
         )
         for index, (label, widget) in enumerate(advanced_fields):
             cell = QVBoxLayout()
@@ -832,7 +896,8 @@ class TrainingWindow(QMainWindow):
         advanced_layout.addLayout(wandb_form)
         supported_note = QLabel(
             "ACT architecture, optimizer regularization, observation inputs, data selection, mixed precision and run intervals are passed to the trainer. "
-            "The script checks the selected LeRobot version and reports unsupported options before training."
+            "The script checks the selected LeRobot version and reports unsupported options before training. "
+            "Setup values are changed with the keyboard; mouse wheel, spinner arrows and dropdown clicks are disabled."
         )
         supported_note.setWordWrap(True)
         supported_note.setObjectName("mutedText")
@@ -1059,7 +1124,7 @@ class TrainingWindow(QMainWindow):
 
     @staticmethod
     def _spin(minimum: int, maximum: int, value: int) -> QSpinBox:
-        widget = QSpinBox()
+        widget = KeyboardOnlySpinBox()
         widget.setRange(minimum, maximum)
         widget.setValue(value)
         return widget
@@ -1234,7 +1299,7 @@ class TrainingWindow(QMainWindow):
         form.addRow("Optimizer", optimizer)
 
         def float_control(value: float, minimum: float, maximum: float, step: float, decimals: int = 4) -> QDoubleSpinBox:
-            widget = QDoubleSpinBox()
+            widget = KeyboardOnlyDoubleSpinBox()
             widget.setRange(minimum, maximum)
             widget.setSingleStep(step)
             widget.setDecimals(decimals)
@@ -1242,7 +1307,7 @@ class TrainingWindow(QMainWindow):
             return widget
 
         def integer_control(value: int, minimum: int, maximum: int) -> QSpinBox:
-            widget = QSpinBox()
+            widget = KeyboardOnlySpinBox()
             widget.setRange(minimum, maximum)
             widget.setValue(value)
             return widget
@@ -1313,7 +1378,7 @@ class TrainingWindow(QMainWindow):
             ("plots", "Write training plots", False, False,
              "The ACT trainer does not generate SkinEye/Ultralytics training plots."),
         ):
-            check = QCheckBox(label)
+            check = KeyboardOnlyCheckBox(label)
             check.setChecked(checked)
             check.setEnabled(enabled)
             check.setToolTip(tip)

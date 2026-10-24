@@ -63,6 +63,14 @@ and VAE enabled. It uses an 80/20 episode split, pretrained ResNet18, transforme
 batch size and backbone size for the available GPU memory. Temporal ensembling
 is optional and requires one action per prediction.
 
+Other initial values are weight decay `1e-4`, backbone learning rate `1e-5`,
+dropout `0.1`, KL weight `10`, feed-forward size `3200`, VAE latent size `32`,
+4 VAE encoder layers, 4 data-loader workers, checkpoint every 2,500 steps and
+logs every 200 steps. Mixed precision, pre-norm, dilation and temporal
+ensembling start disabled. Setup parameter controls are keyboard-only to avoid
+accidental mouse-wheel, spinner or dropdown changes; dataset and output-folder
+selection remain mouse-accessible.
+
 The advanced ACT controls are passed into LeRobot's `ACTConfig` and recorded in
 the run metadata. The trainer checks whether the selected LeRobot version
 supports each non-default architecture setting and stops with a clear message
