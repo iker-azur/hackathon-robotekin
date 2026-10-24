@@ -24,14 +24,28 @@ import time
 from pathlib import Path
 
 JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+CAMERA_IDS = {  # same USB IDs as 17b_record_real_so101_live.py
+    "front": "*Wed_Camera*video-index0",
+    "wrist": "*USB2.0_CAM1*video-index0",
+}
+
+
+def find_camera(role: str, path: str) -> Path:
+    if path != "auto":
+        return Path(path)
+    candidates = sorted(Path("/dev/v4l/by-id").glob(CAMERA_IDS[role]))
+    if len(candidates) != 1:
+        raise RuntimeError(f"Could not uniquely detect the {role} camera in /dev/v4l/by-id "
+                           f"({len(candidates)} found); pass --camera-{role} with its device path.")
+    return candidates[0]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--policy", required=True, help="pretrained_model folder or Hugging Face repo id")
     parser.add_argument("--follower-port", default="/dev/ttyACM1")
-    parser.add_argument("--camera-front", default="/dev/video2")
-    parser.add_argument("--camera-wrist", default="/dev/video0")
+    parser.add_argument("--camera-front", default="auto", help="device path, or 'auto' to detect by USB ID")
+    parser.add_argument("--camera-wrist", default="auto", help="device path, or 'auto' to detect by USB ID")
     parser.add_argument("--camera-width", type=int, default=640)
     parser.add_argument("--camera-height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
@@ -67,7 +81,7 @@ def main() -> int:
           f"action steps {config.n_action_steps}", flush=True)
 
     cameras = {
-        name: OpenCVCameraConfig(index_or_path=Path(path), fps=args.fps, width=args.camera_width,
+        name: OpenCVCameraConfig(index_or_path=find_camera(name, path), fps=args.fps, width=args.camera_width,
                                  height=args.camera_height, warmup_s=5)
         for name, path in (("front", args.camera_front), ("wrist", args.camera_wrist))
     }
