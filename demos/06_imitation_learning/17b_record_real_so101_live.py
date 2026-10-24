@@ -77,6 +77,20 @@ PLACE_TASKS = {
 }
 PLACE_REPOS = {"good": "up-down", "bad": "up-down-bad"}
 PHASE_COLORS = {"ready": "#1f7a3a", "recording": "#b3261e", "review": "#9a6700"}
+CAMERA_IDS = {
+    "front": "*Wed_Camera*video-index0",
+    "wrist": "*USB2.0_CAM1*video-index0",
+}
+
+
+def find_camera(role: str) -> Path:
+    candidates = sorted((Path("/dev/v4l/by-id")).glob(CAMERA_IDS[role]))
+    if len(candidates) != 1:
+        raise RuntimeError(
+            f"Could not uniquely detect the {role} camera using /dev/v4l/by-id/{CAMERA_IDS[role]}. "
+            f"Found {len(candidates)}; pass --camera-{role} with its device path."
+        )
+    return candidates[0]
 
 
 class LivePreview:
@@ -128,12 +142,8 @@ def main() -> int:
     parser.add_argument("--task", default="Pick a bracket from the crate and hold it up to the camera")
     parser.add_argument("--follower-port", default="/dev/ttyACM1")
     parser.add_argument("--leader-port", default="/dev/ttyACM0")
-    parser.add_argument(
-        "--camera-front",
-        default="auto",
-        help="front camera path, or 'auto' to try /dev/video2 and /dev/video3",
-    )
-    parser.add_argument("--camera-wrist", default="/dev/video0")
+    parser.add_argument("--camera-front", default="auto", help="front camera path, or 'auto' to detect by USB ID")
+    parser.add_argument("--camera-wrist", default="auto", help="wrist camera path, or 'auto' to detect by USB ID")
     parser.add_argument("--camera-width", type=int, default=640)
     parser.add_argument("--camera-height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30,
@@ -176,35 +186,12 @@ def main() -> int:
     from lerobot.utils.robot_utils import precise_sleep
 
     register_third_party_plugins()
-    if args.camera_front == "auto":
-        camera_errors = []
-        front_camera = None
-        for candidate in (Path("/dev/video2"), Path("/dev/video3")):
-            probe = OpenCVCamera(
-                OpenCVCameraConfig(
-                    index_or_path=candidate,
-                    fps=args.fps,
-                    width=args.camera_width,
-                    height=args.camera_height,
-                    warmup_s=1,
-                )
-            )
-            try:
-                probe.connect()
-                front_camera = candidate
-                print(f"Detected front camera: {candidate}", flush=True)
-                break
-            except Exception as exc:
-                camera_errors.append(f"{candidate}: {exc}")
-            finally:
-                if probe.is_connected:
-                    probe.disconnect()
-        if front_camera is None:
-            raise RuntimeError(
-                "Could not detect a working front camera at /dev/video2 or /dev/video3. "
-                + " | ".join(camera_errors)
-            )
-        args.camera_front = str(front_camera)
+    for role in ("front", "wrist"):
+        option = f"camera_{role}"
+        if getattr(args, option) == "auto":
+            camera = find_camera(role)
+            setattr(args, option, str(camera))
+            print(f"Detected {role} camera: {camera} -> {camera.resolve()}", flush=True)
 
     cameras = {
         "front": OpenCVCameraConfig(
