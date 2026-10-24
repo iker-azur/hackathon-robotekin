@@ -55,7 +55,7 @@ credentials already stored locally and never asks for a token in the app.
 1. Collect demonstrations with `demos/09_voice_bin_picking/tools/collect_demos.py`.
 2. Validate them with `tools/validate_dataset.py`.
 3. Choose a dataset, observation mode, held-out split and new output name. Keep at least one episode in the validation split.
-4. Choose **Pick-up** or **Up-down** in **Experiment output**, then run the stages from **Training Dashboard**. Checkpoints are saved under `runs/<task>/<run name>`.
+4. Choose **Pick-up** or **Up-down** in **Experiment output**, then run the stages from **Training Dashboard**. Pick-up checkpoints are saved under `runs/Pick-up/<run name>`; Up-down checkpoints are grouped under `runs/Up-down/Good/<run name>` or `runs/Up-down/Bad/<run name>`. The Up-down branch is inferred from a Good/Bad token in the selected dataset name and can be changed in Experiment output.
 5. Run held-out action evaluation and full sorting evaluation from **Training Runs**.
 
 The first-run baseline is 10,000 steps, batch 8, chunk size 50, 10 actions per

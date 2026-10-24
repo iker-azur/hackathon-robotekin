@@ -58,6 +58,14 @@ BINPICK_OUTPUTS_DIR = LEGACY_OUTPUTS_DIR
 EVALUATIONS_DIR = BINPICK_RESULTS_DIR
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 OUTPUT_TASKS = ("Pick-up", "Up-down")
+UPDOWN_SUBPOLICIES = ("Good", "Bad")
+
+
+def infer_updown_subpolicy(dataset_name: str) -> str | None:
+    """Infer the Good/Bad placement branch from a Hugging Face or local dataset name."""
+    tokens = set(re.findall(r"[a-z0-9]+", dataset_name.casefold()))
+    matches = [label for label in UPDOWN_SUBPOLICIES if label.casefold() in tokens]
+    return matches[0] if len(matches) == 1 else None
 
 
 def resolve_pretrained_policy_dir(selected: Path) -> Path | None:
@@ -313,6 +321,7 @@ class TrainingWindow(QMainWindow):
         self._task_total_steps = 0
         self._pending_training_metadata = None
         self._pipeline_status_labels = {}
+        self._pipeline_progress_bars = {}
         self._pipeline_current_stage = ""
         self._pipeline_requested_stage = ""
         self.metric_refresh_timer = QTimer(self)
@@ -942,10 +951,22 @@ class TrainingWindow(QMainWindow):
         self.output_stage = QComboBox()
         self.output_stage.addItem("Pick-up — grasp and present", "Pick-up")
         self.output_stage.addItem("Up-down — sort into bins", "Up-down")
-        self.output_stage.setToolTip("Selects the output folder for this run. Choose task groups and episodes separately in Datasets.")
-        self.output_stage.currentIndexChanged.connect(self._update_output_path)
+        self.output_stage.setToolTip("Selects the output folder for this run. Up-down runs are grouped by Good/Bad subpolicy.")
         output_layout.addWidget(QLabel("Training task / output folder"))
         output_layout.addWidget(self.output_stage)
+        self.output_subpolicy_label = QLabel("Up-down placement subpolicy")
+        self.output_subpolicy = QComboBox()
+        self.output_subpolicy.addItem("Good — no pin → green box", "Good")
+        self.output_subpolicy.addItem("Bad — pin present → white box", "Bad")
+        self.output_subpolicy.setToolTip(
+            "The selected dataset name chooses Good or Bad automatically when it contains that label; you can change it here."
+        )
+        self.output_subpolicy_label.setVisible(False)
+        self.output_subpolicy.setVisible(False)
+        output_layout.addWidget(self.output_subpolicy_label)
+        output_layout.addWidget(self.output_subpolicy)
+        self.output_stage.currentIndexChanged.connect(self._update_output_path)
+        self.output_subpolicy.currentIndexChanged.connect(self._update_output_path)
         self.output_name = QLineEdit("act_baseline_10k")
         self.output_name.textChanged.connect(self._update_output_path)
         output_layout.addWidget(QLabel("Use a new name; existing runs will not be overwritten"))
@@ -1073,31 +1094,51 @@ class TrainingWindow(QMainWindow):
             "Run one stage to diagnose it, or run Validate → Prepare → Train in sequence.",
         )
         pipeline_status_row = QHBoxLayout()
-        for stage, title in (("validate", "Validate"), ("prepare", "Prepare"), ("train", "Train")):
+        stage_details = {
+            "validate": "Check Python, CUDA and dataset inputs",
+            "prepare": "Build and verify the ACT configuration",
+            "train": "Fit the policy and save checkpoints",
+        }
+        self.pipeline_buttons = []
+        for index, (stage, title) in enumerate((("validate", "Validate"), ("prepare", "Prepare"), ("train", "Train")), 1):
             tile = QFrame()
             tile.setObjectName("pipelineStep")
             tile_layout = QVBoxLayout(tile)
-            tile_layout.setContentsMargins(12, 9, 12, 9)
-            stage_title = QLabel(title)
+            tile_layout.setContentsMargins(14, 12, 14, 12)
+            tile_layout.setSpacing(8)
+            stage_title = QLabel(f"{index:02d}  {title}")
             stage_title.setObjectName("stepTitle")
             status = QLabel(f"{title}: Not run")
             status.setObjectName("mutedText")
+            detail = QLabel(stage_details[stage])
+            detail.setObjectName("mutedText")
+            detail.setWordWrap(True)
+            progress_bar = QProgressBar()
+            progress_bar.setObjectName("stageProgress")
+            progress_bar.setRange(0, 100)
+            progress_bar.setValue(0)
+            progress_bar.setFormat("%p%")
+            progress_bar.setTextVisible(True)
+            run_button = QPushButton(f"Run {title}")
+            run_button.clicked.connect(lambda _checked=False, selected=stage: self._start_training(selected))
             tile_layout.addWidget(stage_title)
             tile_layout.addWidget(status)
+            tile_layout.addWidget(detail)
+            tile_layout.addWidget(progress_bar)
+            tile_layout.addWidget(run_button)
             self._pipeline_status_labels[stage] = status
+            self._pipeline_progress_bars[stage] = progress_bar
+            self.pipeline_buttons.append(run_button)
             pipeline_status_row.addWidget(tile, 1)
         pipeline_layout.addLayout(pipeline_status_row)
+
         pipeline_controls = QHBoxLayout()
-        self.pipeline_buttons = []
-        for stage, title in (("validate", "Run Validate"), ("prepare", "Run Prepare"), ("train", "Run Train")):
-            button = QPushButton(title)
-            button.clicked.connect(lambda _checked=False, selected=stage: self._start_training(selected))
-            pipeline_controls.addWidget(button)
-            self.pipeline_buttons.append(button)
+        pipeline_controls.addStretch(1)
         self.start_button = QPushButton("Run all steps")
         self.start_button.setObjectName("primaryButton")
         self.start_button.clicked.connect(lambda: self._start_training("all"))
         pipeline_controls.addWidget(self.start_button)
+        pipeline_controls.addStretch(1)
         pipeline_layout.addLayout(pipeline_controls)
         layout.addWidget(pipeline_card)
 
@@ -1114,13 +1155,13 @@ class TrainingWindow(QMainWindow):
         self.stop_button = QPushButton("Stop process")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self._stop_process)
-        clear = QPushButton("Clear console")
-        clear.clicked.connect(lambda: self.log.clear())
+        self.open_terminal_button = QPushButton("Open terminal")
+        self.open_terminal_button.clicked.connect(self._open_terminal)
         bar.addWidget(self.task_label)
         bar.addStretch(1)
         bar.addWidget(self.progress, 1)
+        bar.addWidget(self.open_terminal_button)
         bar.addWidget(self.stop_button)
-        bar.addWidget(clear)
         layout.addLayout(bar)
 
         self.live_metric_labels = {}
@@ -1153,71 +1194,61 @@ class TrainingWindow(QMainWindow):
             self.live_metric_labels[key] = value_label
         metrics_layout.addLayout(live_grid)
         layout.addWidget(metrics_card)
-        loss_content = QWidget()
-        loss_layout = QVBoxLayout(loss_content)
-        loss_layout.setContentsMargins(0, 0, 0, 0)
-        loss_note = QLabel("ACT loss combines action reconstruction and the weighted VAE KL term. L1 charts show action error separately.")
-        loss_note.setObjectName("mutedText")
-        loss_note.setWordWrap(True)
-        loss_layout.addWidget(loss_note)
+        charts_content = QWidget()
+        charts_layout = QVBoxLayout(charts_content)
+        charts_layout.setContentsMargins(0, 0, 0, 0)
+        charts_layout.setSpacing(12)
+
+        loss_card, loss_layout = self._card(
+            "ACT training and validation loss",
+            "ACT loss combines action reconstruction and the weighted VAE KL term. L1 charts show action error separately.",
+        )
         self.live_loss_chart = LiveLossChart()
         loss_layout.addWidget(self.live_loss_chart)
-        self.live_loss_dropdown = CollapsiblePanel("Show ACT training and validation loss", loss_content, expanded=True)
-        layout.addWidget(self.live_loss_dropdown)
+        charts_layout.addWidget(loss_card)
 
-        action_content = QWidget()
-        action_layout = QVBoxLayout(action_content)
-        action_layout.setContentsMargins(0, 0, 0, 0)
-        action_note = QLabel("Lower action L1 means closer predictions in normalized action units on the fixed validation sample.")
-        action_note.setObjectName("mutedText")
-        action_note.setWordWrap(True)
-        action_layout.addWidget(action_note)
+        action_card, action_layout = self._card(
+            "Action prediction error (L1)",
+            "Lower action L1 means closer predictions in normalized action units on the fixed validation sample.",
+        )
         self.live_action_chart = LiveLossChart({
             "Train action L1": QColor("#27866b"),
             "Validation action L1": QColor("#e07a24"),
         })
         action_layout.addWidget(self.live_action_chart)
-        self.live_action_dropdown = CollapsiblePanel("Show action prediction error (L1)", action_content, expanded=False)
-        layout.addWidget(self.live_action_dropdown)
+        charts_layout.addWidget(action_card)
 
-        kl_content = QWidget()
-        kl_layout = QVBoxLayout(kl_content)
-        kl_layout.setContentsMargins(0, 0, 0, 0)
-        kl_note = QLabel("The KL term regularizes ACT's VAE latent space; it is absent when the VAE is disabled.")
-        kl_note.setObjectName("mutedText")
-        kl_note.setWordWrap(True)
-        kl_layout.addWidget(kl_note)
+        kl_card, kl_layout = self._card(
+            "VAE KL loss",
+            "The KL term regularizes ACT's VAE latent space; it is absent when the VAE is disabled.",
+        )
         self.live_kl_chart = LiveLossChart({
             "Train KL loss": QColor("#27866b"),
             "Validation KL loss": QColor("#e07a24"),
         })
         kl_layout.addWidget(self.live_kl_chart)
-        self.live_kl_dropdown = CollapsiblePanel("Show VAE KL loss", kl_content, expanded=False)
-        layout.addWidget(self.live_kl_dropdown)
+        charts_layout.addWidget(kl_card)
 
-        gradient_content = QWidget()
-        gradient_layout = QVBoxLayout(gradient_content)
-        gradient_layout.setContentsMargins(0, 0, 0, 0)
-        gradient_note = QLabel("The configured clipping limit is 10. Norms above it are clipped before the optimizer update.")
-        gradient_note.setObjectName("mutedText")
-        gradient_note.setWordWrap(True)
-        gradient_layout.addWidget(gradient_note)
+        gradient_card, gradient_layout = self._card(
+            "Gradient norm stability",
+            "The configured clipping limit is 10. Norms above it are clipped before the optimizer update.",
+        )
         self.live_gradient_chart = LiveLossChart({"Gradient norm": QColor("#7157a5")})
         gradient_layout.addWidget(self.live_gradient_chart)
-        self.live_gradient_dropdown = CollapsiblePanel("Show gradient norm stability", gradient_content, expanded=False)
-        layout.addWidget(self.live_gradient_dropdown)
+        charts_layout.addWidget(gradient_card)
 
-        lr_content = QWidget()
-        lr_layout = QVBoxLayout(lr_content)
-        lr_layout.setContentsMargins(0, 0, 0, 0)
-        lr_note = QLabel("A flat line is expected when training uses a constant learning rate.")
-        lr_note.setObjectName("mutedText")
-        lr_note.setWordWrap(True)
-        lr_layout.addWidget(lr_note)
+        lr_card, lr_layout = self._card(
+            "Learning rate schedule",
+            "A flat line is expected when training uses a constant learning rate.",
+        )
         self.live_lr_chart = LiveLossChart({"Learning rate": QColor("#4f8dc9")})
         lr_layout.addWidget(self.live_lr_chart)
-        self.live_lr_dropdown = CollapsiblePanel("Show learning rate schedule", lr_content, expanded=False)
-        layout.addWidget(self.live_lr_dropdown)
+        charts_layout.addWidget(lr_card)
+
+        self.live_charts_dropdown = CollapsiblePanel(
+            "Show live metric charts", charts_content, expanded=False
+        )
+        layout.addWidget(self.live_charts_dropdown)
 
         guidance_card, guidance_layout = self._card(
             "How to interpret the run",
@@ -1244,13 +1275,25 @@ class TrainingWindow(QMainWindow):
         guidance_layout.addLayout(guidance_grid)
         layout.addWidget(guidance_card)
 
-        console, console_layout = self._card("Console")
-        self.log = QPlainTextEdit()
+        self.terminal_dialog = QDialog(self)
+        self.terminal_dialog.setWindowTitle("Training terminal · process output")
+        self.terminal_dialog.resize(1000, 640)
+        terminal_layout = QVBoxLayout(self.terminal_dialog)
+        terminal_toolbar = QHBoxLayout()
+        terminal_toolbar.addWidget(QLabel("Live output from training and evaluation processes"))
+        terminal_toolbar.addStretch(1)
+        clear_terminal = QPushButton("Clear output")
+        clear_terminal.clicked.connect(lambda: self.log.clear())
+        terminal_toolbar.addWidget(clear_terminal)
+        close_terminal = QPushButton("Close")
+        close_terminal.clicked.connect(self.terminal_dialog.hide)
+        terminal_toolbar.addWidget(close_terminal)
+        terminal_layout.addLayout(terminal_toolbar)
+        self.log = QPlainTextEdit(self.terminal_dialog)
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(8000)
-        self.log.setPlaceholderText("Start a training or evaluation run to view its output.")
-        console_layout.addWidget(self.log)
-        layout.addWidget(console, 1)
+        self.log.setPlaceholderText("Start a training or evaluation run to view its output here.")
+        terminal_layout.addWidget(self.log, 1)
         return page
 
     def _show_page(
@@ -1266,6 +1309,12 @@ class TrainingWindow(QMainWindow):
             ), None)
         for button, page_index, route_tab in self.nav_buttons:
             button.setChecked(button is active_button)
+
+    def _open_terminal(self) -> None:
+        self.terminal_dialog.show()
+        self.terminal_dialog.raise_()
+        self.terminal_dialog.activateWindow()
+        self.log.ensureCursorVisible()
 
     @staticmethod
     def _spin(minimum: int, maximum: int, value: int) -> QSpinBox:
@@ -1526,7 +1575,7 @@ class TrainingWindow(QMainWindow):
             ("cache", "Cache training images", False, False,
              "The ACT pipeline does not expose SkinEye's image-cache control."),
             ("val", "Validate during training", False, False,
-             "ACT validation is an offline evaluation after training in this project."),
+             "ACT validation loss is logged live on held-out episodes. Select those episodes in Dataset split."),
             ("plots", "Write training plots", False, False,
              "The ACT trainer does not generate SkinEye/Ultralytics training plots."),
         ):
@@ -1795,6 +1844,17 @@ class TrainingWindow(QMainWindow):
             return
         folder = Path(self.local_dataset_combo.currentData())
         self.dataset.setText(folder.name)
+        repo_name = self._dataset_repo_id()
+        inferred_subpolicy = infer_updown_subpolicy(repo_name)
+        if inferred_subpolicy:
+            subpolicy_index = self.output_subpolicy.findData(inferred_subpolicy)
+            if subpolicy_index >= 0:
+                self.output_subpolicy.setCurrentIndex(subpolicy_index)
+        normalized_repo_name = re.sub(r"[^a-z0-9]", "", repo_name.casefold())
+        if "updown" in normalized_repo_name:
+            updown_index = self.output_stage.findData("Up-down")
+            if updown_index >= 0:
+                self.output_stage.setCurrentIndex(updown_index)
         info_path = folder / "meta" / "info.json"
         try:
             info = json.loads(info_path.read_text(encoding="utf-8"))
@@ -1823,6 +1883,8 @@ class TrainingWindow(QMainWindow):
             f"Frames: {info.get('total_frames', 'not specified')}",
             "Features: " + (", ".join(feature_names) if feature_names else "not specified"),
         ]
+        if inferred_subpolicy:
+            details.append(f"Detected Up-down subpolicy: {inferred_subpolicy}")
         if image_features and not has_binpick_rgb_mask:
             details.append(
                 "ACT input: RGB only; using " + ("observation.images.front" if "observation.images.front" in image_features else image_features[0])
@@ -2007,9 +2069,16 @@ class TrainingWindow(QMainWindow):
 
     def _update_output_path(self) -> None:
         name = self.output_name.text().strip()
+        is_updown = hasattr(self, "output_stage") and self.output_stage.currentData() == "Up-down"
+        if hasattr(self, "output_subpolicy"):
+            self.output_subpolicy_label.setVisible(is_updown)
+            self.output_subpolicy.setVisible(is_updown)
         if _NAME.fullmatch(name):
             stage = self.output_stage.currentData() if hasattr(self, "output_stage") else OUTPUT_TASKS[0]
-            path = OUTPUTS_DIR / str(stage) / name
+            path = OUTPUTS_DIR / str(stage)
+            if is_updown:
+                path /= str(self.output_subpolicy.currentData())
+            path /= name
             suffix = " — already exists; it will not be overwritten" if path.exists() else ""
             self.output_path.setText(str(path) + suffix)
         else:
@@ -2026,7 +2095,10 @@ class TrainingWindow(QMainWindow):
         for folder, checkpoint in sorted(runs, key=lambda row: row[0].stat().st_mtime, reverse=True):
             modified = datetime.fromtimestamp(folder.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
             status = "checkpoint ready" if checkpoint else "no final checkpoint"
-            stage = folder.parent.name if folder.parent.name in OUTPUT_TASKS else "Legacy"
+            if folder.parent.name in UPDOWN_SUBPOLICIES and folder.parent.parent.name == "Up-down":
+                stage = f"Up-down / {folder.parent.name}"
+            else:
+                stage = folder.parent.name if folder.parent.name in OUTPUT_TASKS else "Legacy"
             item = QListWidgetItem(f"[{stage}]  {folder.name}    ·    {modified}    ·    {status}")
             item.setData(Qt.ItemDataRole.UserRole, str(checkpoint) if checkpoint else None)
             item.setData(Qt.ItemDataRole.UserRole + 1, str(folder))
@@ -2049,7 +2121,17 @@ class TrainingWindow(QMainWindow):
             for entry in output_root.iterdir():
                 if not entry.is_dir():
                     continue
-                candidates = entry.iterdir() if entry.name in OUTPUT_TASKS else (entry,)
+                if entry.name in OUTPUT_TASKS:
+                    candidates = []
+                    for child in entry.iterdir():
+                        if not child.is_dir():
+                            continue
+                        if entry.name == "Up-down" and child.name in UPDOWN_SUBPOLICIES:
+                            candidates.extend(folder for folder in child.iterdir() if folder.is_dir())
+                        else:
+                            candidates.append(child)
+                else:
+                    candidates = (entry,)
                 for folder in candidates:
                     if folder.is_dir() and (
                         (folder / "checkpoints").is_dir() or (folder / "studio_run_config.json").is_file()
@@ -2325,6 +2407,8 @@ class TrainingWindow(QMainWindow):
             f"Output folder: {folder}",
             f"Final checkpoint: {'available' if checkpoint.is_dir() else 'not found'}",
         ]
+        if folder.parent.name in UPDOWN_SUBPOLICIES and folder.parent.parent.name == "Up-down":
+            lines.insert(1, f"Up-down subpolicy: {folder.parent.name}")
         studio_config_path = folder / "studio_run_config.json"
         if studio_config_path.is_file():
             try:
@@ -2481,7 +2565,10 @@ class TrainingWindow(QMainWindow):
             self._show_error("Run names may contain only letters, numbers, periods, hyphens and underscores.")
             return
         task_stage = str(self.output_stage.currentData())
-        output_dir = OUTPUTS_DIR / task_stage / output
+        output_dir = OUTPUTS_DIR / task_stage
+        if task_stage == "Up-down":
+            output_dir /= str(self.output_subpolicy.currentData())
+        output_dir /= output
         if pipeline_stage in {"train", "all"}:
             processor_state_path = (
                 output_dir / "checkpoints" / "002500" / "pretrained_model"
@@ -2598,6 +2685,7 @@ class TrainingWindow(QMainWindow):
             **episode_split,
             "output": str(output_dir),
             "task_stage": task_stage,
+            "subpolicy": self.output_subpolicy.currentData() if task_stage == "Up-down" else None,
             "device": self.device.currentText(),
             "steps": self.steps.value(),
             "batch": self.batch.value(),
@@ -2632,15 +2720,23 @@ class TrainingWindow(QMainWindow):
         } if pipeline_stage in {"train", "all"} else None
         self._pipeline_requested_stage = pipeline_stage
         self._pipeline_current_stage = "validate"
-        if pipeline_stage == "all":
+        for stage in ("validate", "prepare", "train"):
+            self._pipeline_progress_bars[stage].setValue(0)
+        if pipeline_stage in {"all", "train"}:
             for stage in ("validate", "prepare", "train"):
                 self._set_pipeline_status(stage, "Pending")
             self._set_pipeline_status("validate", "Running")
+        elif pipeline_stage == "prepare":
+            self._set_pipeline_status("validate", "Running")
+            self._set_pipeline_status("prepare", "Pending")
+            self._set_pipeline_status("train", "Not run")
+        else:
+            self._set_pipeline_status("validate", "Running")
+            self._set_pipeline_status("prepare", "Not run")
+            self._set_pipeline_status("train", "Not run")
+        if pipeline_stage == "all":
             kind = "training"
         else:
-            for stage in ("validate", "prepare", "train"):
-                self._set_pipeline_status(stage, "Not run")
-            self._set_pipeline_status(pipeline_stage, "Running")
             kind = {"validate": "validation", "prepare": "preparation", "train": "training"}[pipeline_stage]
         self._launch_process(python, args, kind, output)
 
@@ -2786,9 +2882,37 @@ class TrainingWindow(QMainWindow):
         if label:
             label.setText(f"{stage.title()}: {status}")
 
+    def _set_pipeline_progress(self, stage: str, current: int, total: int) -> None:
+        if total <= 0:
+            return
+        value = min(100, max(0, int(current * 100 / total)))
+        bar = self._pipeline_progress_bars.get(stage)
+        if bar:
+            bar.setValue(value)
+        if self.process.state() != QProcess.NotRunning and self._pipeline_current_stage == stage:
+            if stage == "train" and self._task_total_steps:
+                self.progress.setRange(0, self._task_total_steps)
+                self.progress.setFormat("Train · %v / %m (%p%)")
+                self.progress.setValue(min(current, self._task_total_steps))
+            else:
+                self.progress.setRange(0, 100)
+                self.progress.setFormat(f"{stage.title()} · %p%")
+                self.progress.setValue(value)
+
     def _update_pipeline_status_from_output(self, text: str) -> None:
         stage_names = {"Validate": "validate", "Prepare": "prepare", "Train": "train"}
         for line in text.splitlines():
+            progress_match = re.search(
+                r"\[Progress\]\s+stage=(validate|prepare|train)\s+current=(\d+)\s+total=(\d+)",
+                line,
+            )
+            if progress_match:
+                stage, current, total = progress_match.groups()
+                self._pipeline_current_stage = stage
+                self._set_pipeline_progress(stage, int(current), int(total))
+                if self._pipeline_requested_stage == "all":
+                    self.task_label.setText(f"Running all steps · {stage.title()} · {self._task_output}")
+                continue
             match = re.search(r"\[(Validate|Prepare|Train)\]", line)
             if not match:
                 continue
@@ -2802,8 +2926,7 @@ class TrainingWindow(QMainWindow):
             if self._pipeline_requested_stage == "all":
                 self.task_label.setText(f"Running all steps · {stage.title()} · {self._task_output}")
                 if stage == "train" and self._task_total_steps:
-                    self.progress.setRange(0, self._task_total_steps)
-                    self.progress.setValue(min(self._metric_step, self._task_total_steps))
+                    self._set_pipeline_progress(stage, self._metric_step, self._task_total_steps)
                 elif stage != "train":
                     self.progress.setRange(0, 0)
 
@@ -2833,7 +2956,7 @@ class TrainingWindow(QMainWindow):
                     f"{self._metric_step} / {self._task_total_steps}" if self._task_total_steps else str(self._metric_step)
                 )
                 if self._task_total_steps:
-                    self.progress.setValue(min(self._metric_step, self._task_total_steps))
+                    self._set_pipeline_progress("train", self._metric_step, self._task_total_steps)
             for key, pattern in patterns.items():
                 match = re.search(pattern, line, re.IGNORECASE)
                 if match:
@@ -2886,24 +3009,22 @@ class TrainingWindow(QMainWindow):
             self.statusBar().showMessage(message)
             self.task_label.setText(message)
         if self._task_kind in {"training", "validation", "preparation"}:
-            if self._pipeline_requested_stage == "all":
-                if exit_code == 0:
-                    for stage in ("validate", "prepare", "train"):
-                        self._set_pipeline_status(stage, "Complete")
-                else:
-                    failed_stage = self._pipeline_current_stage or "validate"
-                    self._set_pipeline_status(failed_stage, "Failed · see console")
-                    for stage in ("validate", "prepare", "train"):
-                        if stage != failed_stage and self._pipeline_status_labels[stage].text().endswith("Pending"):
-                            self._set_pipeline_status(stage, "Not run")
+            completed_stages = {
+                "validate": ("validate",),
+                "prepare": ("validate", "prepare"),
+                "train": ("validate", "prepare", "train"),
+                "all": ("validate", "prepare", "train"),
+            }.get(self._pipeline_requested_stage, ())
+            if exit_code == 0:
+                for stage in completed_stages:
+                    self._set_pipeline_progress(stage, 1, 1)
+                    self._set_pipeline_status(stage, "Complete")
             elif self._pipeline_requested_stage:
-                if exit_code == 0:
-                    self._set_pipeline_status(self._pipeline_requested_stage, "Complete")
-                else:
-                    failed_stage = self._pipeline_current_stage or self._pipeline_requested_stage
-                    self._set_pipeline_status(failed_stage, "Failed · see console")
-                    if failed_stage != self._pipeline_requested_stage:
-                        self._set_pipeline_status(self._pipeline_requested_stage, "Not run")
+                failed_stage = self._pipeline_current_stage or self._pipeline_requested_stage
+                self._set_pipeline_status(failed_stage, "Failed · open terminal")
+                for stage in ("validate", "prepare", "train"):
+                    if self._pipeline_status_labels[stage].text().endswith("Pending"):
+                        self._set_pipeline_status(stage, "Not run")
         self._pipeline_requested_stage = ""
         if self._task_kind == "training" and exit_code == 0 and self._pending_training_metadata:
             metadata_path = Path(self._pending_training_metadata["output"]) / "studio_run_config.json"
@@ -2926,6 +3047,13 @@ class TrainingWindow(QMainWindow):
             for button in self.pipeline_buttons:
                 button.setEnabled(True)
             self.progress.hide()
+            if self._pipeline_requested_stage:
+                failed_stage = self._pipeline_current_stage or self._pipeline_requested_stage
+                self._set_pipeline_status(failed_stage, "Failed · open terminal")
+                for stage in ("validate", "prepare", "train"):
+                    if self._pipeline_status_labels[stage].text().endswith("Pending"):
+                        self._set_pipeline_status(stage, "Not run")
+            self._pipeline_requested_stage = ""
             self.task_label.setText("Could not start process")
             self.statusBar().showMessage("Could not start process")
 

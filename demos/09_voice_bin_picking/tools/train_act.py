@@ -81,6 +81,10 @@ def resolve_image_inputs(feature_keys: set[str], obs_mode: str) -> list[str]:
     raise SystemExit("The dataset does not contain an RGB camera feature for ACT.")
 
 
+def report_stage_progress(stage: str, current: int, total: int) -> None:
+    print(f"[Progress] stage={stage} current={current} total={total}", flush=True)
+
+
 def patch_last_checkpoint_windows() -> None:
     """Apply Windows checkpoint fixes and allow warm-starting an incomplete saved checkpoint."""
     import shutil
@@ -205,12 +209,15 @@ def patch_live_validation(args, cfg) -> None:
             rabc_weights_provider=rabc_weights_provider,
         )
         state["step"] += 1
+        step = state["step"]
+        progress_interval = max(1, args.steps // 100)
+        if step == 1 or step % progress_interval == 0 or step == args.steps:
+            report_stage_progress("train", step, args.steps)
         for key in ("l1_loss", "kld_loss"):
             if key in output_dict:
                 state["train_sums"][key] = state["train_sums"].get(key, 0.0) + float(output_dict[key])
         state["train_count"] += 1
 
-        step = state["step"]
         if step != 1 and step % args.validation_freq and step != args.steps:
             return train_metrics, output_dict
 
@@ -550,15 +557,21 @@ def main() -> int:
 
     if args.stage == "all":
         print("[Validate] Comprobando entorno y dataset...", flush=True)
+    report_stage_progress("validate", 0, 2)
     validate_runtime(args)
+    report_stage_progress("validate", 1, 2)
     validate_dataset(args)
+    report_stage_progress("validate", 2, 2)
     if args.stage == "validate":
         print("[Validate] Validación completada correctamente.", flush=True)
         return 0
 
     print("[Prepare] Construyendo la configuración ACT...", flush=True)
+    report_stage_progress("prepare", 0, 2)
     cfg = build_cfg(args)
+    report_stage_progress("prepare", 1, 2)
     print(f"[Prepare] Dataset: {cfg.dataset.root} · entradas: {sorted(cfg.policy.input_features)} · salida: {args.output}", flush=True)
+    report_stage_progress("prepare", 2, 2)
     if args.stage == "prepare":
         print("[Prepare] Preparación completada correctamente; no se inició el entrenamiento.", flush=True)
         return 0
@@ -571,6 +584,7 @@ def main() -> int:
     from lerobot.scripts.lerobot_train import train
 
     t0 = time.time()
+    report_stage_progress("train", 0, args.steps)
     train(cfg)
     write_info(args, Path(args.dataset_root).resolve(), Path(args.output).resolve())
     print(f"entrenado en {(time.time() - t0) / 60:.1f} min · modelo: {Path(args.output) / 'checkpoints' / 'last' / 'pretrained_model'}")
