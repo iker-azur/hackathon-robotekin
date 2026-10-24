@@ -202,6 +202,7 @@ When the user corrects your approach, append a one-line rule here before ending 
 - For Drive export listing, use scandir metadata and bounded parallel folders, not per-file resolve/is_file/stat calls; checkpoint frozen-output inventories and require refresh after in-place mask edits.
 - Read an existing recording script (demos/06 17_record_real_so101.py: r=discard, q=save) before proposing features it may already have; lerobot ships opencv-python-headless, so use Tk, not cv2.imshow, for live camera windows.
 - SO-101 max_relative_target caps targets relative to measured position, not the previous command; inspect measured-versus-sent tracking before treating a smaller cap as a slower accumulating trajectory.
+- For automatic pick stopping, tolerate ACT target jitter and gripper contact; report measured drift and raw tracking gap instead of requiring every predicted target to be stationary.
 
 ---
 

@@ -4,8 +4,9 @@ One Tk window (same approach as ``17b_record_real_so101_live.py``) over the real
 
     - the front and wrist camera, live;
     - SPACE starts the pick policy (``23_run_act_so101.py`` does the same without a window). It runs for
-      at most ``--pick-seconds``. After at least 5 s, a pose that tracks a stable policy target for
-      2 s finishes early. The app then holds the measured arm pose and last gripper target with torque
+      at most ``--pick-seconds``. After at least 5 s, an arm that is nearly stationary and close to
+      policy targets for 1.5 s finishes early. Brief prediction/encoder noise is tolerated. The app
+      then holds the measured arm pose and last gripper target with torque
       kept enabled, so the gripper keeps its grip on the piece;
     - only after that hold command, ``classification_enabled`` enables the pin classifier of
       ``22_train_pin_classifier.py``. After a brief settling pause, it averages 1.5 s of fresh
@@ -40,7 +41,10 @@ PREVIEW_INTERVAL = 1 / 6  # camera view and classifier refresh
 SETTLE_S = 0.5  # let the arm and camera view settle after the hold command
 RESULT_WINDOW_S = 1.5  # classify only stationary frames captured after settling
 MIN_PICK_S = 5.0  # avoid declaring completion at the initial rest pose
-POSE_WINDOW_S = 2.0  # span multiple ACT updates before declaring the final pose settled
+POSE_WINDOW_S = 1.5
+STOP_ARM_MOTION_DEG = 2.0
+STOP_ARM_ERROR_DEG = 6.0
+STOP_GRIPPER_MOTION = 5.0  # percentage points; contact prevents full closure on a held piece
 COLORS = {"idle": "#1f7a3a", "running": "#b3261e", "classifying": "#1565c0", "result": "#9a6700"}
 
 
@@ -78,23 +82,35 @@ def label(p: float) -> str:
     return f"PIN ({p:.0%})" if p >= 0.5 else f"NO PIN ({1 - p:.0%})"
 
 
-def pose_is_settled(samples, elapsed: float) -> bool:
-    """Check raw targets and measured poses; gripper contact need not reach its closing target."""
+def pose_stop_status(samples, elapsed: float) -> tuple[bool, str]:
+    """Detect a measured plateau near raw policy targets and explain any remaining blocker."""
     import numpy as np
 
     while len(samples) > 1 and samples[1][0] <= elapsed - POSE_WINDOW_S:
         samples.popleft()
-    if elapsed < MIN_PICK_S or len(samples) < 2 or elapsed - samples[0][0] < POSE_WINDOW_S:
-        return False
+    if elapsed < MIN_PICK_S:
+        return False, f"Auto-stop arms in {MIN_PICK_S - elapsed:.1f} s"
+    if len(samples) < 3 or elapsed - samples[0][0] < POSE_WINDOW_S:
+        return False, "Auto-stop: collecting stationary-pose measurements"
     states = np.array([state for _, state, _ in samples])
     targets = np.array([target for _, _, target in samples])
-    return bool(
-        np.all(np.abs(targets[:, :-1] - states[:, :-1]) <= 3.0)  # arm target error, degrees
-        and np.all(np.ptp(states[:, :-1], axis=0) <= 1.0)  # measured arm drift, degrees
-        and np.all(np.ptp(targets[:, :-1], axis=0) <= 2.0)  # policy target drift, degrees
-        and np.ptp(states[:, -1]) <= 3.0  # measured gripper drift, percentage points
-        and np.ptp(targets[:, -1]) <= 3.0  # gripper target drift, percentage points
+    if not (np.isfinite(states).all() and np.isfinite(targets).all()):
+        return False, "Auto-stop: invalid joint measurement or policy prediction"
+
+    # Central ranges tolerate isolated old spikes, but the newest sample must also be stable.
+    low, high = np.percentile(states, [10, 90], axis=0)
+    motion = np.maximum(high - low, np.abs(states[-1] - np.median(states, axis=0)))
+    arm_motion, gripper_motion = float(motion[:-1].max()), float(motion[-1])
+    errors = np.abs(targets[:, :-1] - states[:, :-1])
+    arm_error = float(max(np.percentile(errors, 80, axis=0).max(), errors[-1].max()))
+    reached = (arm_motion <= STOP_ARM_MOTION_DEG and arm_error <= STOP_ARM_ERROR_DEG
+               and gripper_motion <= STOP_GRIPPER_MOTION)
+    status = (
+        f"Auto-stop: arm motion {arm_motion:.1f}/{STOP_ARM_MOTION_DEG:g} deg; "
+        f"target gap {arm_error:.1f}/{STOP_ARM_ERROR_DEG:g} deg; "
+        f"gripper motion {gripper_motion:.1f}/{STOP_GRIPPER_MOTION:g}%"
     )
+    return reached, status
 
 
 class Window:
@@ -200,6 +216,7 @@ def main() -> int:
     classification_enabled, classify_start, stop_requested = False, 0.0, False
     last_gripper_target = None
     pose_history = deque()
+    stop_status, next_stop_report = "Auto-stop waits for the pick to start", 0.0
     next_show = 0.0
     robot.connect()
     try:
@@ -216,6 +233,7 @@ def main() -> int:
                     classification_enabled = False
                     last_gripper_target = None
                     pose_history.clear()
+                    stop_status, next_stop_report = "Auto-stop: waiting for movement", cycle
                 elif key == "s" and phase in ("running", "classifying"):
                     stop_requested = True
             if not window.open:
@@ -239,7 +257,7 @@ def main() -> int:
                                            "arm (is it at the rest pose, above the tray?)")
                 else:
                     pose_history.append((cycle - run_start, state.copy(), action.copy()))
-                    reached_pose = pose_is_settled(pose_history, cycle - run_start)
+                    reached_pose, stop_status = pose_stop_status(pose_history, cycle - run_start)
                     if not reached_pose:
                         sent_action = robot.send_action({f"{j}.pos": float(a) for j, a in zip(runner.JOINTS, action)})
                         last_gripper_target = sent_action["gripper.pos"]
@@ -256,14 +274,20 @@ def main() -> int:
                 phase = "classifying" if classification_enabled else "idle"
                 reason = "position reached" if reached_pose else "time limit reached"
                 note = f"{reason}; holding pose" if classification_enabled else "stopped; holding pose"
+                print(f"Pick stopped: {note}", flush=True)
+                if reached_pose:
+                    print(stop_status, flush=True)
                 classify_start = cycle + SETTLE_S
                 stop_requested = False
 
             if cycle >= next_show:
                 live = {"idle": "Classifier waits until the pick finishes",
-                        "running": "Classifier disabled while picking",
+                        "running": stop_status,
                         "classifying": "Holding pose; waiting for the camera view to settle",
                         "result": "Classification finished; motors holding pose"}[phase]
+                if phase == "running" and cycle >= next_stop_report:
+                    print(stop_status, flush=True)
+                    next_stop_report = cycle + 1.0
                 if classification_enabled and cycle >= classify_start:
                     p = classifier(obs["front"], obs["wrist"])
                     history.append((cycle, p))

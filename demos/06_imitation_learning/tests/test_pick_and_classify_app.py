@@ -59,6 +59,11 @@ def run_app(mode="complete", cycles=1, pick_seconds=1):
             events.append(("policy", clock.now))
             if mode == "settled":
                 return torch.tensor([[0.25] * 5 + [5.0]])
+            if mode == "noisy_settled":
+                odd = len([event for event in events if event[0] == "policy"]) % 2
+                return torch.tensor([[0.25 + (4.0 if odd else -4.0)] * 5 + [0.0 if odd else 20.0]])
+            if mode == "stalled":
+                return torch.full((1, len(joints)), 30.0)
             return torch.full((1, len(joints)), 200.0 if mode == "blocked" else 5.0)
 
     def classifier(front, wrist):
@@ -71,6 +76,7 @@ def run_app(mode="complete", cycles=1, pick_seconds=1):
             self.on_key = on_key
 
         def show(self, frames, status, color, live, result):
+            events.append(("status", clock.now, live))
             if not self.started and clock.now >= 0.4:
                 self.started = True
                 self.on_key("space")
@@ -179,46 +185,84 @@ class PickSequenceTests(unittest.TestCase):
         self.assertEqual(len(resets), 2)
         self.assertEqual(results, ["RESULT: PIN (90%)", "RESULT: NO PIN (90%)"])
 
+    def test_noisy_predictions_finish_early_and_report_stop_metrics(self):
+        _, _, events, results, _, _ = run_app(mode="noisy_settled", pick_seconds=20)
+        cnn = [event for event in events if event[0] == "cnn"]
+        self.assertEqual(len(results), 1)
+        self.assertLess(cnn[0][1], 10)
+        self.assertTrue(any(event[0] == "status" and "Auto-stop" in event[2] for event in events))
+        self.assertFalse(any(event[0] in ("send", "policy") and event[1] >= cnn[0][1] for event in events))
+
+    def test_stalled_pose_reports_tracking_gap_and_uses_time_limit(self):
+        _, _, events, results, _, _ = run_app(mode="stalled", pick_seconds=8)
+        start = next(event[1] for event in events if event[0] == "reset")
+        cnn = [event for event in events if event[0] == "cnn"]
+        self.assertEqual(len(results), 1)
+        self.assertGreaterEqual(cnn[0][1] - start, 8)
+        self.assertTrue(any(event[0] == "status" and "target gap 29.8/6" in event[2] for event in events))
+
 
 class PoseCompletionTests(unittest.TestCase):
     def setUp(self):
         self.app = load_app()
+
+    def settled(self, samples, elapsed):
+        return self.app.pose_stop_status(samples, elapsed)[0]
 
     def history(self, measured_arm=10.0, target_arm=10.0):
         return deque((t, np.array([measured_arm] * 5 + [20.0]),
                       np.array([target_arm] * 5 + [0.0])) for t in np.linspace(3.0, 5.0, 21))
 
     def test_settled_pose_allows_gripper_contact_gap(self):
-        self.assertTrue(self.app.pose_is_settled(self.history(), 5.0))
+        self.assertTrue(self.settled(self.history(), 5.0))
 
     def test_stalled_arm_far_from_raw_target_is_not_finished(self):
-        self.assertFalse(self.app.pose_is_settled(self.history(target_arm=30.0), 5.0))
+        self.assertFalse(self.settled(self.history(target_arm=30.0), 5.0))
 
-    def test_moving_pose_or_moving_target_is_not_finished(self):
+    def test_moving_pose_is_not_finished(self):
         measured = self.history()
-        targets = self.history()
         for index, (_, state, action) in enumerate(measured):
-            state[:5] += index * 0.1
-            action[:5] += index * 0.1
-        for index, (_, _, action) in enumerate(targets):
-            action[:5] += index * 0.15
-        self.assertFalse(self.app.pose_is_settled(measured, 5.0))
-        self.assertFalse(self.app.pose_is_settled(targets, 5.0))
+            state[:5] += index * 0.4
+            action[:5] += index * 0.4
+        self.assertFalse(self.settled(measured, 5.0))
+
+    def test_stationary_arm_with_target_jitter_and_gripper_contact_finishes(self):
+        samples = self.history()
+        for index, (_, state, action) in enumerate(samples):
+            state[:5] += 0.4 if index % 2 else -0.4
+            action[:5] += 4.0 if index % 2 else -4.0
+            action[-1] = 0.0 if index % 2 else 20.0
+        self.assertTrue(self.settled(samples, 5.0))
+
+    def test_isolated_old_encoder_spike_does_not_prevent_completion(self):
+        samples = self.history()
+        samples[-5][1][0] += 15.0
+        self.assertTrue(self.settled(samples, 5.0))
+
+    def test_latest_tracking_failure_prevents_completion(self):
+        samples = self.history()
+        samples[-1][2][0] += 20.0
+        self.assertFalse(self.settled(samples, 5.0))
+
+    def test_latest_gripper_motion_prevents_completion(self):
+        samples = self.history()
+        samples[-1][1][-1] += 10.0
+        self.assertFalse(self.settled(samples, 5.0))
 
     def test_minimum_duration_and_full_window_are_required(self):
-        self.assertFalse(self.app.pose_is_settled(self.history(), 4.0))
-        self.assertFalse(self.app.pose_is_settled(deque([self.history()[-1]]), 5.0))
+        self.assertFalse(self.settled(self.history(), 4.0))
+        self.assertFalse(self.settled(deque([self.history()[-1]]), 5.0))
 
     def test_gripper_motion_delays_classification(self):
         samples = self.history()
         samples[-1][1][-1] += 10.0
-        self.assertFalse(self.app.pose_is_settled(samples, 5.0))
+        self.assertFalse(self.settled(samples, 5.0))
 
     def test_old_motion_expires_from_bounded_window(self):
         samples = self.history(target_arm=30.0)
         samples.extend((t, np.array([10.0] * 5 + [20.0]), np.array([10.0] * 5 + [0.0]))
                        for t in np.linspace(5.1, 8.0, 30))
-        self.assertTrue(self.app.pose_is_settled(samples, 8.0))
+        self.assertTrue(self.settled(samples, 8.0))
         self.assertLessEqual(len(samples), 22)
 
 
