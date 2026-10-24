@@ -63,7 +63,7 @@ Sigue las instrucciones de centrado y recorrido completo. Si aparece la pregunta
 Con ambos brazos conectados y calibrados, ejecuta:
 
 ```bash
-lerobot-teleoperate \
+.venv/bin/python comandos_so101/lerobot_teleoperate_hmi.py \
   --robot.type=so101_follower \
   --robot.port=/dev/ttyACM1 \
   --robot.id=mi_follower \
@@ -71,5 +71,7 @@ lerobot-teleoperate \
   --teleop.port=/dev/ttyACM0 \
   --teleop.id=mi_leader
 ```
+
+Este lanzador usa el mismo ciclo de LeRobot y publica las posiciones medidas del follower a la HMI en segundo plano (máximo 20 Hz). La telemetría no añade una conexión al puerto serie ni modifica las acciones enviadas al robot.
 
 Mueve el leader lentamente y comprueba que el follower lo imita. Pulsa `Ctrl+C` para detener el programa. Si el follower se mueve de forma brusca o en sentido inesperado, pulsa `Ctrl+C` y revisa la asignación de puertos y las calibraciones antes de volver a probar.
