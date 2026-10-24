@@ -1,0 +1,50 @@
+{
+  "what": "LeRobot ACT policy (SO-101, so_follower): trajectory that carries the held bracket from the inspection camera to the box named 'bad' in the recordings and releases it. 'bad' is only the box's name, not a quality verdict; which box a part goes to is chosen upstream (today a pin classifier as an example, later the operator).",
+  "status": "INTERMEDIATE - not yet acceptable; training continues and this folder is overwritten with better checkpoints.",
+  "policy_dir": "pretrained_model",
+  "source_checkpoint": "runs/Up-down/Bad/act_bad_v1/checkpoints/010000/pretrained_model",
+  "training_step": 10000,
+  "lerobot_version": "0.6.1",
+  "dataset": "demos/09_voice_bin_picking/data/up-down-bad_all (20 MikelRubi/up-down-bad_* HF datasets, 91 episodes, 30 fps)",
+  "inputs": [
+    "observation.images.front (480x640)",
+    "observation.images.wrist (480x640)",
+    "observation.state (6 joints)"
+  ],
+  "outputs": "action (6): shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper (.pos, LeRobot degrees units; gripper 0-100)",
+  "act": {
+    "chunk_size": 100,
+    "n_action_steps": 100,
+    "use_vae": true,
+    "use_amp": true,
+    "image_augmentation": true
+  },
+  "split": {
+    "excluded_bad_demos": [
+      28,
+      32,
+      41
+    ],
+    "heldout_eval": [
+      4,
+      14,
+      24,
+      35,
+      45,
+      55,
+      65,
+      75,
+      85
+    ],
+    "train": "remaining 79 episodes"
+  },
+  "heldout_metrics": "eval_heldout.json (produced by eval_bad.py)",
+  "acceptance_targets": {
+    "improvement_vs_copy_state": ">= 0.5",
+    "mae_first_step": "< 3",
+    "gripper_open_f1": ">= 0.7"
+  },
+  "load_python": "from lerobot.policies.act.modeling_act import ACTPolicy; p = ACTPolicy.from_pretrained('runs/policies/up-down-bad/latest/pretrained_model')",
+  "run_on_robot": "See ../HANDOFF.md and ../run_policy.py (SO-101 control loop with stop condition; --dry-run-dataset tests it without hardware).",
+  "dataset_features": "dataset_features.json"
+}
