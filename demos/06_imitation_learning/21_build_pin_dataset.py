@@ -18,6 +18,12 @@ Output, in ``data/real_so101/<name>`` (an existing folder is refused):
     review_pin.jpg   one thumbnail pair (front | wrist, last frame) per episode, to check the
     review_nopin.jpg labels by eye
 
+The snapshot pairs taken on purpose with ``17b_record_real_so101_live.py`` (keys p / s) are added
+too: ``pin_snapshots/<pin|nopin>_NNN_{front|wrist}.jpg`` plus ``index.json`` in each pick-cube
+repo, copied to ``data/real_so101/pin_snapshots/<session>/pin_snapshots`` (``--snapshots``; the
+label is the one in ``index.json``). They count as ``clear`` and carry the session of their repo,
+so the training script keeps them with that session's episodes when it splits train from test.
+
 Needs the raw recordings that ``19_build_so101_act_dataset.py`` downloads
 (``data/real_so101/raw``); missing sessions are downloaded unless ``--no-download``.
 
@@ -101,6 +107,9 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=168)
     parser.add_argument("--width", type=int, default=224)
     parser.add_argument("--owner", default=None, help="Hugging Face owner of the recordings (default: MikelRubi)")
+    parser.add_argument("--snapshots", type=Path, default=None,
+                        help="folder with the downloaded pin_snapshots of each session "
+                             "(default: data/real_so101/pin_snapshots; skipped if missing)")
     parser.add_argument("--no-download", action="store_true",
                         help="use only what is already under data/real_so101/raw (offline)")
     args = parser.parse_args()
@@ -114,9 +123,10 @@ def main() -> int:
         return 1
     build.use_windows_certificates()
 
+    import cv2
     import numpy as np
 
-    episodes = [e for e in json.loads(args.labels.read_text(encoding="utf-8"))["episodes"] if e["label"] in CLASSES]
+    episodes =[e for e in json.loads(args.labels.read_text(encoding="utf-8"))["episodes"] if e["label"] in CLASSES]
     by_session: dict[str, list[dict]] = {}
     for e in episodes:
         by_session.setdefault(e["session"], []).append(e)
@@ -137,10 +147,26 @@ def main() -> int:
                     arrays[cam].append(frames[cam][k])
                 labels.append(CLASSES[e["label"]])
                 samples.append({"session": session, "episode": e["episode"], "k": k,
-                                "confidence": e["confidence"], "fps": fps})
+                                "confidence": e["confidence"], "fps": fps, "source": "episode"})
             review[e["label"]].append((f"{session[-15:]} e{e['episode']} {e['confidence']}",
                                        frames["front"][0], frames["wrist"][0]))
         print(f"  {session}: {len(by_session[session])} episode(s)", flush=True)
+
+    snapshots = 0
+    snap_root = args.snapshots or build.DATA_DIR / "pin_snapshots"
+    for folder in sorted(snap_root.glob("*/pin_snapshots")):
+        session = folder.parent.name
+        for n, item in enumerate(json.loads((folder / "index.json").read_text(encoding="utf-8"))["images"]):
+            if item["label"] not in CLASSES:
+                continue
+            for cam in CAMERAS:
+                bgr = cv2.imread(str(folder / item[cam]))
+                arrays[cam].append(build.fit(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), args.height, args.width))
+            labels.append(CLASSES[item["label"]])
+            samples.append({"session": session, "episode": f"snapshot_{n:03d}", "k": 0, "confidence": "clear",
+                            "fps": 0, "source": "snapshot"})
+            snapshots += 1
+    print(f"  snapshots: {snapshots} pair(s) from {snap_root}", flush=True)
 
     partial = final.with_name(final.name + ".partial")
     partial.mkdir(parents=True, exist_ok=True)
@@ -153,13 +179,14 @@ def main() -> int:
     partial.rename(final)
 
     print("")
-    print(f"dataset: {final} ({len(samples)} samples from {len(episodes)} episodes, "
-          f"{args.frames} frame(s) each, {args.width}x{args.height})")
+    print(f"dataset: {final} ({len(samples)} samples: {len(episodes)} episodes x {args.frames} frame(s) "
+          f"+ {snapshots} snapshot pair(s), {args.width}x{args.height})")
     for name, value in CLASSES.items():
-        mine = [s for s, y in zip(samples, labels) if y == value]
+        mine = [s for s, y in zip(samples, labels) if y == value and s["source"] == "episode"]
         clear = sum(s["confidence"] == "clear" for s in mine)
         print(f"  {name:6s} {len(mine) // args.frames:3d} episodes ({clear // args.frames} clear, "
-              f"{(len(mine) - clear) // args.frames} moderate)")
+              f"{(len(mine) - clear) // args.frames} moderate), "
+              f"{sum(y == value for s, y in zip(samples, labels) if s['source'] == 'snapshot'):3d} snapshots")
     print(f"check the labels by eye: {final / 'review_pin.jpg'} and {final / 'review_nopin.jpg'}")
     return 0
 
