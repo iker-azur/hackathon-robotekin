@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SO-101 · Modelo articulado</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eeede9;color:#262924;font:14px system-ui,sans-serif}canvas{display:block;width:100%;height:100%}#view{position:fixed;inset:0 330px 0 0}aside{position:absolute;right:0;top:0;width:330px;min-height:100vh;padding:24px;background:#faf9f5;border-left:1px solid #d7d6d0}h1{font-size:24px;margin:0 0 6px}h2{font-size:13px;margin:25px 0 14px;text-transform:uppercase;letter-spacing:.12em}p{line-height:1.5;color:#66695e;font-size:12px}label{display:grid;grid-template-columns:1fr auto;gap:5px;margin:12px 0}output{font-variant-numeric:tabular-nums;color:#ad460e}input{grid-column:1/-1;width:100%;accent-color:#ed7923}button{padding:9px 14px;border:1px solid #ccc9c0;border-radius:6px;background:white;cursor:pointer}#hint{position:absolute;bottom:20px;left:24px;pointer-events:none}#error{position:absolute;inset:20px auto auto 20px;max-width:430px;color:#a32d20;background:#fff;padding:12px}#error:empty{display:none}details{margin-top:22px;font-size:12px;line-height:1.6}code{font-size:11px;overflow-wrap:anywhere}@media(max-width:700px){#view{position:relative;inset:auto;height:62vh}aside{position:relative;width:100%;min-height:0;border-left:0}#hint{bottom:8px;left:12px}}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script>
+</head>
+<body>
+<div id="view"><div id="hint">Arrastrar: órbita · Rueda: zoom · Botón derecho: desplazar</div><div id="error" role="alert"></div></div>
+<aside>
+<h1>SO-101</h1><p>Modelo visual ajustable · Referencia naranja y negro</p>
+<h2>Articulaciones</h2><div id="joints"></div>
+<h2>Proporciones</h2><div id="scales"></div>
+<button id="reset">Restablecer foto</button>
+<details><summary>API y aproximaciones</summary>
+<p><code>setJoints([pan, hombro, codo, flexion, giro, apertura])</code> recibe radianes, limita al rango mostrado y devuelve los valores aplicados. Pose cero visual: brazo vertical; no equivale al cero calibrado del robot.</p>
+<p><code>setScale({muneca: 1.2, pinza: 1.15})</code> actualiza proporciones. También puedes editar SCALE al inicio del módulo.</p>
+<p>Geometría reconstruida a mano desde una foto, no CAD dimensional. Afinar distancias entre ejes, anchuras y espesores de horquillas, separación de mordazas y dimensiones/ángulo del soporte de cámara. Cables decorativos flexibles. Los controles no detectan colisiones ni controlan hardware.</p>
+</details>
+</aside>
+<script type="module">
+// Configuración editable. Cada escala es ABSOLUTA: no multiplica las piezas posteriores.
+const SCALE = { base: 1.0, brazo: 1.0, codo: 1.0, muneca: 1.0, pinza: 1.0, camara: 1.0 };
+const INITIAL_SCALE = {...SCALE};
+const THREE = await import('three').catch(showError);
+const {OrbitControls} = await import('three/addons/controls/OrbitControls.js').catch(showError);
+function showError(error) {
+  document.querySelector('#error').textContent = 'No se pudo cargar Three.js. Comprueba la conexión al CDN y usa un navegador moderno. ' + error.message;
+  throw error;
+}
+const DEG = Math.PI / 180;
+// Límites del recurso SO-101 del proyecto; gripper usa solo su tramo de apertura 0–90°.
+const SPECS = [
+  ['shoulder_pan', 'Base', -110, 110, 'y'],
+  ['shoulder_lift', 'Hombro', -100, 100, 'z'],
+  ['elbow_flex', 'Codo', -100, 90, 'z'],
+  ['wrist_flex', 'Muñeca · flexión', -95, 95, 'z'],
+  ['wrist_roll', 'Muñeca · giro', -160, 160, 'y'],
+  ['gripper', 'Pinza · apertura', 0, 90, 'z'],
+];
+const PHOTO = [0, -12, -72, -35, 0, 22].map(v => v * DEG);
+let angles = [...PHOTO];
+const orange = new THREE.MeshStandardMaterial({color:0xf47719, roughness:.84, metalness:0});
+const black = new THREE.MeshStandardMaterial({color:0x202220, roughness:.72});
+const rubber = new THREE.MeshStandardMaterial({color:0x101311, roughness:.98});
+const metal = new THREE.MeshStandardMaterial({color:0x9b9d99, metalness:.8, roughness:.35});
+const red = new THREE.MeshStandardMaterial({color:0xb32b22, roughness:.65});
+const white = new THREE.MeshStandardMaterial({color:0xece7d8, roughness:.65});
+const pcb = new THREE.MeshStandardMaterial({color:0x203229, roughness:.75});
+const glass = new THREE.MeshStandardMaterial({color:0x122830, metalness:.6, roughness:.12});
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xeeede9);
+const camera = new THREE.PerspectiveCamera(38, 1, .001, 20);
+camera.position.set(.55, .35, .62);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.35;
+document.querySelector('#view').appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(.065,.18,0);
+controls.enableDamping = true;
+controls.minDistance = .12; controls.maxDistance = 2.5;
+scene.add(new THREE.HemisphereLight(0xffffff,0xaaa498,2));
+const sun = new THREE.DirectionalLight(0xfff6e7,3);
+sun.position.set(.3,.8,.5); sun.castShadow = true;
+sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-.8,right:.8,top:.8,bottom:-.8,near:.01,far:3});
+sun.shadow.normalBias = .001;
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0xffffff,1.2);fill.position.set(-.4,.3,-.5);scene.add(fill);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(10,10),new THREE.MeshStandardMaterial({color:0xeeede9,roughness:1}));
+floor.rotation.x = -Math.PI/2;floor.position.y = -.001;floor.receiveShadow = true;scene.add(floor);
+const grid = new THREE.GridHelper(1.6,32,0xc8c6bf,0xdcdad4);grid.position.y=.0001;scene.add(grid);
+function group(parent, x=0,y=0,z=0) {const g=new THREE.Group();g.position.set(x,y,z);parent.add(g);return g;}
+function mesh(parent,geometry,material,x=0,y=0,z=0) {
+  const m=new THREE.Mesh(geometry,material);m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;parent.add(m);return m;
+}
+function box(parent,w,h,d,x,y,z,material=orange) {return mesh(parent,new THREE.BoxGeometry(w,h,d),material,x,y,z);}
+function cylinder(parent,r,h,x,y,z,material=orange,axis='z') {
+  const m=mesh(parent,new THREE.CylinderGeometry(r,r,h,32),material,x,y,z);
+  if(axis==='z')m.rotation.x=Math.PI/2;
+  if(axis==='x')m.rotation.z=Math.PI/2;
+  return m;
+}
+function screw(parent,x,y,z,axis='z') {
+  cylinder(parent,.0025,.0015,x,y,z,metal,axis);
+  const slot=box(parent,.003,.0006,.0017,x,y,z,black);
+  if(axis==='y')slot.rotation.x=Math.PI/2;
+}
+// Perfil de horquilla con ventana pasante: dos costillas impresas, no un bloque macizo.
+function cheek(parent,length,z,width=.031) {
+  const r=width/2,s=new THREE.Shape();
+  s.moveTo(-r,0);s.absarc(0,0,r,Math.PI,Math.PI*2,false);
+  s.lineTo(r,length);s.absarc(0,length,r,0,Math.PI,false);s.closePath();
+  const hole=new THREE.Path();
+  hole.moveTo(-r*.45,.027);hole.lineTo(-r*.45,length-.027);
+  hole.lineTo(r*.45,length-.027);hole.lineTo(r*.45,.027);hole.closePath();
+  if(length>.07)s.holes.push(hole);
+  const g=new THREE.ExtrudeGeometry(s,{depth:.006,bevelEnabled:true,bevelSegments:2,steps:1,bevelSize:.001,bevelThickness:.001,curveSegments:20});
+  mesh(parent,g,orange,0,0,z-.003);
+  for(const y of [0,length]) {cylinder(parent,.009,.002,0,y,z+Math.sign(z)*.004,orange);screw(parent,0,y,z+Math.sign(z)*.0055);}
+}
+function fork(parent,length,half=.022) {
+  cheek(parent,length,-half);cheek(parent,length,half);
+  box(parent,.027,.012,half*2,0,length*.53,0);
+}
+// Carcasa aproximada STS3215 (45 × 24 × 35 mm), orejas, tapa y tornillos.
+function servo(parent,x=0,y=0,z=0) {
+  const g=group(parent,x,y,z);
+  box(g,.045,.024,.035,-.012,-.009,0,black);
+  box(g,.049,.003,.039,-.012,-.020,0,black);
+  for(const side of [-1,1]) {
+    box(g,.009,.006,.041,-.012+side*.026,-.006,0,black);
+    for(const face of [-1,1])screw(g,-.012+side*.019,-.014,face*.018);
+  }
+  cylinder(g,.010,.003,0,0,.020,metal);
+  cylinder(g,.007,.004,0,0,.023,orange);
+  screw(g,0,0,.026);
+  return g;
+}
+function wire(parent,points,material,r=.00085) {
+  return mesh(parent,new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points.map(p=>new THREE.Vector3(...p))),24,r,6,false),material);
+}
+function localWires(parent,length,z=.029) {
+  for(let i=0;i<2;i++)wire(parent,[[-.023,.005,z+i*.002],[-.041,length*.3,z+.005+i*.002],[-.038,length*.72,z+.006+i*.002],[-.015,length-.01,z+i*.002]],i?red:white);
+}
+let robot, pivots=[], bodies={}, anchors={}, jaw, cameraMount;
+const bridges=[];
+function buildRobot() {
+  if(robot) {
+    robot.traverse(o=>{if(o.geometry)o.geometry.dispose();});scene.remove(robot);
+  }
+  robot=group(scene);pivots=[];bodies={};anchors={};bridges.length=0;
+  // Los ejes conservan escala 1; solo se escalan sus grupos visuales.
+  function part(key,parent) {const g=group(parent);g.scale.setScalar(SCALE[key]);bodies[key]=g;return g;}
+  function joint(index,parent,x,y,z) {const p=group(parent,x,y,z);pivots[index]=p;return p;}
+  const base=part('base',robot);
+  box(base,.104,.008,.082,0,.004,0);
+  for(const x of [-.043,.043])for(const z of [-.032,.032])screw(base,x,.009,z,'y');
+  const baseServo=group(base,0,.035,0);baseServo.rotation.x=-Math.PI/2;servo(baseServo);
+  box(base,.054,.018,.047,0,.017,0);
+  cylinder(base,.027,.012,0,.048,0,orange,'y');
+  const pan=joint(0,robot,0,.054*SCALE.base,0);
+  // El soporte sigue la escala de base sin transmitirla al brazo.
+  const saddle=group(pan);saddle.scale.setScalar(SCALE.base);
+  box(saddle,.038,.027,.048,0,.0135,0);
+  const shoulder=joint(1,pan,0,.032*SCALE.base,0);
+  const arm=part('brazo',shoulder);
+  servo(arm);fork(arm,.116);localWires(arm,.116);
+  const elbow=joint(2,shoulder,0,.116*SCALE.brazo,0);
+  const forearm=part('codo',elbow);
+  servo(forearm);fork(forearm,.135,.025);localWires(forearm,.135,.032);
+  // Segundo servo visible al extremo del antebrazo: es el actuador wrist_flex.
+  servo(forearm,0,.135,0);
+  const wrist=joint(3,elbow,0,.135*SCALE.codo,0);
+  const wristBody=part('muneca',wrist);
+  cheek(wristBody,.057,-.025,.037);cheek(wristBody,.057,.025,.037);
+  box(wristBody,.040,.013,.050,0,.035,0);
+  const rollServo=group(wristBody,0,.052,0);rollServo.rotation.x=Math.PI/2;servo(rollServo);
+  cylinder(wristBody,.022,.010,0,.063,0,orange,'y');
+  const roll=joint(4,wrist,0,.068*SCALE.muneca,0);
+  const hand=part('pinza',roll);
+  box(hand,.063,.017,.051,0,.0085,0);
+  servo(hand,.011,.025,0);
+  // Mandíbula fija y móvil: la parte móvil gira sobre su propio eje z.
+  function finger(parent,side) {
+    const g=group(parent);g.rotation.z=side*.16;
+    box(g,.014,.043,.021,0,.0215,0);
+    box(g,.022,.025,.026,-side*.003,.052,0,rubber);
+    for(let i=0;i<5;i++)box(g,.0015,.0012,.024,-side*.014,.043+i*.004,0,black);
+  }
+  const fixed=group(hand,-.026,.025,0);finger(fixed,-1);
+  jaw=joint(5,roll,.021*SCALE.pinza,.025*SCALE.pinza,0);
+  const moving=group(jaw);moving.scale.setScalar(SCALE.pinza);finger(moving,1);
+  cylinder(hand,.010,.030,.021,.025,0,orange);screw(hand,.021,.025,.016);
+  // Montaje independiente: cámara detrás de la pinza, escalada sin mover la pinza.
+  cameraMount=group(roll,0,.006*SCALE.pinza,-.030*SCALE.pinza);
+  const cam=part('camara',cameraMount);
+  box(cam,.012,.035,.012,0,.010,-.006);
+  const plate=group(cam,0,.033,-.016);
+  // Normal de la lente inclinada hacia +Y, siguiendo las puntas de la pinza.
+  plate.rotation.x=-55*DEG;
+  box(plate,.063,.045,.004,0,0,0);
+  box(plate,.050,.034,.002,0,0,.0035,pcb);
+  for(const x of [-.022,.022])for(const y of [-.013,.013])screw(plate,x,y,.006);
+  box(plate,.020,.020,.006,0,0,.007,black);
+  cylinder(plate,.010,.012,0,0,.015,black);
+  cylinder(plate,.007,.001,0,0,.0215,glass);
+  wire(cam,[[.022,.027,-.008],[.038,.020,-.025],[.028,-.010,-.025],[0,-.008,0]],black,.0018);
+  // Puentes flexibles entre piezas: puntos calculados en coordenadas mundiales
+  // después de cada cambio de ángulo; mantienen los extremos conectados.
+  for(const [a,b] of [[arm,forearm],[forearm,wristBody],[wristBody,hand]]) {
+    const end=group(a,-.020,a===arm?.103:a===forearm?.123:.054,.029);
+    const start=group(b,-.025,.004,.028);
+    for(let i=0;i<2;i++)bridges.push({end,start,i,line:wire(robot,[[0,0,0],[0,.01,0],[0,.02,0]],i?red:white)});
+  }
+  anchors={shoulder,elbow,wrist,roll};
+  applyPose();
+}
+function applyPose() {
+  pivots.forEach((p,i)=>{p.rotation.set(0,0,0);p.rotation[SPECS[i][4]]=i===5?-angles[i]:angles[i];});
+  robot.updateMatrixWorld(true);
+  for(const {end,start,i,line} of bridges) {
+    const a=end.getWorldPosition(new THREE.Vector3()),b=start.getWorldPosition(new THREE.Vector3());
+    a.z+=i*.002;b.z+=i*.002;
+    const middle=a.clone().lerp(b,.5);middle.z+=.018;middle.x-=.012;
+    const curve=new THREE.CatmullRomCurve3([a,middle,b]);
+    line.geometry.dispose();line.geometry=new THREE.TubeGeometry(curve,20,.0008,6,false);
+  }
+}
+const jointInputs=[],scaleInputs={};
+function slider(parent,label,min,max,step,value,onInput) {
+  const row=document.createElement('label'),name=document.createElement('span'),out=document.createElement('output'),input=document.createElement('input');
+  name.textContent=label;input.type='range';Object.assign(input,{min,max,step,value});
+  input.setAttribute('aria-label',label);
+  row.append(name,out,input);document.getElementById(parent).appendChild(row);
+  input.addEventListener('input',()=>onInput(Number(input.value)));
+  return {input,out};
+}
+SPECS.forEach(([name,label,min,max],i)=>{
+  jointInputs.push(slider('joints',label,min,max,1,angles[i]/DEG,v=>{const next=[...angles];next[i]=v*DEG;setJoints(next);}));
+});
+for(const key of Object.keys(SCALE))scaleInputs[key]=slider('scales',key,.65,1.5,.01,SCALE[key],v=>setScale({[key]:v}));
+function refreshUI() {
+  jointInputs.forEach(({input,out},i)=>{input.value=angles[i]/DEG;out.value=(angles[i]/DEG).toFixed(0)+'°';});
+  for(const [key,{input,out}] of Object.entries(scaleInputs)){input.value=SCALE[key];out.value=SCALE[key].toFixed(2)+'×';}
+}
+function setJoints(values) {
+  if(!Array.isArray(values)||values.length!==6||!values.every(Number.isFinite))throw new TypeError('setJoints requiere seis números finitos en radianes.');
+  angles=values.map((v,i)=>THREE.MathUtils.clamp(v,SPECS[i][2]*DEG,SPECS[i][3]*DEG));
+  applyPose();refreshUI();return [...angles];
+}
+function setScale(values) {
+  if(!values||typeof values!=='object'||Array.isArray(values))throw new TypeError('setScale requiere un objeto.');
+  for(const [key,v] of Object.entries(values))if(!Object.hasOwn(SCALE,key)||!Number.isFinite(v)||v<.65||v>1.5)throw new RangeError('Escala desconocida o fuera de 0.65–1.50: '+key);
+  Object.assign(SCALE,values);buildRobot();refreshUI();return {...SCALE};
+}
+window.setJoints=setJoints;window.setScale=setScale;
+buildRobot();refreshUI();
+document.getElementById('reset').onclick=()=>{angles=[...PHOTO];Object.assign(SCALE,INITIAL_SCALE);buildRobot();refreshUI();controls.reset();};
+controls.saveState();
+const resize=new ResizeObserver(()=>{const el=document.getElementById('view');camera.aspect=el.clientWidth/el.clientHeight;camera.updateProjectionMatrix();renderer.setSize(el.clientWidth,el.clientHeight);});
+resize.observe(document.getElementById('view'));
+renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera);});
+</script>
+</body>
+</html>

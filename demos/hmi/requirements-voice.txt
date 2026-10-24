@@ -1,0 +1,2 @@
+# Same Whisper version used by the existing voice demos.
+faster-whisper==1.2.1
