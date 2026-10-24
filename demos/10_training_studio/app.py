@@ -61,11 +61,10 @@ OUTPUT_TASKS = ("Pick-up", "Up-down")
 
 
 class KeyboardOnlyComboBox(QComboBox):
-    """Keep Setup choices keyboard-editable without mouse dropdown changes."""
+    """Allow mouse and keyboard selection while preventing wheel changes."""
 
     def mousePressEvent(self, event) -> None:
-        self.setFocus(Qt.FocusReason.MouseFocusReason)
-        event.accept()
+        super().mousePressEvent(event)
 
     def wheelEvent(self, event) -> None:
         event.ignore()
@@ -685,7 +684,8 @@ class TrainingWindow(QMainWindow):
         self.training_mode.currentIndexChanged.connect(self._training_mode_changed)
         self.policy_model = KeyboardOnlyComboBox()
         self.policy_model.addItem("ACT — Action Chunking Transformer", "act")
-        self.policy_model.setEnabled(False)
+        self.policy_model.setEnabled(True)
+        self.policy_model.setToolTip("ACT is currently the only policy implemented by the bin-picking trainer.")
         self.backbone = KeyboardOnlyComboBox()
         for backbone in ("resnet18", "resnet34", "resnet50"):
             self.backbone.addItem(backbone.upper(), backbone)
