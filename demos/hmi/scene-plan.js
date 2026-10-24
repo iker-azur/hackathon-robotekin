@@ -4,7 +4,7 @@ const labels = { red: 'roja', blue: 'azul', green: 'verde', yellow: 'amarilla' }
 export function sceneProposal(plan, objects) {
   const empty = { targetIds: [], destination: null, note: '' };
   if (!plan || plan.status !== 'proposed' || plan.execution !== 'preview_only') return empty;
-  const action = plan.actions.find(value => !value.negated && ['PICK_OBJECT', 'PLACE_OBJECT', 'MOVE_OBJECT', 'INSPECT_OBJECT', 'INSPECT_BATCH', 'CLASSIFY_OBJECT'].includes(value.intent));
+  const action = plan.actions.find(value => !value.negated && ['PICK_OBJECT', 'PLACE_OBJECT', 'MOVE_OBJECT', 'SORT_OBJECTS', 'INSPECT_OBJECT', 'INSPECT_BATCH', 'CLASSIFY_OBJECT'].includes(value.intent));
   if (!action) return empty;
   const parameters = action.parameters;
   const shapes = { pieza: null, bloque: 'cube', cubo: 'cube', cilindro: 'cylinder' };
@@ -12,7 +12,11 @@ export function sceneProposal(plan, objects) {
   const shape = shapes[parameters.object_type];
   const color = colors[parameters.object_color];
   if (parameters.object_color && !color) return { ...empty, note: 'Ese color no está representado en la mesa.' };
-  const matching = objects.filter(object => (!color || object.color === color) && (!shape || object.shape === shape));
+  const feature = parameters.object_feature;
+  if (feature && !['con perno', 'sin perno'].includes(feature)) return { ...empty, note: 'Esa característica no está representada en la mesa.' };
+  if (parameters.object_quality) return { ...empty, note: 'Las piezas de ejemplo no tienen etiquetas de calidad medidas.' };
+  const matching = objects.filter(object => (!color || object.color === color) && (!shape || object.shape === shape)
+    && (!feature || (typeof object.with_pin === 'boolean' && object.with_pin === (feature === 'con perno'))));
   const quantity = Number.isInteger(parameters.quantity) ? parameters.quantity : null;
   const selected = quantity ? matching.slice(0, quantity) : matching;
   const targetIds = selected.map(object => object.id);

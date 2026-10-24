@@ -49,3 +49,15 @@ test('object type and shape must match, not only color', () => {
   assert.deepEqual(sceneProposal(plan({ object_type: 'tornillo', object_color: 'azul' }), objects).targetIds, []);
   assert.deepEqual(sceneProposal(plan({ object_type: 'cilindro', object_color: 'verde' }), objects).targetIds, ['green1']);
 });
+
+test('trained pin features select only objects with a known matching pin state', () => {
+  const parts = [{ id: 'pin', with_pin: true }, { id: 'no-pin', with_pin: false }, { id: 'unknown' }];
+  assert.deepEqual(sceneProposal(plan({ object_type: 'pieza', object_feature: 'con perno' }), parts).targetIds, ['pin']);
+  assert.deepEqual(sceneProposal(plan({ object_type: 'pieza', object_feature: 'sin perno' }), parts).targetIds, ['no-pin']);
+});
+
+test('quality predictions never invent quality labels for demo objects', () => {
+  const result = sceneProposal(plan({ object_type: 'pieza', object_quality: 'defectuosa' }), objects);
+  assert.deepEqual(result.targetIds, []);
+  assert.match(result.note, /calidad/);
+});

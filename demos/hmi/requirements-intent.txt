@@ -1,0 +1,5 @@
+# Separate environment: GLiNER2's Transformers requires huggingface_hub < 1,
+# while the robot's LeRobot requires huggingface_hub >= 1.6.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.11.0+cpu
+gliner2[local]==2.0.0

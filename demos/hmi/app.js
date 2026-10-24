@@ -268,7 +268,7 @@ function selectPiece(name) {
   }
 }
 function updatePlanProjection() {
-  const proposal = sceneProposal(activePlan, [...pieces].filter(([, mesh]) => mesh.visible).map(([id, mesh]) => ({ id, color: mesh.userData.color, shape: mesh.userData.shape })));
+  const proposal = sceneProposal(activePlan, [...pieces].filter(([, mesh]) => mesh.visible).map(([id, mesh]) => ({ id, color: mesh.userData.color, shape: mesh.userData.shape, with_pin: mesh.userData.with_pin })));
   planRoute.visible = false;
   destination.visible = false;
   destinationLabel.hidden = true;
@@ -316,6 +316,16 @@ function setPhase(phase) {
   document.querySelectorAll('[data-phase-step]').forEach(element => element.classList.toggle('active', element.dataset.phaseStep === phase));
 }
 document.addEventListener('hmi:phase', event => setPhase(event.detail));
+let sortingRuleState = null;
+function showSortingRule(state) {
+  sortingRuleState = state;
+  const rule = state?.rule;
+  const destination = value => value === 'green' ? 'caja verde' : 'caja blanca';
+  $('classifier-state').textContent = rule
+    ? `Regla por voz activa · con perno → ${destination(rule.routes.with_pin.destination)}; sin perno → ${destination(rule.routes.without_pin.destination)} · solo configuración HMI`
+    : 'Regla por voz inactiva';
+}
+document.addEventListener('hmi:sorting-rule', event => showSortingRule(event.detail));
 document.addEventListener('hmi:plan', event => {
   activePlan = event.detail;
   $('selection').hidden = true;
@@ -323,7 +333,8 @@ document.addEventListener('hmi:plan', event => {
   if (activePlan) setPhase(activePlan.status === 'proposed' ? 'planning' : 'understanding');
   const pinSort = activePlan?.actions?.some(action =>
     ['CLASSIFY_OBJECT', 'SORT_OBJECTS'].includes(action.intent)) && /perno/i.test(activePlan?.text || '');
-  $('classifier-state').textContent = pinSort ? 'Orden lista · Clasificador sin conectar' : 'Clasificador sin conectar';
+  if (activePlan) $('classifier-state').textContent = pinSort ? 'Orden lista · Clasificador sin conectar' : 'Clasificador sin conectar';
+  else if (sortingRuleState) showSortingRule(sortingRuleState);
 });
 const raycaster = new THREE.Raycaster();
 let pointerStart = null;
@@ -572,6 +583,7 @@ async function poll() {
     const response = await fetch('/api/state', { signal: AbortSignal.timeout(1800), cache: 'no-store' });
     if (!response.ok) throw new Error(`Servidor: ${response.status}`);
     const state = await response.json();
+    if (state.sorting_rule) showSortingRule(state.sorting_rule);
     frameFresh = state.mode !== 'demo' && state.frame_age !== null && state.frame_age < 2;
     demo = state.mode === 'demo';
     $('joint-heading').textContent = demo ? 'POSICIÓN SIMULADA' : 'POSICIÓN MEDIDA';

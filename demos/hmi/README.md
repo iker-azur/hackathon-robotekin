@@ -135,10 +135,11 @@ tamaño compatible; se debe usar el mismo modelo al preparar y al arrancar.
 Sin el motor instalado se puede grabar y reproducir audio, escribir la orden
 y obtener su intención y plan. La interfaz muestra el requisito pendiente.
 
-Tras transcribir, se analiza la orden y se muestran intención, parámetros y
-pasos. El texto se puede corregir y volver a analizar. Las reglas se reutilizan
-de `roboqc/phase_1/src/roboqc/commands`; no se presenta el clasificador como
-un modelo entrenado ni se inventan porcentajes de confianza.
+Las órdenes escritas permiten mostrar intención, parámetros y pasos.
+Los planes de manipulación
+de pernos, calidad y cajas utilizan el modelo entrenado indicado abajo. Las
+órdenes de control, inspección, colores y formas conservan las reglas de
+`roboqc/phase_1/src/roboqc/commands`, identificadas como reglas en el panel.
 
 Ejemplos:
 
@@ -149,6 +150,50 @@ Ejemplos:
 El plan es una propuesta de demo, independiente de la animación. No ejecuta
 acciones ni marca pasos como completados. Las órdenes desconocidas, negadas
 o incompletas muestran aclaraciones sin generar un plan de movimiento.
+
+## Modelo entrenado de intenciones
+
+El backend predeterminado de `/api/command` es
+[`IkerAzurmendi/bin-intent-gliner2`](https://huggingface.co/IkerAzurmendi/bin-intent-gliner2),
+revisión `718261576991fc57319f39a01f6e48b075380e83`. Acepta texto en español,
+inglés y euskera y devuelve intención, presencia de perno, calidad, cantidad y
+destino, con probabilidades calibradas. El panel identifica el modelo y muestra
+la confianza de cada acción. Una interpretación por debajo del 85 %, una caja
+sin indicar o un destino desconocido producen una solicitud de aclaración.
+
+GLiNER2 necesita una versión de Hugging Face incompatible con la del LeRobot
+actual. Se ejecuta en su propio entorno CPU, en un proceso persistente:
+
+```bash
+uv venv --python .venv/bin/python demos/hmi/.venv-intent
+uv pip install --python demos/hmi/.venv-intent/bin/python -r demos/hmi/requirements-intent.txt
+.venv/bin/python demos/hmi/server.py --prepare-intent
+.venv/bin/python demos/hmi/server.py --open
+```
+
+La primera preparación descarga aproximadamente 1,2 GB a la caché de Hugging
+Face. El proceso carga los pesos y `calibration.json` una vez; se reutiliza
+entre órdenes y termina al cerrar el servidor. Las dependencias del controlador
+del robot se conservan en `.venv`. `--intent-python` permite indicar otro
+intérprete y `--intent-model` admite un checkpoint local. Para usar las reglas
+anteriores en todo el flujo de planes, arranca con `--intent-backend rules`.
+El estado del motor está disponible en `/api/intent/status`.
+
+Esta integración interpreta los planes enviados a `/api/command`. La captura
+del micrófono utiliza el flujo independiente `/api/sorting-rule` para reglas
+persistentes verde/blanca; ese flujo conserva su intérprete de reglas y no
+utiliza este checkpoint.
+
+Ejemplos del modelo:
+
+- «Mueve las piezas con perno a la caja grande».
+- «Mueve dos piezas sin perno a la caja blanca».
+- «Las piezas con perno a la caja grande y las sin perno a la blanca».
+
+Sus cajas se llaman **grande** y **blanca**. La calidad buena/mala es una
+propiedad distinta de tener o no perno. Los planes siguen siendo propuestas de
+la HMI; la selección visual de perno solo usa piezas cuya etiqueta de ejemplo
+es conocida, y no inventa etiquetas de calidad ni recorridos a cajas sin mapa.
 
 ## Integrar y ejecutar la HMI en el PC del robot
 

@@ -27,6 +27,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from commands import make_plan
 from speech import SpeechService, SpeechUnavailable
+from intent_service import IntentService, IntentUnavailable, DEFAULT_MODEL, WORKER_PYTHON
+from sorting_rules import SortingRuleStore
 from comparison import demo_joints, comparison_sample, tcp_position, PERIOD
 RECOVERY = ROOT.parent / "08_recovery_kit"
 VENDOR = RECOVERY / "server" / "static" / "vendor"
@@ -252,8 +254,9 @@ def camera_worker(telemetry, device, stop):
         capture.release()
 
 
-def make_handler(telemetry, speech=None):
+def make_handler(telemetry, speech=None, intent=None, sorting_rules=None):
     speech = speech or SpeechService()
+    sorting_rules = sorting_rules or SortingRuleStore()
     reference_path = None
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -279,10 +282,20 @@ def make_handler(telemetry, speech=None):
                 self.send(200, json.dumps({"kind": "illustrative", "period": PERIOD, "points": reference_path}).encode())
                 return
             if path == "/api/state":
-                self.send(200, json.dumps(telemetry.snapshot(), allow_nan=False).encode())
+                state = telemetry.snapshot()
+                state["sorting_rule"] = sorting_rules.snapshot()
+                self.send(200, json.dumps(state, allow_nan=False).encode())
+                return
+            if path == "/api/sorting-rule":
+                self.send(200, json.dumps(sorting_rules.snapshot(), ensure_ascii=False).encode())
                 return
             if path == "/api/voice/status":
                 self.send(200, json.dumps(speech.status(), ensure_ascii=False).encode())
+                return
+            if path == "/api/intent/status":
+                state = intent.status() if intent else {'available': True, 'loaded': False,
+                                                       'engine': 'Reglas de RoboQC', 'model': None}
+                self.send(200, json.dumps(state, ensure_ascii=False).encode())
                 return
             if path == "/api/frame.jpg":
                 with telemetry.lock:
@@ -319,7 +332,7 @@ def make_handler(telemetry, speech=None):
                     telemetry.paused = not telemetry.paused
                 self.send(200, b'{"ok":true}')
                 return
-            if path not in ("/api/telemetry", "/api/frame.jpg", "/api/command", "/api/voice/transcribe"):
+            if path not in ("/api/telemetry", "/api/frame.jpg", "/api/command", "/api/voice/transcribe", "/api/sorting-rule"):
                 self.send(404, b'{"detail":"No encontrado"}')
                 return
             try:
@@ -327,11 +340,18 @@ def make_handler(telemetry, speech=None):
                 if not 0 < size <= 8_000_000:
                     raise ValueError("invalid payload size")
                 body = self.rfile.read(size)
-                if path == "/api/command":
+                if path == "/api/sorting-rule":
+                    payload = json.loads(body)
+                    if not isinstance(payload, dict):
+                        raise ValueError("La regla debe enviarse como un objeto con texto.")
+                    result = sorting_rules.apply(payload.get("text"))
+                    self.send(200, json.dumps(result, ensure_ascii=False).encode())
+                    return
+                elif path == "/api/command":
                     payload = json.loads(body)
                     if not isinstance(payload, dict):
                         raise ValueError("La orden debe ser un objeto con texto.")
-                    plan = make_plan(payload.get("text"), payload.get("source", "text"))
+                    plan = make_plan(payload.get("text"), payload.get("source", "text"), intent_service=intent)
                     self.send(200, json.dumps(plan, ensure_ascii=False).encode())
                     return
                 elif path == "/api/voice/transcribe":
@@ -342,7 +362,7 @@ def make_handler(telemetry, speech=None):
                     telemetry.publish(json.loads(body))
                 else:
                     telemetry.frame(body)
-            except SpeechUnavailable as exc:
+            except (SpeechUnavailable, IntentUnavailable) as exc:
                 self.send(503, json.dumps({"detail": str(exc)}, ensure_ascii=False).encode())
                 return
             except (ValueError, TypeError, KeyError, OverflowError) as exc:
@@ -364,8 +384,25 @@ def main():
     parser.add_argument("--open", action="store_true")
     parser.add_argument("--whisper-model", default="tiny", help="Local Whisper model size or path")
     parser.add_argument("--prepare-voice", action="store_true", help="Download/load the voice model, then exit")
+    parser.add_argument("--intent-backend", choices=("gliner2", "rules"), default="gliner2")
+    parser.add_argument("--intent-model", default=DEFAULT_MODEL, help="Intent model Hub ID or local checkpoint")
+    parser.add_argument("--intent-python", type=Path, default=WORKER_PYTHON,
+                        help="Python in the isolated GLiNER2 environment")
+    parser.add_argument("--prepare-intent", action="store_true", help="Download/load the intent model, then exit")
     args = parser.parse_args()
     speech = SpeechService(args.whisper_model)
+    intent = IntentService(args.intent_model, args.intent_python) if args.intent_backend == 'gliner2' else None
+    if args.prepare_intent:
+        if intent is None:
+            parser.error("--prepare-intent requires --intent-backend gliner2")
+        try:
+            intent.load()
+            print(f"Modelo de intenciones preparado: {intent.model_name}", flush=True)
+        except IntentUnavailable as exc:
+            parser.exit(1, str(exc) + "\n")
+        finally:
+            intent.close()
+        return
     if args.prepare_voice:
         try:
             speech.load()
@@ -378,7 +415,7 @@ def main():
         parser.error("--source must be an http(s) URL or 'publisher'")
     telemetry = Telemetry(source)
     stop = threading.Event()
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(telemetry, speech))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(telemetry, speech, intent, SortingRuleStore()))
     if args.source == "demo":
         threading.Thread(target=demo_worker, args=(telemetry, stop), daemon=True).start()
     elif args.source == "publisher":
@@ -399,6 +436,8 @@ def main():
     finally:
         stop.set()
         server.server_close()
+        if intent is not None:
+            intent.close()
 
 
 if __name__ == "__main__":

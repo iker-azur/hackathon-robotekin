@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import time
 
 ROBOQC = Path(__file__).resolve().parents[1] / 'roboqc' / 'phase_1' / 'src'
 if str(ROBOQC) not in sys.path:
@@ -34,12 +35,83 @@ def target_text(parameters):
     return ' '.join(str(part) for part in [prefix + kind, 'de color ' + color if color else None, quality] if part)
 
 
-def make_plan(text, source='text'):
+def model_plan(text, source, service):
+    started = time.perf_counter()
+    prediction = service.predict(text)
+    confidence = prediction['confidence']
+    intent = prediction['intent']
+    issues = []
+    messages = {'ask_box': 'Indica si las piezas van a la caja grande o a la blanca.',
+                'unsure': 'La interpretación tiene poca confianza. Reformula la orden.',
+                'not_a_cell_box': 'El modelo reconoce la caja grande y la blanca; ese destino no está disponible.',
+                'no_action': 'No se ha reconocido una orden de manipulación compatible.',
+                'answer': 'Indica qué quieres hacer con esas piezas.',
+                'repeat': 'Repite la orden que quieres preparar.'}
+    if prediction['status'] in messages:
+        issues.append(messages[prediction['status']])
+    if confidence < .85:
+        issues.append('La confianza del modelo es inferior al 85 %. Confirma la orden reformulándola.')
+    actions, descriptions = [], []
+    controls = {'stop': 'STOP_PROCESS', 'cancel': 'CANCEL_ACTION'}
+    if intent in controls:
+        action = controls[intent]
+        actions.append({'intent': action, 'label': INTENT_DESCRIPTIONS_ES[action], 'parameters': {},
+                        'negated': False, 'confidence': confidence})
+        descriptions.extend(CONTROL_PLANS[action])
+    for rule in prediction['rules']:
+        action = ('PICK_OBJECT' if intent == 'pick' and rule['box'] == 'none' else
+                  'SORT_OBJECTS' if intent == 'sort' else 'MOVE_OBJECT')
+        quantity = {'one': 1, 'two': 2, 'three': 3}.get(rule['count'])
+        feature = {'bolt': 'con perno', 'no bolt': 'sin perno', 'any': None}[rule['feature']]
+        quality = {'good': 'buena', 'bad': 'defectuosa', 'any': None}[rule['quality']]
+        box = {'big': 'grande', 'white': 'blanca', 'other': None, 'none': None}[rule['box']]
+        params = {'object_type': 'pieza', 'object_color': None, 'object_feature': feature,
+                  'object_quality': quality, 'quantity': quantity,
+                  'quantity_mode': 'todas' if rule['count'] == 'all' else None,
+                  'destination_type': 'caja' if box else None, 'destination_color': None,
+                  'destination_role': box}
+        actions.append({'intent': action, 'label': INTENT_DESCRIPTIONS_ES[action], 'parameters': params,
+                        'negated': False, 'confidence': min(confidence, rule['confidence'])})
+        who = f"{quantity} {'pieza' if quantity == 1 else 'piezas'}" if quantity else 'las piezas'
+        if quality:
+            who += ' ' + quality + ('' if quantity == 1 else 's')
+        if feature:
+            who += ' ' + feature
+        descriptions.extend([f'Localizar {who}', 'Comprobar alcance y espacio libre', f'Recoger {who}'])
+        if box:
+            descriptions.extend([f'Transportar a la caja {box}', 'Soltar las piezas',
+                                 'Verificar la colocación con la cámara'])
+        elif action == 'PICK_OBJECT':
+            descriptions.append('Verificar la sujeción')
+    valid = prediction['status'] in ('ok', 'stop', 'cancel') and bool(descriptions) and not issues
+    return {'text': text.strip(), 'source': source, 'classifier': f'GLiNER2 · {service.model_name}',
+            'status': 'proposed' if valid else 'needs_clarification', 'actions': actions,
+            'steps': [{'number': i + 1, 'text': step, 'status': 'proposed'}
+                      for i, step in enumerate(descriptions)] if valid else [],
+            'issues': list(dict.fromkeys(issues)), 'execution': 'preview_only',
+            'confidence': confidence, 'probabilities': prediction['probabilities'],
+            'model_status': prediction['status'],
+            'processing_time_ms': round((time.perf_counter() - started) * 1000, 2)}
+
+
+def make_plan(text, source='text', intent_service=None):
     if not isinstance(text, str) or not text.strip() or len(text) > 2000:
         raise ValueError('Escribe una orden de entre 1 y 2000 caracteres.')
     if source not in ('text', 'voice'):
         raise ValueError('Fuente de orden no válida.')
     command = understand_text(text.strip(), source=source).to_dict()
+    # Keep the existing controls, inspection and colour/shape commands outside the
+    # two-box model's taxonomy. Their response remains explicitly labelled as rules.
+    rule_only = any(action['intent'] in CONTROL_PLANS
+                    or action['intent'] in ('INSPECT_OBJECT', 'INSPECT_BATCH', 'COUNT_OBJECTS',
+                                            'LOCATE_OBJECT', 'SHOW_OBJECTS', 'SELECT_OBJECTS')
+                    or (action['intent'] != 'UNKNOWN' and
+                        (action['parameters'].get('object_color')
+                         or action['parameters'].get('destination_color') not in (None, 'blanco', 'blanca')
+                         or action['parameters'].get('object_type') not in (None, 'pieza')))
+                    for action in command['actions'])
+    if intent_service is not None and not rule_only:
+        return model_plan(text, source, intent_service)
     issues = list(command['validation_errors']) + list(command['unresolved_references'])
     steps = []
     actions = []

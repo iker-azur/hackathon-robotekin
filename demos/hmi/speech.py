@@ -61,7 +61,7 @@ class SpeechService:
             try:
                 segments, _ = self.model.transcribe(samples, language='es', beam_size=3,
                                                     condition_on_previous_text=False, vad_filter=True,
-                                                    initial_prompt='Inspecciona las piezas. Coloca las piezas azules en la caja roja. Pausa el proceso.')
+                                                    initial_prompt='Las piezas con perno son buenas y van a la caja verde. Las piezas sin perno son malas y van a la caja blanca. Las que tengan perno son buenas y las que no tengan son malas. Para la clasificación.')
                 text = ' '.join(segment.text.strip() for segment in segments).strip()
             except Exception as exc:
                 raise SpeechUnavailable('Whisper no pudo transcribir el audio. Comprueba la instalación del motor local.') from exc

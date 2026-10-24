@@ -36,11 +36,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import queue
 import sys
+import threading
 import time
 from collections import deque
 from functools import lru_cache
 from pathlib import Path
+from urllib.request import urlopen
 
 DEMO_DIR = Path(__file__).resolve().parent
 PREVIEW_INTERVAL = 1 / 6  # camera view and classifier refresh
@@ -54,6 +57,50 @@ STOP_GRIPPER_MOTION = 5.0  # percentage points; contact prevents full closure on
 COLORS = {"idle": "#1f7a3a", "running": "#b3261e", "classifying": "#1565c0",
           "routing": "#7b4ca0", "result": "#9a6700"}
 _ROUTE_CLEARANCE_NOTICE = None
+
+
+class HmiSortingRuleMonitor:
+    """Poll the HMI rule off the control loop and expose only the latest update."""
+
+    def __init__(self, url: str):
+        self.url = url.rstrip("/") + "/api/sorting-rule"
+        self.updates = queue.Queue()
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        previous = None
+        while not self.stop.is_set():
+            try:
+                with urlopen(self.url, timeout=0.5) as response:
+                    state = json.loads(response.read())
+                rule = state.get("rule") if state.get("active") else None
+                if rule:
+                    routes = rule["routes"]
+                    update = (True, routes["with_pin"]["destination"],
+                              routes["without_pin"]["destination"])
+                    if update[1] not in ("green", "white") or update[2] not in ("green", "white"):
+                        raise ValueError("invalid sorting destinations")
+                else:
+                    update = (False, None, None)
+                if update != previous:
+                    self.updates.put(update)
+                    previous = update
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                pass
+            self.stop.wait(0.2)
+
+    def latest(self):
+        update = None
+        while True:
+            try:
+                update = self.updates.get_nowait()
+            except queue.Empty:
+                return update
+
+    def close(self):
+        self.stop.set()
 
 
 def load_script(name: str):
@@ -276,16 +323,23 @@ class Window:
         destinations.pack(fill="x", padx=8, pady=6)
         self.pin_destination = tk.StringVar(value="Blanca")
         self.no_pin_destination = tk.StringVar(value="Blanca")
+        self._destination_selectors = []
+        self._voice_rule_active = False
+        self._manual_destinations = ("Blanca", "Blanca")
+        self.voice_rule_status = tk.Label(self.root, text="Regla HMI: sin conectar", anchor="w")
+        self.voice_rule_status.pack(fill="x", padx=8)
         tk.Label(destinations, text="Con pin → caja:").pack(side="left")
         selector = ttk.Combobox(destinations, textvariable=self.pin_destination, values=("Verde", "Blanca"),
                                state="readonly", width=8)
         selector.pack(side="left", padx=(4, 16))
         self._selectors.append(selector)
+        self._destination_selectors.append(selector)
         tk.Label(destinations, text="Sin pin → caja:").pack(side="left")
         selector = ttk.Combobox(destinations, textvariable=self.no_pin_destination, values=("Verde", "Blanca"),
                                state="readonly", width=8)
         selector.pack(side="left", padx=4)
         self._selectors.append(selector)
+        self._destination_selectors.append(selector)
         self.checkpoint = tk.StringVar(value=checkpoint_choices[0] if checkpoint_choices else "")
         if checkpoint_choices:
             checkpoint_row = tk.Frame(self.root)
@@ -316,6 +370,26 @@ class Window:
         choice = self.pin_destination if classifier_label == "PIN" else self.no_pin_destination
         return "green" if choice.get() == "Verde" else "white"
 
+    def apply_voice_rule(self, update):
+        if update is None or not self.open:
+            return
+        active, with_pin, without_pin = update
+        if active:
+            if not self._voice_rule_active:
+                self._manual_destinations = (self.pin_destination.get(), self.no_pin_destination.get())
+            self.pin_destination.set("Verde" if with_pin == "green" else "Blanca")
+            self.no_pin_destination.set("Verde" if without_pin == "green" else "Blanca")
+            self.voice_rule_status.configure(text="Regla HMI activa · se aplicará a la siguiente recogida")
+        elif self._voice_rule_active:
+            self.pin_destination.set(self._manual_destinations[0])
+            self.no_pin_destination.set(self._manual_destinations[1])
+            self.voice_rule_status.configure(text="Regla HMI desactivada · destinos manuales restaurados")
+        else:
+            self.voice_rule_status.configure(text="Regla HMI conectada · sin regla activa")
+        self._voice_rule_active = active
+        for selector in self._destination_selectors:
+            selector.configure(state="disabled" if self._running or active else "readonly")
+
     def checkpoint_for(self, destination: str) -> str | None:
         return self.checkpoint.get() or None
 
@@ -330,7 +404,9 @@ class Window:
             return
         self._running = running
         for selector in self._selectors:
-            selector.configure(state="disabled" if running else "readonly")
+            selector.configure(state="disabled" if running or
+                               (self._voice_rule_active and selector in self._destination_selectors)
+                               else "readonly")
         self.motion.set_enabled(not running)
 
     def show(self, frames, status: str, color: str, live: str, result: str) -> None:
@@ -379,6 +455,8 @@ def main() -> int:
     parser.add_argument("--max-step", type=float, default=8.0,
                         help="target offset from measured position: joint degrees, gripper percentage points")
     parser.add_argument("--device", default=None, help="default: cuda if available, else cpu")
+    parser.add_argument("--hmi-url", default="http://127.0.0.1:8790",
+                        help="base URL of the HMI that publishes the active voice sorting rule")
     args = parser.parse_args()
     if args.fps <= 0 or args.pick_seconds <= 0 or args.max_step <= 0:
         parser.error("--fps, --pick-seconds and --max-step must be positive")
@@ -419,6 +497,7 @@ def main() -> int:
                                                    control_hz=args.fps)
     window = Window(keys.append, policy_registry.checkpoint_options("white"),
                     tuple(pick_choices), initial_pick, run_settings)
+    sorting_rule_monitor = HmiSortingRuleMonitor(args.hmi_url)
     cycle_destinations, cycle_checkpoints = None, {}
     phase, run_start, first, history, result, note = "idle", 0.0, False, [], "", ""
     classification_enabled, classify_start, stop_requested = False, 0.0, False
@@ -434,6 +513,7 @@ def main() -> int:
         period = 1 / args.fps
         while window.open:
             cycle = time.perf_counter()
+            window.apply_voice_rule(sorting_rule_monitor.latest())
             while keys:
                 key = keys.pop(0)
                 if key in ("q", "escape"):
@@ -627,6 +707,7 @@ def main() -> int:
     except KeyboardInterrupt:
         print("stopped by Ctrl-C")
     finally:
+        sorting_rule_monitor.close()
         robot.disconnect()
         window.close()
     return 0

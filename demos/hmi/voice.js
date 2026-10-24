@@ -13,6 +13,7 @@ export function initVoiceInterface(root = document, browser = window) {
   let disposed = false;
   let cancelled = false;
   let source = 'text';
+  let pendingVoiceTranscript = false;
   let hasPlan = false;
   let requestController = null;
   function notify(type, detail) {
@@ -56,15 +57,15 @@ export function initVoiceInterface(root = document, browser = window) {
     const title = root.createElement('h2');
     title.textContent = plan.actions.map(action => action.label).join(' → ') || 'Intención no reconocida';
     const meta = root.createElement('p');
-    meta.textContent = `${plan.classifier} · ${plan.source === 'voice' ? 'Entrada por voz' : 'Entrada de texto'}`;
+    meta.textContent = `${plan.classifier}${Number.isFinite(plan.confidence) ? ` · Confianza ${Math.round(plan.confidence * 100)}%` : ''} · ${plan.source === 'voice' ? 'Entrada por voz' : 'Entrada de texto'}`;
     $('plan-summary').replaceChildren(title, meta);
     $('plan-intents').replaceChildren();
     for (const action of plan.actions) {
       const tag = root.createElement('span');
       tag.className = 'intent-tag';
-      tag.textContent = `${action.negated ? 'NO · ' : ''}${action.intent}`;
+      tag.textContent = `${action.negated ? 'NO · ' : ''}${action.intent}${Number.isFinite(action.confidence) ? ` · ${Math.round(action.confidence * 100)}%` : ''}`;
       $('plan-intents').append(tag);
-      const labels = { object_type: 'Objeto', object_color: 'Color', quantity: 'Cantidad', object_quality: 'Calidad', destination_type: 'Destino', destination_color: 'Color destino', destination_role: 'Zona' };
+      const labels = { object_type: 'Objeto', object_color: 'Color', object_feature: 'Característica', quantity: 'Cantidad', quantity_mode: 'Cantidad', object_quality: 'Calidad', destination_type: 'Destino', destination_color: 'Color destino', destination_role: 'Caja' };
       const params = root.createElement('span');
       params.className = 'intent-parameters';
       params.textContent = Object.entries(action.parameters).filter(([, value]) => value !== null && value !== 'UNSPECIFIED' && value !== '').map(([key, value]) => `${labels[key] || key}: ${value}`).join(' · ');
@@ -107,6 +108,18 @@ export function initVoiceInterface(root = document, browser = window) {
     setBusy(true);
     clearPlan('ANALIZANDO');
     try {
+      if (source === 'voice') {
+        const result = await jsonRequest('/api/sorting-rule', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        if (disposed) return;
+        notify('hmi:sorting-rule', result);
+        pendingVoiceTranscript = result.status === 'needs_repeat';
+        clearPlan(result.status === 'active' || result.status === 'stopped' ? 'REGLA DE VOZ' : 'REPITE EL AUDIO');
+        status(result.status === 'active' ? 'REGLA ACTIVA' : result.status === 'stopped' ? 'REGLA DESACTIVADA' : 'REPITE EL AUDIO', result.message);
+        return;
+      }
       const plan = await jsonRequest('/api/command', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, source }),
@@ -195,7 +208,8 @@ export function initVoiceInterface(root = document, browser = window) {
       if (disposed) return;
       $('command-text').value = result.text;
       source = 'voice';
-      await analyze();
+      pendingVoiceTranscript = true;
+      status('TRANSCRIPCIÓN LISTA', 'Revisa el texto y pulsa ↗ para aceptar la regla.');
     } catch (error) {
       if (!disposed) status('AUDIO GUARDADO', error.name === 'AbortError'
         ? 'La transcripción ha tardado demasiado. El audio sigue disponible; puedes escribir la orden.'
@@ -225,6 +239,7 @@ export function initVoiceInterface(root = document, browser = window) {
       stream = await browser.navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
       if (disposed) { releaseMicrophone(); return; }
       cancelled = false;
+      pendingVoiceTranscript = false;
       const mimeType = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(type => browser.MediaRecorder.isTypeSupported(type));
       recorder = new browser.MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       const chunks = [];
@@ -270,9 +285,10 @@ export function initVoiceInterface(root = document, browser = window) {
   }
   $('microphone').addEventListener('click', () => recording ? stopRecording() : startRecording());
   $('command-form').addEventListener('submit', event => { event.preventDefault(); if (!busy && !recording) analyze(); });
-  $('command-text').addEventListener('input', () => { source = 'text'; if (hasPlan) clearPlan(); });
+  $('command-text').addEventListener('input', () => { if (!pendingVoiceTranscript) source = 'text'; if (hasPlan) clearPlan(); });
   root.querySelectorAll('[data-command]').forEach(button => button.addEventListener('click', () => {
     if (busy || recording) return;
+    pendingVoiceTranscript = false;
     $('command-text').value = button.dataset.command;
     source = 'text';
     analyze();
