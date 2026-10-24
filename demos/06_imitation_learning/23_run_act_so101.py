@@ -10,8 +10,9 @@ action. It uses the same ports, cameras and 640x480 / 30 fps as ``17b_record_rea
 so run it on the recording PC with the cameras where they were during recording.
 
 Put the piece in the tray, keep a hand near the power supply, and try ``--dry-run`` first: it
-does everything except sending the action, so you can compare the predicted action with the
-real state. Ctrl-C stops; the follower's torque is released on disconnect, so hold the arm.
+reads the robot and cameras without configuring motors, changing torque, or writing calibration.
+It stops if the motor EEPROM does not match the saved follower calibration. Ctrl-C stops; the
+normal run releases the follower's torque on disconnect, so hold the arm.
 
     python 23_run_act_so101.py --policy IkerAzurmendi/act-pick-6000 --dry-run
     python 23_run_act_so101.py --policy IkerAzurmendi/act-pick-6000 --seconds 30
@@ -25,6 +26,7 @@ from pathlib import Path
 
 JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 MAX_FIRST_GAP = 60  # degrees; a larger first action means the input is not what the policy was trained on
+DEFAULT_FOLLOWER_PORT = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B3E090058-if00"
 CAMERA_IDS = {  # same USB IDs as 17b_record_real_so101_live.py
     "front": "*Wed_Camera*video-index0",
     "wrist": "*USB2.0_CAM1*video-index0",
@@ -41,19 +43,33 @@ def find_camera(role: str, path: str) -> Path:
     return candidates[0]
 
 
+def disconnect_read_only(robot) -> None:
+    for camera in robot.cameras.values():
+        if camera.is_connected or camera.thread is not None:
+            try:
+                camera.disconnect()
+            except Exception as exc:
+                print(f"Warning: camera disconnect failed: {exc}", flush=True)
+    if robot.bus.is_connected:
+        try:
+            robot.bus.disconnect(disable_torque=False)
+        except Exception as exc:
+            print(f"Warning: motor bus disconnect failed: {exc}", flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--policy", required=True, help="pretrained_model folder or Hugging Face repo id")
-    parser.add_argument("--follower-port", default="/dev/ttyACM1")
+    parser.add_argument("--follower-port", default=DEFAULT_FOLLOWER_PORT,
+                        help="follower serial path (default: this robot's stable USB ID)")
     parser.add_argument("--camera-front", default="auto", help="device path, or 'auto' to detect by USB ID")
     parser.add_argument("--camera-wrist", default="auto", help="device path, or 'auto' to detect by USB ID")
     parser.add_argument("--camera-width", type=int, default=640)
     parser.add_argument("--camera-height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--seconds", type=float, default=30, help="stop after this long")
-    parser.add_argument("--max-step", type=float, default=3,
-                        help="largest joint move (degrees) the follower accepts per step; teleop moves "
-                             "about 3 per frame at the 95th percentile, so lower is safer")
+    parser.add_argument("--seconds", type=float, default=60.0, help="stop after this many seconds (default: 60)")
+    parser.add_argument("--max-step", type=float, default=3.0,
+                        help="target offset from measured position: joint degrees, gripper percentage points")
     parser.add_argument("--save-frames", default=None,
                         help="folder to save the first front and wrist frame the policy sees (JPEG)")
     parser.add_argument("--dry-run", action="store_true", help="predict and print, but do not move the arm")
@@ -92,9 +108,22 @@ def main() -> int:
     robot = make_robot_from_config(SOFollowerRobotConfig(
         port=args.follower_port, id="mi_follower", cameras=cameras, max_relative_target=args.max_step))
 
-    robot.connect()
     steps = 0
     try:
+        print(f"follower port: {args.follower_port} -> {Path(args.follower_port).resolve()}", flush=True)
+        if args.dry_run:
+            robot.bus.connect()
+            if not robot.bus.is_calibrated:
+                raise RuntimeError(
+                    "Follower motor EEPROM does not match mi_follower calibration; "
+                    "dry-run will not write calibration or configure motors."
+                )
+            for camera in robot.cameras.values():
+                camera.connect()
+            print("dry-run: read-only connection; motor torque and settings are unchanged.", flush=True)
+        else:
+            robot.connect()
+
         period = 1 / args.fps
         start = time.perf_counter()
         while time.perf_counter() - start < args.seconds:
@@ -121,19 +150,32 @@ def main() -> int:
                         f"the first action is {np.abs(action - state).max():.0f} degrees from the arm's "
                         f"position (state {state.round().tolist()}, action {action.round().tolist()}); "
                         "not moving. Run with --dry-run and --save-frames to see why.")
+            sent_action = None
             if not args.dry_run:
-                robot.send_action({f"{j}.pos": float(a) for j, a in zip(JOINTS, action)})
+                sent_action = robot.send_action({f"{j}.pos": float(a) for j, a in zip(JOINTS, action)})
             steps += 1
             if steps == 1 or steps % args.fps == 0:
-                print(f"t={time.perf_counter() - start:5.1f}s  state {state.round().astype(int).tolist()}  "
+                print(f"t={time.perf_counter() - start:5.1f}s  max arm |prediction-state|="
+                      f"{np.abs(action[:-1] - state[:-1]).max():5.1f} deg  "
+                      f"gripper prediction {action[-1]:5.1f}%", flush=True)
+                print(f"  state {state.round().astype(int).tolist()}  "
                       f"action {action.round().astype(int).tolist()}", flush=True)
+                if sent_action is not None:
+                    tracking = "  ".join(
+                        f"{j}={measured:.1f}->{sent_action[f'{j}.pos']:.1f}"
+                        for j, measured in zip(JOINTS, state)
+                    )
+                    print(f"  measured->sent (joints deg, gripper %): {tracking}", flush=True)
             precise_sleep(max(period - (time.perf_counter() - cycle), 0.0))
         elapsed = time.perf_counter() - start
         print(f"done: {steps} steps in {elapsed:.1f} s ({steps / elapsed:.1f} steps/s; the target is {args.fps})")
     except KeyboardInterrupt:
         print("stopped by Ctrl-C")
     finally:
-        robot.disconnect()
+        if args.dry_run:
+            disconnect_read_only(robot)
+        elif robot.is_connected:
+            robot.disconnect()
     return 0
 
 
