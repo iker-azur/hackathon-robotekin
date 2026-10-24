@@ -205,6 +205,7 @@ When the user corrects your approach, append a one-line rule here before ending 
 - For automatic pick stopping, tolerate ACT target jitter and gripper contact; report measured drift and raw tracking gap instead of requiring every predicted target to be stationary.
 - Stop a locally started HMI server after endpoint verification so port 8790 is free when the user starts it.
 - When a wrist camera is sideways in the HMI, fix the camera mount orientation in the model; do not invert the wrist joint telemetry sign.
+- Check a Hugging Face model's task before adding it to the app: act-pick checkpoints belong in the pickup selector, and Up-down checkpoints belong in the box-transfer selector.
 
 ---
 

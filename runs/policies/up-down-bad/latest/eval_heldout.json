@@ -1,0 +1,25 @@
+{
+ "policy": "runs/Up-down/Bad/act_bad_v1/checkpoints/010000/pretrained_model",
+ "frames": 620,
+ "mae_policy": 12.147,
+ "mae_copy_state": 27.455,
+ "improvement_vs_copy_state": 0.558,
+ "mae_first_step": 5.443,
+ "per_joint_mae": {
+  "pan": 7.08,
+  "lift": 15.72,
+  "elbow": 16.48,
+  "wrist_flex": 10.89,
+  "wrist_roll": 17.34,
+  "gripper": 5.38
+ },
+ "mae_by_horizon": {
+  "0": 5.44,
+  "10": 8.08,
+  "25": 10.67,
+  "50": 13.27,
+  "99": 16.87
+ },
+ "gripper_accuracy": 0.94,
+ "gripper_open_f1": 0.555
+}

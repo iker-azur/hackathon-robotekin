@@ -1,0 +1,40 @@
+{
+  "obs_mode": "rgb_only",
+  "image_inputs": [
+    "observation.images.front"
+  ],
+  "trained_on": "MikelRubi__up-down_20261024_125916",
+  "steps": 10000,
+  "batch": 8,
+  "chunk": 50,
+  "n_action_steps": 10,
+  "use_vae": true,
+  "use_state": true,
+  "lr": 1e-05,
+  "act_parameters": {
+    "weight_decay": 0.0001,
+    "backbone_lr": 5e-06,
+    "dropout": 0.1,
+    "vision_backbone": "resnet18",
+    "temporal_ensemble_coeff": null,
+    "replace_final_stride_with_dilation": false,
+    "feedforward_activation": "relu",
+    "dim_model": 512,
+    "attention_heads": 8,
+    "feedforward_dim": 3200,
+    "encoder_layers": 4,
+    "decoder_layers": 1,
+    "latent_dim": 32,
+    "vae_encoder_layers": 4,
+    "pre_norm": false,
+    "use_amp": false,
+    "kl_weight": 10.0
+  },
+  "episodes": "0-2,4-5",
+  "validation_episodes": [
+    3,
+    6
+  ],
+  "validation_freq": 200,
+  "lerobot": "0.4.4"
+}

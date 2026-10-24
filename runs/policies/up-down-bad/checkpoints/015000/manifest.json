@@ -1,0 +1,26 @@
+{
+  "source_model_repo": "MikelRubi/act-up-down-bad",
+  "source_checkpoint": "act_bad_v1/checkpoints/015000/pretrained_model",
+  "training_step": 15000,
+  "training_dataset": "up-down-bad_all",
+  "inputs": [
+    "observation.images.front",
+    "observation.images.wrist",
+    "observation.state"
+  ],
+  "outputs": [
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll",
+    "gripper"
+  ],
+  "architecture": {
+    "type": "act",
+    "chunk_size": 100,
+    "n_action_steps": 100,
+    "vision_backbone": "resnet18"
+  },
+  "evaluation": "No held-out evaluation report was present in the Hugging Face checkpoint files."
+}

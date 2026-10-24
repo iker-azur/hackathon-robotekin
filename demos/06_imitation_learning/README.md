@@ -240,6 +240,74 @@ importa es cuánto queda **por debajo** de «quedarse quieto»; es una comprobac
 dice si el brazo agarra una pieza. Las grabaciones no tienen etiqueta de éxito, así que todos
 los episodios se tratan como buenas demostraciones. Pon `HF_HUB_OFFLINE=1` si la red falla.
 
+### Ejecutar recogida, inspección y política de destino
+
+En el PC del robot, con el SO-101 en la pose de reposo sobre la bandeja y la pieza preparada:
+
+```bash
+.venv/bin/python demos/06_imitation_learning/24_pick_and_classify_app.py
+```
+
+Pulsa **Espacio** en la ventana. La app ejecuta el pick, mantiene la pieza, clasifica
+`PIN`/`NO PIN` y después ejecuta la política configurada en
+`policy_routes.json`. Al abrirse, puedes elegir por separado si `PIN` y `NO PIN`
+van a la caja **Verde** o **Blanca**; ambas opciones empiezan en Blanca para
+conservar el comportamiento anterior. Verde selecciona `up-down-good` y Blanca
+`up-down-bad`. Hay dos selectores de checkpoint, ordenados por fecha real de
+subida de los pesos, del más reciente al más antiguo, con hora de Madrid:
+
+- **Recogida**: todos los `IkerAzurmendi/act-pick-*`, incluida la nueva versión
+  `act-pick-v2-12000`. Sin `--policy`, empieza en la subida más reciente;
+  `--policy` conserva tu elección inicial. Cambiar el selector se aplica al
+  siguiente ciclo que inicies con **Espacio**.
+- **Caja blanca · Up-down BAD**: los checkpoints de `MikelRubi/act-up-down-bad`,
+  actualmente 25.000, 20.000, 15.000 y 10.000 pasos. Empieza en el más reciente.
+
+La app consulta ambas cuentas al arrancar. Si no hay conexión, utiliza el
+catálogo guardado en `policy_routes.json`. Descarga los pesos y normalizadores
+del checkpoint elegido a la caché de Hugging Face y los reutiliza. El tiempo
+de descarga y carga no cuenta dentro de los segundos de movimiento de la ruta.
+**S** para la ejecución y mantiene la pose.
+
+Debajo de los checkpoints hay **32 ajustes** en cinco pestañas: **Recogida**,
+**Caja verde**, **Caja blanca**, **Parada automática** y **Clasificación / control**.
+Los desplegables numéricos permiten elegir una sugerencia o escribir un valor,
+también con coma decimal. **Enter** termina la edición del campo; **Espacio**
+valida y fija los ajustes para ese ciclo;
+los controles se bloquean hasta que termine o pulses **S**. **Restablecer**
+recupera los valores iniciales, incluidos `--pick-seconds`, `--max-step` y `--fps`.
+
+- **Recogida:** duración, paso máximo, acciones por predicción y diferencia
+  inicial permitida. El paso limita la distancia entre objetivo y posición
+  medida en grados, o puntos porcentuales para la pinza.
+- **Cada caja:** duración y paso máximo, acciones por predicción, activación y
+  cantidad de elevación en cm, descenso de la corrección en mm por ciclo,
+  umbrales de apertura de pinza y parada al volver a reposo. La corrección de
+  altura se reduce cuando la pose no es alcanzable; si no puede resolverse,
+  la app informa y utiliza la acción de la política.
+- **Parada automática:** activación, tiempo mínimo, ventana de estabilidad y
+  tolerancias de movimiento del brazo, distancia al objetivo y pinza.
+- **Clasificación / control:** frecuencia de las órdenes, pausa de estabilización,
+  duración de la lectura y umbral de probabilidad para decidir `PIN`.
+
+**Modelo** utiliza el valor del checkpoint o de su ruta. Las acciones por
+predicción se limitan al tamaño de bloque de ACT; un número menor consulta de
+nuevo la política con más frecuencia. La frecuencia de control ajusta el bucle
+de movimiento; las cámaras conservan los FPS con los que se abrieron al arrancar.
+
+El checkpoint local de la ruta verde está en `runs/policies/up-down-good/` con
+Git LFS. Si el arranque indica que faltan pesos LFS, ejecuta `git lfs pull`.
+Ambas rutas reutilizan el follower y las cámaras que ya abrió la app, con un límite
+de 5 grados por consigna y un máximo de 15 s. `up-down-good` usa el checkpoint
+privado `MikelRubi/robotekin-act-checkpoints` (G1, paso 10.000), entrenado con la
+cámara frontal y el estado articular. Es un checkpoint inicial, sin métricas de
+validación publicadas y aún no probado en el brazo real.
+`up-down-bad` usa ACT con las cámaras frontal y de muñeca y el estado articular.
+El informe de validación disponible corresponde a 10.000 pasos; más pasos no
+garantizan un mejor resultado. La nueva recogida v2 usa el mismo contrato de
+entradas y salidas; su ficha del Hub documenta una evaluación offline, todavía
+sin validación de agarre en el robot real.
+
 ### Comprobar antes de gastar tiempo en el simulador
 
 `tools/22_validate_offline.py` reproduce, **sin simulador**, la orden que daría la política
