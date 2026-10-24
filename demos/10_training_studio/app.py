@@ -480,7 +480,15 @@ class TrainingWindow(QMainWindow):
         hub_actions.addStretch(1)
         hub_layout.addLayout(hub_actions)
         hub_selection_actions = QHBoxLayout()
+        self.hub_pickup_button = QPushButton("Pick-up")
+        self.hub_pickup_button.setToolTip("Select repositories whose names contain 'pick up' or 'pickup'.")
+        self.hub_pickup_button.clicked.connect(lambda: self._set_hub_task_selection("pickup"))
+        self.hub_updown_button = QPushButton("Up-down")
+        self.hub_updown_button.setToolTip("Select repositories whose names contain 'up down' or 'updown'.")
+        self.hub_updown_button.clicked.connect(lambda: self._set_hub_task_selection("updown"))
         hub_selection_actions.addWidget(self.hub_select_all_button)
+        hub_selection_actions.addWidget(self.hub_pickup_button)
+        hub_selection_actions.addWidget(self.hub_updown_button)
         hub_selection_actions.addWidget(self.hub_clear_button)
         hub_selection_actions.addWidget(hub_open)
         hub_selection_actions.addStretch(1)
@@ -1404,6 +1412,31 @@ class TrainingWindow(QMainWindow):
             self.hub_dataset_list.item(row).setCheckState(state)
         self.hub_dataset_list.blockSignals(False)
         self._hub_dataset_selection_changed()
+
+    def _set_hub_task_selection(self, task: str) -> None:
+        keywords = {"pickup": "pickup", "updown": "updown"}
+        keyword = keywords.get(task)
+        if keyword is None:
+            return
+        selected_count = 0
+        self.hub_dataset_list.blockSignals(True)
+        for row in range(self.hub_dataset_list.count()):
+            item = self.hub_dataset_list.item(row)
+            repo_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            normalized_name = re.sub(r"[^a-z0-9]", "", repo_id.casefold())
+            matches = keyword in normalized_name
+            item.setCheckState(Qt.CheckState.Checked if matches else Qt.CheckState.Unchecked)
+            selected_count += int(matches)
+        self.hub_dataset_list.blockSignals(False)
+        self._hub_dataset_selection_changed()
+        if selected_count:
+            self.hub_status.setText(
+                f"Selected {selected_count} {task.replace('updown', 'Up-down').replace('pickup', 'Pick-up')} dataset(s) by name. "
+                "You can still change individual selections."
+            )
+        else:
+            display_name = "Pick-up" if task == "pickup" else "Up-down"
+            self.hub_status.setText(f"No dataset repository name matched {display_name}.")
 
     def _download_hub_dataset(self) -> None:
         self._hub_download_queue = [

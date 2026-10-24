@@ -36,6 +36,8 @@ In **Datasets**, choose **Refresh Hub list**, check the repositories you want,
 and choose **Download checked**. Downloads are stored under
 `demos/09_voice_bin_picking/data` and checked for LeRobot episode metadata,
 actions and camera images before the studio makes them available to ACT.
+Use the **Pick-up** and **Up-down** quick selectors to check repositories with
+matching names; individual repository checkboxes remain available afterward.
 When task metadata is present, the dataset details list its task groups and
 episode counts. Checking or unchecking a group updates the episode checklist;
 you can then choose individual episodes. All selected episodes feed the
