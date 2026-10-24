@@ -480,14 +480,14 @@ class TrainingWindow(QMainWindow):
         hub_actions.addStretch(1)
         hub_layout.addLayout(hub_actions)
         hub_selection_actions = QHBoxLayout()
-        self.hub_pickup_button = QPushButton("Pick-up")
-        self.hub_pickup_button.setToolTip("Select repositories whose names contain 'pick up' or 'pickup'.")
-        self.hub_pickup_button.clicked.connect(lambda: self._set_hub_task_selection("pickup"))
+        self.hub_pickcube_button = QPushButton("Pick-cube")
+        self.hub_pickcube_button.setToolTip("Select repositories whose names contain 'pick-cube' or 'pickcube'.")
+        self.hub_pickcube_button.clicked.connect(lambda: self._set_hub_task_selection("pickcube"))
         self.hub_updown_button = QPushButton("Up-down")
         self.hub_updown_button.setToolTip("Select repositories whose names contain 'up down' or 'updown'.")
         self.hub_updown_button.clicked.connect(lambda: self._set_hub_task_selection("updown"))
         hub_selection_actions.addWidget(self.hub_select_all_button)
-        hub_selection_actions.addWidget(self.hub_pickup_button)
+        hub_selection_actions.addWidget(self.hub_pickcube_button)
         hub_selection_actions.addWidget(self.hub_updown_button)
         hub_selection_actions.addWidget(self.hub_clear_button)
         hub_selection_actions.addWidget(hub_open)
@@ -1414,7 +1414,8 @@ class TrainingWindow(QMainWindow):
         self._hub_dataset_selection_changed()
 
     def _set_hub_task_selection(self, task: str) -> None:
-        keywords = {"pickup": "pickup", "updown": "updown"}
+        keywords = {"pickcube": "pickcube", "updown": "updown"}
+        display_names = {"pickcube": "Pick-cube", "updown": "Up-down"}
         keyword = keywords.get(task)
         if keyword is None:
             return
@@ -1431,12 +1432,11 @@ class TrainingWindow(QMainWindow):
         self._hub_dataset_selection_changed()
         if selected_count:
             self.hub_status.setText(
-                f"Selected {selected_count} {task.replace('updown', 'Up-down').replace('pickup', 'Pick-up')} dataset(s) by name. "
+                f"Selected {selected_count} {display_names[task]} dataset(s) by name. "
                 "You can still change individual selections."
             )
         else:
-            display_name = "Pick-up" if task == "pickup" else "Up-down"
-            self.hub_status.setText(f"No dataset repository name matched {display_name}.")
+            self.hub_status.setText(f"No dataset repository name matched {display_names[task]}.")
 
     def _download_hub_dataset(self) -> None:
         self._hub_download_queue = [
