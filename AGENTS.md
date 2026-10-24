@@ -201,6 +201,8 @@ When the user corrects your approach, append a one-line rule here before ending 
 - When asked for only a replacement export cell, provide a standalone pasteable cell with its own imports/defaults (no bare EXPORT_LOCAL_DIR dependency); leave notebook configuration and inference cells unchanged.
 - For Drive export listing, use scandir metadata and bounded parallel folders, not per-file resolve/is_file/stat calls; checkpoint frozen-output inventories and require refresh after in-place mask edits.
 
+- Read SO-101 photo labels from pin_snapshots/index.json (pin/nopin, front/wrist, location); download that folder instead of robot videos when preparing the pin classifier.
+
 ---
 
 ## 12. How this file was built
