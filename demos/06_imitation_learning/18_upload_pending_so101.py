@@ -32,6 +32,7 @@ def main() -> int:
     repo_prefixes = args.repo_prefix or [
         "MikelRubi/so101-pick-cube",
         "MikelRubi/up-down",
+        "MikelRubi/up-down-bad",
     ]
     local_datasets = []
     for repo_prefix in repo_prefixes:

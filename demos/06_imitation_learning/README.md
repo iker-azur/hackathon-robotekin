@@ -205,6 +205,41 @@ Autentícate antes con `hf auth login`. Si grabaste con otro `--repo-id`, pasa s
 prefijo con `--repo-prefix USUARIO/NOMBRE`; puedes repetir el argumento para añadir
 varios prefijos.
 
+### Entrenar un ACT con las grabaciones reales (GPU local)
+
+Las grabaciones de `MikelRubi` tienen dos esquemas que LeRobot no puede mezclar tal cual:
+10 fps a 1280 × 720 (vista ancha 16:9) y 30 fps a 640 × 480 (vista más cerrada 4:3).
+`19_build_so101_act_dataset.py` las descarga (≈ 1,5 GB, en `data/real_so101/raw`) y escribe un
+único dataset a **30 fps y 640 × 480**: lo grabado a 30 fps se usa tal cual; lo grabado a
+10 fps se **sobremuestrea ×3** (cada imagen se repite tres veces y las articulaciones se
+interpolan), lo que no añade información real; los fotogramas 16:9 se recortan al centro a 4:3.
+Descarta los episodios de más de 20 s (las tres tomas de prueba) y aparta la última sesión
+del tipo elegido para validar.
+
+Cada ejecución construye los datos de **una** política, con `--kind`: `pick` (`so101-pick-cube_*`,
+tecla **q** de `17b`), `good` (`up-down_*`, tecla **w**: ir a la caja buena) o `bad`
+(`up-down-bad_*`, tecla **a**: ir a la caja mala). Solo usa sesiones grabadas con
+`17b_record_real_so101_live.py` (llevan `meta/recording_notes.json`): las sesiones antiguas de
+`up-down` son trayectos de vuelta y las de `pick-cube` acaban en el cubo de destino, no frente a la
+cámara; `--include-legacy` (solo con `--kind pick`) las añade.
+`20_train_act_so101.py` entrena un ACT con las dos cámaras y el estado articular
+con el `train()` de LeRobot, y al terminar mide el error en esa sesión apartada frente a una
+línea base «quedarse quieto».
+
+```powershell
+conda activate hackathon-robotekin
+python .\demos\06_imitation_learning\19_build_so101_act_dataset.py --kind pick        # ≈ 30 min la primera vez
+python .\demos\06_imitation_learning\20_train_act_so101.py --dataset act_pick --steps 30000 --output act_pick_30fps   # ≈ 1,8 h en una RTX 5060 Ti
+python .\demos\06_imitation_learning\20_train_act_so101.py --dataset act_pick --regimes 30fps-480p --steps 30000 --output act_pick_30fps_only
+# lo mismo con --kind good y --kind bad (datasets act_good y act_bad)
+```
+
+La segunda ejecución entrena solo con lo grabado a 30 fps: compara ambas validaciones, porque
+mezclar los dos encuadres puede empeorar el resultado con la cámara actual. El número que
+importa es cuánto queda **por debajo** de «quedarse quieto»; es una comprobación offline y no
+dice si el brazo agarra una pieza. Las grabaciones no tienen etiqueta de éxito, así que todos
+los episodios se tratan como buenas demostraciones. Pon `HF_HUB_OFFLINE=1` si la red falla.
+
 ### Comprobar antes de gastar tiempo en el simulador
 
 `tools/22_validate_offline.py` reproduce, **sin simulador**, la orden que daría la política
