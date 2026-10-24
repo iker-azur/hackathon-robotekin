@@ -28,7 +28,9 @@ import argparse
 import dataclasses
 import inspect
 import json
+import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -50,12 +52,42 @@ def parse_episodes(text: str | None) -> list[int] | None:
     return out
 
 
+def resolve_image_inputs(feature_keys: set[str], obs_mode: str) -> list[str]:
+    """Resolve visual inputs for custom bin-pick data and regular LeRobot camera keys."""
+    available = sorted(key for key in feature_keys if key.startswith("observation.images."))
+    if obs_mode == "rgb_mask":
+        required = [IMAGE_KEYS["overhead"], IMAGE_KEYS["target"]]
+        missing = [key for key in required if key not in feature_keys]
+        if missing:
+            raise SystemExit(
+                f"RGB + target mask requires {required}; this dataset has {available or 'no camera features'}. "
+                "Choose RGB only for ordinary camera recordings, or record masks with tools/collect_demos.py."
+            )
+        return required
+    if obs_mode == "mask_only":
+        key = IMAGE_KEYS["target"]
+        if key not in feature_keys:
+            raise SystemExit(f"Mask-only mode requires {key}; available camera features: {available or 'none'}.")
+        return [key]
+    if IMAGE_KEYS["overhead"] in feature_keys:
+        return [IMAGE_KEYS["overhead"]]
+    for suffix in ("front", "camera", "main"):
+        key = f"observation.images.{suffix}"
+        if key in feature_keys:
+            return [key]
+    ordinary_cameras = [key for key in available if key != IMAGE_KEYS["target"]]
+    if ordinary_cameras:
+        return [ordinary_cameras[0]]
+    raise SystemExit("The dataset does not contain an RGB camera feature for ACT.")
+
+
 def patch_last_checkpoint_windows() -> None:
-    """LeRobot enlaza ``checkpoints/last`` con un symlink; en Windows sin permisos falla. Se sustituye por una copia."""
+    """Apply Windows checkpoint fixes and allow warm-starting an incomplete saved checkpoint."""
     import shutil
 
     import lerobot.scripts.lerobot_train as lerobot_train
     import lerobot.utils.train_utils as train_utils
+    from lerobot.policies.factory import make_pre_post_processors
     from lerobot.utils.constants import LAST_CHECKPOINT_LINK
 
     def update_last_checkpoint(checkpoint_dir):
@@ -70,6 +102,22 @@ def patch_last_checkpoint_windows() -> None:
 
     train_utils.update_last_checkpoint = update_last_checkpoint
     lerobot_train.update_last_checkpoint = update_last_checkpoint
+
+    def make_pre_post_processors_with_partial_checkpoint(policy_cfg, pretrained_path=None, **kwargs):
+        checkpoint = Path(pretrained_path) if pretrained_path else None
+        required_configs = ("policy_preprocessor.json", "policy_postprocessor.json")
+        if checkpoint and (checkpoint / "config.json").is_file():
+            missing = [name for name in required_configs if not (checkpoint / name).is_file()]
+            if missing:
+                print(
+                    "[Prepare] Checkpoint has model weights but no complete processor files; "
+                    "rebuilding processors from the selected dataset statistics. Optimizer state will start fresh.",
+                    flush=True,
+                )
+                return make_pre_post_processors(policy_cfg=policy_cfg, pretrained_path=None, **kwargs)
+        return make_pre_post_processors(policy_cfg=policy_cfg, pretrained_path=pretrained_path, **kwargs)
+
+    lerobot_train.make_pre_post_processors = make_pre_post_processors_with_partial_checkpoint
 
 
 def build_cfg(args):
@@ -88,7 +136,9 @@ def build_cfg(args):
     # el estado articular es una entrada más; sin él (``--no-state``) la red no puede copiar la pose de su propio brazo
     # (la «confusión causal» que hundió a las políticas con cámara + estado del demo 06). LeRobot 0.4.4 lee igualmente la
     # clave del lote, que sigue estando en el dataset: sólo se saca de las entradas de la red.
-    keep = {*(IMAGE_KEYS[s] for s in OBS_MODES[args.obs_mode])} | (set() if args.no_state else {STATE_KEY})
+    image_inputs = resolve_image_inputs(set(pf), args.obs_mode)
+    args.resolved_image_inputs = image_inputs
+    keep = set(image_inputs) | (set() if args.no_state else {STATE_KEY})
     missing = keep - set(pf)
     if missing:
         raise SystemExit(f"el dataset no tiene {sorted(missing)}; ¿se grabó con tools/collect_demos.py?")
@@ -170,7 +220,8 @@ def build_cfg(args):
 def write_info(args, root: Path, out: Path) -> None:
     src = root / "meta" / "binpick_info.json"
     info = json.loads(src.read_text(encoding="utf-8")) if src.is_file() else {}
-    info.update({"obs_mode": args.obs_mode, "trained_on": root.name, "steps": args.steps, "batch": args.batch, "chunk": args.chunk,
+    info.update({"obs_mode": args.obs_mode, "image_inputs": getattr(args, "resolved_image_inputs", []),
+                 "trained_on": root.name, "steps": args.steps, "batch": args.batch, "chunk": args.chunk,
                  "n_action_steps": min(args.action_steps, args.chunk), "use_vae": not args.no_vae, "use_state": not args.no_state, "lr": args.lr,
                  "act_parameters": {"weight_decay": args.weight_decay, "backbone_lr": args.backbone_lr, "dropout": args.dropout,
                                     "vision_backbone": args.vision_backbone,
@@ -195,6 +246,69 @@ def _lerobot_version() -> str:
         return getattr(lerobot, "__version__", "?")
     except Exception:  # noqa: BLE001
         return "?"
+
+
+def configure_local_hf_cache() -> None:
+    """Use a short, writable local cache path to avoid profile ACL and Windows path-length errors."""
+    default_home = Path(tempfile.gettempdir()) / "rkhf"
+    hf_home = Path(os.environ.setdefault("HF_HOME", str(default_home))).expanduser()
+    os.environ.setdefault("HF_HUB_CACHE", str(hf_home / "hub"))
+    os.environ.setdefault("HF_DATASETS_CACHE", str(hf_home / "ds"))
+    os.environ.setdefault("HF_ASSETS_CACHE", str(hf_home / "assets"))
+    for variable in ("HF_HOME", "HF_HUB_CACHE", "HF_DATASETS_CACHE", "HF_ASSETS_CACHE"):
+        Path(os.environ[variable]).expanduser().mkdir(parents=True, exist_ok=True)
+
+
+def validate_runtime(args) -> None:
+    try:
+        import torch
+    except ImportError as error:
+        raise SystemExit(f"Falta PyTorch en este intérprete: {sys.executable}.") from error
+    try:
+        import lerobot
+    except ImportError as error:
+        raise SystemExit(f"Falta LeRobot en este intérprete: {sys.executable}; instala lerobot==0.4.4.") from error
+    version = str(getattr(lerobot, "__version__", ""))
+    if version != "0.4.4":
+        raise SystemExit(f"Este entrenador requiere LeRobot 0.4.4; el entorno tiene {version or 'versión desconocida'}.")
+    print(f"[Validate] Python: {sys.executable}", flush=True)
+    print(f"[Validate] PyTorch {torch.__version__} · CUDA {torch.version.cuda or 'CPU'}", flush=True)
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise SystemExit("[Validate] Se solicitó CUDA pero PyTorch no detecta una GPU disponible.")
+    print(f"[Validate] Dispositivo disponible: {args.device}", flush=True)
+    if os.name == "nt" and args.workers > 1:
+        print(
+            f"[Validate] Aviso: {args.workers} workers de DataLoader en Windows pueden consumir mucha RAM; "
+            "se recomienda --workers 0 si aparece MemoryError.",
+            flush=True,
+        )
+
+
+def validate_dataset(args) -> None:
+    root = Path(args.dataset_root).resolve()
+    info_path = root / "meta" / "info.json"
+    if not info_path.is_file():
+        raise SystemExit(f"No se encuentra el metadato del dataset: {info_path}")
+    try:
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"No se puede leer {info_path}: {error}") from error
+    features = info.get("features") or {}
+    if not isinstance(features, dict):
+        raise SystemExit("El campo 'features' de meta/info.json no tiene el formato esperado.")
+    feature_keys = set(features)
+    for key in (STATE_KEY, ACTION_KEY):
+        if key not in feature_keys:
+            raise SystemExit(f"Falta la característica necesaria {key} en el dataset.")
+    image_inputs = resolve_image_inputs(feature_keys, args.obs_mode)
+    args.resolved_image_inputs = image_inputs
+    total = int(info.get("total_episodes", 0))
+    if total < 1:
+        raise SystemExit("El dataset no contiene episodios.")
+    selected = parse_episodes(args.episodes)
+    if selected is not None and any(index < 0 or index >= total for index in selected):
+        raise SystemExit(f"Los episodios seleccionados deben estar entre 0 y {total - 1}.")
+    print(f"[Validate] Dataset: {root.name} · {total} episodios · entradas visuales: {image_inputs}", flush=True)
 
 
 def main() -> int:
@@ -230,12 +344,15 @@ def main() -> int:
     ap.add_argument("--output", default=None, help="carpeta nueva (LeRobot no reutiliza una existente)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=1000)
-    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--workers", type=int, default=0)
     ap.add_argument("--save-freq", type=int, default=None)
     ap.add_argument("--log-freq", type=int, default=200)
     ap.add_argument("--init-from", default=None, help="carpeta pretrained_model desde la que continuar (afinado)")
     ap.add_argument("--no-pretrained-backbone", action="store_true", help="no descargar los pesos ImageNet del ResNet (sin red)")
+    ap.add_argument("--stage", choices=("validate", "prepare", "train", "all"), default="all",
+                    help="validate runtime/data, prepare ACT config, train, or run all stages")
     args = ap.parse_args()
+    configure_local_hf_cache()
 
     if args.dim_model % args.attention_heads:
         ap.error("--dim-model must be divisible by --attention-heads")
@@ -247,18 +364,28 @@ def main() -> int:
         if args.temporal_ensemble_coeff <= 0 or args.action_steps != 1:
             ap.error("temporal ensembling requires a positive coefficient and --action-steps 1")
 
-    import torch
-
-    if args.device == "cuda" and not torch.cuda.is_available():
-        print("CUDA no está disponible: se entrena en CPU (muy lento).")
-        args.device = "cpu"
     args.output = args.output or f"outputs/act_{args.obs_mode}_{time.strftime('%Y%m%d_%H%M')}"
-    if Path(args.output).exists():
+    if args.stage in {"train", "all"} and Path(args.output).exists():
         print(f"ERROR: {args.output} ya existe (LeRobot no reutiliza carpetas); usa otro --output")
         return 1
+
+    if args.stage == "all":
+        print("[Validate] Comprobando entorno y dataset...", flush=True)
+    validate_runtime(args)
+    validate_dataset(args)
+    if args.stage == "validate":
+        print("[Validate] Validación completada correctamente.", flush=True)
+        return 0
+
+    print("[Prepare] Construyendo la configuración ACT...", flush=True)
     cfg = build_cfg(args)
-    print(f"dataset {cfg.dataset.root} · entradas: {sorted(cfg.policy.input_features)} · bloque {args.chunk}/{args.action_steps} · "
-          f"VAE {'no' if args.no_vae else 'sí'} · {args.steps} pasos × lote {args.batch} · {args.device}", flush=True)
+    print(f"[Prepare] Dataset: {cfg.dataset.root} · entradas: {sorted(cfg.policy.input_features)} · salida: {args.output}", flush=True)
+    if args.stage == "prepare":
+        print("[Prepare] Preparación completada correctamente; no se inició el entrenamiento.", flush=True)
+        return 0
+
+    print(f"[Train] Bloque {args.chunk}/{args.action_steps} · VAE {'no' if args.no_vae else 'sí'} · "
+          f"{args.steps} pasos × lote {args.batch} · {args.device}", flush=True)
     if sys.platform == "win32":
         patch_last_checkpoint_windows()
     from lerobot.scripts.lerobot_train import train

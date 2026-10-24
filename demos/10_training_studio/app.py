@@ -51,9 +51,10 @@ EVALUATE_SCRIPT = BINPICK_DIR / "tools" / "eval_sorting.py"
 OFFLINE_EVAL_SCRIPT = BINPICK_DIR / "tools" / "offline_eval_policy.py"
 HF_DATASET_HELPER = Path(__file__).resolve().with_name("huggingface_datasets.py")
 DATA_DIR = BINPICK_DIR / "data"
-OUTPUTS_DIR = BINPICK_DIR / "outputs"
+OUTPUTS_DIR = REPO_ROOT / "runs"
+LEGACY_OUTPUTS_DIR = BINPICK_DIR / "outputs"
 BINPICK_RESULTS_DIR = BINPICK_DIR / "results"
-BINPICK_OUTPUTS_DIR = BINPICK_DIR / "outputs"
+BINPICK_OUTPUTS_DIR = LEGACY_OUTPUTS_DIR
 EVALUATIONS_DIR = BINPICK_RESULTS_DIR
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 OUTPUT_TASKS = ("Pick-up", "Up-down")
@@ -289,6 +290,9 @@ class TrainingWindow(QMainWindow):
         self._metric_step = 0
         self._task_total_steps = 0
         self._pending_training_metadata = None
+        self._pipeline_status_labels = {}
+        self._pipeline_current_stage = ""
+        self._pipeline_requested_stage = ""
         self.metric_refresh_timer = QTimer(self)
         self.metric_refresh_timer.setInterval(2500)
         self.metric_refresh_timer.timeout.connect(self._refresh_binpick_reports)
@@ -675,6 +679,9 @@ class TrainingWindow(QMainWindow):
         self.training_mode = KeyboardOnlyComboBox()
         self.training_mode.addItem("New training", "new")
         self.training_mode.addItem("Fine-tune from checkpoint", "transfer")
+        self.training_mode.setToolTip(
+            "Loads model weights from the selected checkpoint. If optimizer state is absent, this starts a new optimizer."
+        )
         self.training_mode.currentIndexChanged.connect(self._training_mode_changed)
         self.policy_model = KeyboardOnlyComboBox()
         self.policy_model.addItem("ACT — Action Chunking Transformer", "act")
@@ -689,8 +696,8 @@ class TrainingWindow(QMainWindow):
         model_grid.addWidget(QLabel("Training mode"), 0, 2)
         model_grid.addWidget(self.training_mode, 1, 2)
         self.observation_mode = KeyboardOnlyComboBox()
-        self.observation_mode.addItem("RGB + target mask (recommended)", "rgb_mask")
-        self.observation_mode.addItem("RGB only (comparison)", "rgb_only")
+        self.observation_mode.addItem("RGB + target mask (collect_demos datasets)", "rgb_mask")
+        self.observation_mode.addItem("RGB only (standard camera datasets)", "rgb_only")
         self.observation_mode.addItem("Target mask only (comparison)", "mask_only")
         model_grid.addWidget(QLabel("ACT observation inputs"), 0, 3)
         model_grid.addWidget(self.observation_mode, 1, 3)
@@ -842,7 +849,11 @@ class TrainingWindow(QMainWindow):
         self.optimizer.setEnabled(False)
         self.save_freq = self._spin(1, 1_000_000, 2500)
         self.log_freq = self._spin(1, 100_000, 200)
-        self.workers = self._spin(0, 64, 4)
+        self.workers = self._spin(0, 64, 0)
+        self.workers.setToolTip(
+            "On Windows, 0 loads data in the training process and avoids extra worker-process RAM use. "
+            "Increase only if the computer has enough free memory."
+        )
         self.lr_final_fraction = 0.01
         self.momentum = 0.937
         self.warmup_epochs = 3.0
@@ -922,16 +933,35 @@ class TrainingWindow(QMainWindow):
         output_layout.addWidget(self.output_path)
         layout.addWidget(output_card)
 
+        pipeline_card, pipeline_layout = self._card(
+            "Training pipeline",
+            "Run each stage on its own to diagnose problems, or run the full Validate → Prepare → Train pipeline.",
+        )
+        pipeline_status_row = QHBoxLayout()
+        for stage, title in (("validate", "Validate"), ("prepare", "Prepare"), ("train", "Train")):
+            status = QLabel(f"{title}: Not run")
+            status.setObjectName("mutedText")
+            self._pipeline_status_labels[stage] = status
+            pipeline_status_row.addWidget(status)
+        pipeline_status_row.addStretch(1)
+        pipeline_layout.addLayout(pipeline_status_row)
         controls = QHBoxLayout()
-        self.start_button = QPushButton("Start training")
+        self.pipeline_buttons = []
+        for stage, title in (("validate", "Validate"), ("prepare", "Prepare"), ("train", "Train")):
+            button = QPushButton(title)
+            button.clicked.connect(lambda _checked=False, selected=stage: self._start_training(selected))
+            controls.addWidget(button)
+            self.pipeline_buttons.append(button)
+        self.start_button = QPushButton("Run all stages")
         self.start_button.setObjectName("primaryButton")
-        self.start_button.clicked.connect(self._start_training)
+        self.start_button.clicked.connect(lambda: self._start_training("all"))
+        controls.addWidget(self.start_button)
         go_console = QPushButton("Open console")
         go_console.clicked.connect(lambda: self._show_page(5))
-        controls.addWidget(self.start_button)
         controls.addWidget(go_console)
         controls.addStretch(1)
-        layout.addLayout(controls)
+        pipeline_layout.addLayout(controls)
+        layout.addWidget(pipeline_card)
         layout.addStretch(1)
         return page
 
@@ -1654,6 +1684,14 @@ class TrainingWindow(QMainWindow):
             return
         features = info.get("features") or {}
         feature_names = list(features) if isinstance(features, dict) else []
+        image_features = sorted(key for key in feature_names if key.startswith("observation.images."))
+        has_binpick_rgb_mask = {
+            "observation.images.overhead", "observation.images.target"
+        }.issubset(image_features)
+        if image_features and not has_binpick_rgb_mask:
+            rgb_only_index = self.observation_mode.findData("rgb_only")
+            if rgb_only_index >= 0:
+                self.observation_mode.setCurrentIndex(rgb_only_index)
         details = [
             f"Name: {folder.name}",
             f"Path: {folder}",
@@ -1663,6 +1701,11 @@ class TrainingWindow(QMainWindow):
             f"Frames: {info.get('total_frames', 'not specified')}",
             "Features: " + (", ".join(feature_names) if feature_names else "not specified"),
         ]
+        if image_features and not has_binpick_rgb_mask:
+            details.append(
+                "ACT input: RGB only; using " + ("observation.images.front" if "observation.images.front" in image_features else image_features[0])
+                + ". This recording has no target segmentation mask."
+            )
         manifest_path = folder / "huggingface_dataset.json"
         if manifest_path.is_file():
             try:
@@ -1877,19 +1920,20 @@ class TrainingWindow(QMainWindow):
 
     @staticmethod
     def _training_run_dirs() -> list[Path]:
-        if not OUTPUTS_DIR.is_dir():
-            return []
         runs = []
-        for entry in OUTPUTS_DIR.iterdir():
-            if not entry.is_dir():
+        for output_root in dict.fromkeys((OUTPUTS_DIR, LEGACY_OUTPUTS_DIR)):
+            if not output_root.is_dir():
                 continue
-            candidates = entry.iterdir() if entry.name in OUTPUT_TASKS else (entry,)
-            for folder in candidates:
-                if folder.is_dir() and (
-                    (folder / "checkpoints").is_dir() or (folder / "studio_run_config.json").is_file()
-                ):
-                    runs.append(folder)
-        return runs
+            for entry in output_root.iterdir():
+                if not entry.is_dir():
+                    continue
+                candidates = entry.iterdir() if entry.name in OUTPUT_TASKS else (entry,)
+                for folder in candidates:
+                    if folder.is_dir() and (
+                        (folder / "checkpoints").is_dir() or (folder / "studio_run_config.json").is_file()
+                    ):
+                        runs.append(folder)
+        return list(dict.fromkeys(runs))
 
     def _refresh_evaluation_reports(self) -> None:
         self.evaluation_list.clear()
@@ -2290,7 +2334,10 @@ class TrainingWindow(QMainWindow):
         if selected:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(selected[1])))
 
-    def _start_training(self) -> None:
+    def _start_training(self, pipeline_stage: str = "all") -> None:
+        if pipeline_stage not in {"validate", "prepare", "train", "all"}:
+            self._show_error(f"Unknown training stage: {pipeline_stage}")
+            return
         python = Path(self.python_path.text().strip().strip('"'))
         dataset = self.dataset.text().strip()
         output = self.output_name.text().strip()
@@ -2313,10 +2360,22 @@ class TrainingWindow(QMainWindow):
             return
         task_stage = str(self.output_stage.currentData())
         output_dir = OUTPUTS_DIR / task_stage / output
-        if output_dir.exists():
+        if pipeline_stage in {"train", "all"}:
+            processor_state_path = (
+                output_dir / "checkpoints" / "002500" / "pretrained_model"
+                / "policy_preprocessor_step_3_normalizer_processor.safetensors"
+            )
+            if len(str(processor_state_path)) >= 240:
+                self._show_error(
+                    f"The checkpoint path is too long for reliable Windows saves ({len(str(processor_state_path))} characters). "
+                    "Choose a shorter experiment name."
+                )
+                return
+        if pipeline_stage in {"train", "all"} and output_dir.exists():
             self._show_error(f"The output folder already exists and will not be overwritten:\n{output_dir}")
             return
-        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        if pipeline_stage in {"train", "all"}:
+            output_dir.parent.mkdir(parents=True, exist_ok=True)
         try:
             learning_rate_value = float(learning_rate)
             weight_decay_value = float(self.weight_decay.text().strip())
@@ -2385,6 +2444,7 @@ class TrainingWindow(QMainWindow):
             "--save-freq", str(self.save_freq.value()),
             "--log-freq", str(self.log_freq.value()),
             "--episodes", self._compress_episode_ids(episode_split["train_episodes"]),
+            "--stage", pipeline_stage,
         ]
         args.extend(["--lr", learning_rate])
         if not self.pretrained_backbone.isChecked():
@@ -2438,8 +2498,20 @@ class TrainingWindow(QMainWindow):
             "use_vae": not self.no_vae.isChecked(),
             "use_robot_state": self.use_robot_state.isChecked(),
             "fine_tuned_from": str(pretrained) if self.training_mode.currentData() == "transfer" else None,
-        }
-        self._launch_process(python, args, "training", output)
+        } if pipeline_stage in {"train", "all"} else None
+        self._pipeline_requested_stage = pipeline_stage
+        self._pipeline_current_stage = "validate"
+        if pipeline_stage == "all":
+            for stage in ("validate", "prepare", "train"):
+                self._set_pipeline_status(stage, "Pending")
+            self._set_pipeline_status("validate", "Running")
+            kind = "training"
+        else:
+            for stage in ("validate", "prepare", "train"):
+                self._set_pipeline_status(stage, "Not run")
+            self._set_pipeline_status(pipeline_stage, "Running")
+            kind = {"validate": "validation", "prepare": "preparation", "train": "training"}[pipeline_stage]
+        self._launch_process(python, args, kind, output)
 
     def _start_evaluation(self) -> None:
         selected = self._selected_checkpoint()
@@ -2540,6 +2612,8 @@ class TrainingWindow(QMainWindow):
         self.metric_refresh_timer.start()
         self.evaluate_button.setEnabled(False)
         self.start_button.setEnabled(False)
+        for button in self.pipeline_buttons:
+            button.setEnabled(False)
         self.statusBar().showMessage(f"{kind.title()} running")
         self._show_page(5)
 
@@ -2566,7 +2640,27 @@ class TrainingWindow(QMainWindow):
     def _read_output(self) -> None:
         text = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")
         self._append_text(text)
+        self._update_pipeline_status_from_output(text)
         self._consume_live_metrics(text)
+
+    def _set_pipeline_status(self, stage: str, status: str) -> None:
+        label = self._pipeline_status_labels.get(stage)
+        if label:
+            label.setText(f"{stage.title()}: {status}")
+
+    def _update_pipeline_status_from_output(self, text: str) -> None:
+        stage_names = {"Validate": "validate", "Prepare": "prepare", "Train": "train"}
+        for line in text.splitlines():
+            match = re.search(r"\[(Validate|Prepare|Train)\]", line)
+            if not match:
+                continue
+            stage = stage_names[match.group(1)]
+            self._pipeline_current_stage = stage
+            lowered = line.casefold()
+            if "completada correctamente" in lowered or "completed successfully" in lowered:
+                self._set_pipeline_status(stage, "Complete")
+            else:
+                self._set_pipeline_status(stage, "Running")
 
     def _consume_live_metrics(self, text: str) -> None:
         self._live_output_buffer += text
@@ -2619,6 +2713,8 @@ class TrainingWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.progress.hide()
         self.start_button.setEnabled(True)
+        for button in self.pipeline_buttons:
+            button.setEnabled(True)
         self.evaluate_button.setEnabled(self._selected_checkpoint() is not None)
         if exit_code == 0:
             message = f"{self._task_kind.title()} completed successfully · {self._task_output}"
@@ -2630,6 +2726,26 @@ class TrainingWindow(QMainWindow):
             self._append_text(f"\n{message}\n")
             self.statusBar().showMessage(message)
             self.task_label.setText(message)
+        if self._task_kind in {"training", "validation", "preparation"}:
+            if self._pipeline_requested_stage == "all":
+                if exit_code == 0:
+                    for stage in ("validate", "prepare", "train"):
+                        self._set_pipeline_status(stage, "Complete")
+                else:
+                    failed_stage = self._pipeline_current_stage or "validate"
+                    self._set_pipeline_status(failed_stage, "Failed · see console")
+                    for stage in ("validate", "prepare", "train"):
+                        if stage != failed_stage and self._pipeline_status_labels[stage].text().endswith("Pending"):
+                            self._set_pipeline_status(stage, "Not run")
+            elif self._pipeline_requested_stage:
+                if exit_code == 0:
+                    self._set_pipeline_status(self._pipeline_requested_stage, "Complete")
+                else:
+                    failed_stage = self._pipeline_current_stage or self._pipeline_requested_stage
+                    self._set_pipeline_status(failed_stage, "Failed · see console")
+                    if failed_stage != self._pipeline_requested_stage:
+                        self._set_pipeline_status(self._pipeline_requested_stage, "Not run")
+        self._pipeline_requested_stage = ""
         if self._task_kind == "training" and exit_code == 0 and self._pending_training_metadata:
             metadata_path = Path(self._pending_training_metadata["output"]) / "studio_run_config.json"
             try:
@@ -2648,6 +2764,8 @@ class TrainingWindow(QMainWindow):
             self._append_text(f"\nCould not start process: {message}\n")
             self.stop_button.setEnabled(False)
             self.start_button.setEnabled(True)
+            for button in self.pipeline_buttons:
+                button.setEnabled(True)
             self.progress.hide()
             self.task_label.setText("Could not start process")
             self.statusBar().showMessage("Could not start process")

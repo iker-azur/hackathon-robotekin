@@ -63,6 +63,7 @@ demos/results/
 
 # Demo 18 (demos/09_voice_bin_picking): recorded datasets, checkpoints and run output are
 # ignored by that folder's own .gitignore; its measured reports in results/ are kept.
+/runs/
 
 # Local credentials (never embed these values in source or notebook outputs)
 .env
