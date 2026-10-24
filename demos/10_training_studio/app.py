@@ -1138,6 +1138,12 @@ class TrainingWindow(QMainWindow):
         self.start_button.setObjectName("primaryButton")
         self.start_button.clicked.connect(lambda: self._start_training("all"))
         pipeline_controls.addWidget(self.start_button)
+        self.reset_pipeline_button = QPushButton("Reset run")
+        self.reset_pipeline_button.setToolTip(
+            "Clear stage progress and live metrics so you can start a fresh run with the current setup."
+        )
+        self.reset_pipeline_button.clicked.connect(self._reset_training_run)
+        pipeline_controls.addWidget(self.reset_pipeline_button)
         pipeline_controls.addStretch(1)
         pipeline_layout.addLayout(pipeline_controls)
         layout.addWidget(pipeline_card)
@@ -2535,6 +2541,39 @@ class TrainingWindow(QMainWindow):
             return None
         return Path(checkpoint), Path(output)
 
+    def _reset_training_run(self) -> None:
+        if self.process.state() != QProcess.NotRunning:
+            self.statusBar().showMessage("Stop the active process before resetting the run.")
+            return
+
+        self._pipeline_requested_stage = ""
+        self._pipeline_current_stage = ""
+        self._pending_training_metadata = None
+        self._metric_step = 0
+        self._task_total_steps = 0
+        for stage in ("validate", "prepare", "train"):
+            self._set_pipeline_status(stage, "Not run")
+            self._pipeline_progress_bars[stage].setValue(0)
+
+        self.progress.hide()
+        self.progress.setRange(0, 0)
+        self.task_label.setText("No active process")
+        for label in self.live_metric_labels.values():
+            label.setText("—")
+        for chart_name in (
+            "live_loss_chart",
+            "live_action_chart",
+            "live_kl_chart",
+            "live_gradient_chart",
+            "live_lr_chart",
+        ):
+            chart = getattr(self, chart_name, None)
+            if chart is not None:
+                chart.clear()
+        self.statusBar().showMessage(
+            "Run status and live metrics reset. Training settings are unchanged."
+        )
+
     def _open_selected_output(self) -> None:
         selected = self._selected_checkpoint()
         if selected:
@@ -2845,6 +2884,7 @@ class TrainingWindow(QMainWindow):
         self.progress.show()
         self.metric_refresh_timer.start()
         self.evaluate_button.setEnabled(False)
+        self.reset_pipeline_button.setEnabled(False)
         self.start_button.setEnabled(False)
         for button in self.pipeline_buttons:
             button.setEnabled(False)
@@ -2994,6 +3034,7 @@ class TrainingWindow(QMainWindow):
         self.metric_refresh_timer.stop()
         self.stop_button.setEnabled(False)
         self.progress.hide()
+        self.reset_pipeline_button.setEnabled(True)
         self.start_button.setEnabled(True)
         for button in self.pipeline_buttons:
             button.setEnabled(True)
@@ -3043,6 +3084,7 @@ class TrainingWindow(QMainWindow):
             message = self.process.errorString()
             self._append_text(f"\nCould not start process: {message}\n")
             self.stop_button.setEnabled(False)
+            self.reset_pipeline_button.setEnabled(True)
             self.start_button.setEnabled(True)
             for button in self.pipeline_buttons:
                 button.setEnabled(True)
