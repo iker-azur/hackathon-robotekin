@@ -23,8 +23,10 @@ escala que alteren su trayectoria. Para ajustar proporciones manualmente, usa
 `so101-model.html`.
 
 - La mesa: navegación 3D; arrastrar con el botón izquierdo para orbitar.
-- Desde la garra: ampliar la cámara virtual solidaria a la pinza.
-- Desde arriba: orientar la escena en cenital.
+- Desde la garra: mostrar la cámara `wrist` del follower si llega con la observación;
+  si no, ampliar la cámara virtual solidaria a la pinza.
+- Desde arriba: mostrar la cámara `front` del follower si está disponible;
+  si no, orientar la escena 3D en cenital.
 - Botón derecho y arrastrar: desplazar.
 - Rueda o botones +/−: zoom.
 - En pantalla táctil: un dedo para girar; dos para desplazar y hacer zoom.
@@ -109,19 +111,20 @@ en Rerun por cámara. No está instalado ni conectado a esta demo. Esa integraci
 necesitará una política, observaciones y mapas sincronizados con la cámara;
 los pesos de atención no deben presentarse como una explicación causal.
 
-## Órdenes por voz, intención y plan
+## Configuración y ciclo en directo
 
-La barra flotante inferior permite dar órdenes. El micrófono real
-solo se solicita al pulsar el botón de micrófono. La grabación muestra nivel
-de señal y tiempo; termina con **Detener y transcribir** o a los 30 segundos.
-Se libera el micrófono al detener, al fallar o al abandonar la página.
-El audio queda disponible para escucharlo o descargarlo en el navegador;
-no se escribe una grabación en el servidor.
+El panel de clasificación permite editar qué condición distingue a las piezas
+buenas y malas (`con perno` o `sin perno`) y qué clase va a cada caja. Aplica la
+configuración antes del siguiente ciclo. La escena muestra en directo la fase,
+el resultado y el destino que publica `24_pick_and_classify_app.py`.
 
-La captura usa [MediaRecorder](https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder),
-con WebM/Opus, Ogg/Opus o MP4 según el navegador. La transcripción usa
-[faster-whisper](https://github.com/SYSTRAN/faster-whisper) en el servidor local,
-sin servicios de reconocimiento en la nube. Para prepararla:
+El botón **EMPEZAR** solicita un ciclo a esa aplicación y solo se habilita si
+está conectada y en reposo. Telegram conserva el paso adicional de confirmación
+para iniciar ciclos desde el móvil.
+
+Las notas de voz se envían por Telegram y se transcriben con
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) local, sin servicios
+de reconocimiento en la nube. Para prepararlo:
 
 ```bash
 uv pip install --python .venv/bin/python -r demos/hmi/requirements-voice.txt
@@ -132,24 +135,66 @@ uv pip install --python .venv/bin/python -r demos/hmi/requirements-voice.txt
 La preparación descarga Whisper `tiny` la primera vez en `.cache/whisper/`,
 excluido de Git. También se puede usar `--whisper-model base` u otra ruta o
 tamaño compatible; se debe usar el mismo modelo al preparar y al arrancar.
-Sin el motor instalado se puede grabar y reproducir audio, escribir la orden
-y obtener su intención y plan. La interfaz muestra el requisito pendiente.
 
-Las órdenes escritas permiten mostrar intención, parámetros y pasos.
-Los planes de manipulación
-de pernos, calidad y cajas utilizan el modelo entrenado indicado abajo. Las
-órdenes de control, inspección, colores y formas conservan las reglas de
-`roboqc/phase_1/src/roboqc/commands`, identificadas como reglas en el panel.
+### Control por Telegram
 
-Ejemplos:
+El servidor puede recibir reglas escritas o notas de voz por Telegram. Las notas
+se transcriben con Whisper local; una regla entendida o un ajuste explícito de
+los controles de movimiento se aplica sin confirmación adicional. Puedes
+cambiar varios campos en una frase y decir «vuelve a la configuración anterior»
+para deshacer el último cambio. Los valores se aplican al siguiente ciclo.
+Por ejemplo: «cambia la frecuencia de control a 30», «desactiva la parada
+automática» o «pon la elevación adicional de la caja verde a 5 centímetros».
+También puedes decir «vuelve a los valores predeterminados». Los límites y las
+combinaciones incompatibles se validan antes de aplicar el cambio.
+Para cambiar el control por Telegram, envía «pon el modo manual» y responde
+`CONFIRMAR`; el cambio solo se acepta si la aplicación está en reposo y detecta
+un maestro conectado y calibrado. «Pon el modo automático» solicita el retorno
+al control del programa.
+Para iniciar un ciclo físico, envía
+`EMPEZAR` y responde `CONFIRMAR` dentro de 45 segundos. El inicio solo se acepta si
+`24_pick_and_classify_app.py` está conectado y en reposo; si está ocupado o no
+está ejecutándose, el bot lo rechaza. `CANCELAR` cancela la confirmación
+pendiente. Para volver a la pose guardada, envía `VUELVE A CASA` y responde
+`CONFIRMAR`; solo se acepta en modo Automático y con la aplicación en reposo.
+También puedes solicitarlo desde el botón `IR A CASA` de la HMI, con una
+confirmación del navegador. La pose usa los valores calibrados medidos en el
+follower. Antes de esa pose, el follower pasa por el punto intermedio guardado
+desde la columna de medidas calibradas: base 10,59°, hombro −25,36°, codo
+−59,30°, muñeca 48,04°, giro de muñeca −0,66° y pinza 1,1 %. `CANCELAR` en
+Telegram detiene una vuelta a casa en curso y conserva la posición medida.
+`/start` solo muestra ayuda y nunca mueve el robot.
 
-- «Inspecciona todas las piezas»: inspección de lote y pasos de observación.
-- «Coloca dos piezas azules en la caja roja»: selección, recogida, transporte y verificación.
-- «Pausa el proceso»: propuesta de pausa.
+El bot usa long polling HTTPS desde este PC, sin abrir un puerto público. Crea
+un bot con `@BotFather` y guarda el token. Inicia temporalmente la HMI solo con
+el token para consultar tu ID por mensaje privado:
 
-El plan es una propuesta de demo, independiente de la animación. No ejecuta
-acciones ni marca pasos como completados. Las órdenes desconocidas, negadas
-o incompletas muestran aclaraciones sin generar un plan de movimiento.
+```bash
+source .venv/bin/activate
+read -rsp "Token del bot: " ROBOT_TELEGRAM_BOT_TOKEN
+export ROBOT_TELEGRAM_BOT_TOKEN
+printf '\n'
+python demos/hmi/server.py --source publisher
+```
+
+Espera el mensaje `Telegram activo` en la terminal, envía `/id` al bot y anota
+el número. Detén el servidor con `Ctrl+C`, define el ID permitido y arráncalo
+de nuevo en la misma terminal:
+
+```bash
+read -rp "Tu ID numérico de Telegram: " ROBOT_TELEGRAM_USER_ID
+export ROBOT_TELEGRAM_USER_ID
+python demos/hmi/server.py --source publisher --open
+```
+
+No compartas el token: permite controlar el bot. Sin ID permitido, el bot solo
+responde a `/id`. El servidor y la aplicación de recogida deben ejecutarse en
+el PC del robot. El puente local consulta la aplicación sin abrir otro puerto
+serie; no acepta inicios desde otros equipos.
+
+El endpoint `/api/command` conserva planes genéricos de demostración para otras
+integraciones. No ejecuta acciones físicas; el ciclo real y el estado en directo
+corresponden a `24_pick_and_classify_app.py`.
 
 ## Modelo entrenado de intenciones
 
@@ -220,10 +265,9 @@ red Wi-Fi.
    las funciones y recursos del HMI. Actualiza el lanzador de LeRobot para que
    publique al loopback local (`127.0.0.1:8790`), no a la IP de otro PC.
 4. Toma las posiciones medidas del objeto follower a partir de la observación
-   que ya lee el ciclo de LeRobot. No abras un segundo puerto serie, no cambies
-   `send_action` ni envíes comandos de movimiento desde la HMI. Mantén el POST
-   de telemetría en segundo plano, limitado a 20 Hz y conservando la muestra
-   reciente. La API acepta `{"joints": {...}}` con los seis ejes
+   que ya lee el ciclo de LeRobot. La telemetría se publica en segundo plano,
+   limitada a 20 Hz y conservando la muestra reciente. La API acepta
+   `{"joints": {...}}` con los seis ejes
    `shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_roll` y
    `gripper`, en radianes de la convención SO-101 de
    `demos/08_recovery_kit/assets/so101/kinematics.json`.
@@ -258,13 +302,25 @@ source .venv/bin/activate
 python demos/hmi/server.py --source publisher --open
 ```
 
-El servidor debe permanecer abierto. La teleoperación se inicia en otra
-terminal del mismo PC con `comandos_so101/lerobot_teleoperate_hmi.py`, usando
-los puertos estables verificados para ese equipo. El lanzador debe publicar a
-`http://127.0.0.1:8790/api/telemetry`. En el navegador se abre
+El servidor debe permanecer abierto. Para usar en la HMI los modos **Manual**
+(maestro) y **Automático** (programa), inicia `24_pick_and_classify_app.py` en
+otra terminal. Esa aplicación conserva la única conexión al follower y, si
+encuentra el USB `5A7A054669`, abre el leader en lectura para permitir el modo
+Manual. También se puede indicar explícitamente con `--leader-port` usando su
+ruta `/dev/serial/by-id/`. La aplicación verifica la calibración del leader
+sin calibrarlo ni escribir en sus motores. El selector solo permite cambiar de
+modo cuando no hay un ciclo automático en curso; al elegir Manual pide
+confirmación. No ejecutes en paralelo otro proceso de teleoperación sobre el
+mismo follower.
+
+Para teleoperar desde la terminal sin el selector de modos, sigue usando
+`comandos_so101/lerobot_teleoperate_hmi.py` con los puertos estables de ese PC.
+El lanzador publica a `http://127.0.0.1:8790/api/telemetry`. En el navegador se abre
 `http://127.0.0.1:8790`; `GET /api/state` debe mostrar `connected: true` y una
-edad de pose reciente durante la teleoperación. La publicación de articulaciones
-no transmite la imagen de cámara: esta sigue siendo una integración aparte.
+edad de pose reciente durante la teleoperación. Si la observación incluye las
+cámaras `front` y `wrist`, el publicador reutiliza esos mismos fotogramas y los
+envía a la HMI en segundo plano. No abre cámaras adicionales. Las vistas usan
+la imagen en directo mientras llega y conservan la vista 3D como alternativa.
 
 Para publicar también desde otros programas LeRobot que lean el mismo
 `SOFollower`, instala una vez el hook en este entorno:
@@ -278,10 +334,19 @@ la observación de `SOFollower`, sin otra lectura serie ni cambios en
 `send_action`. Los programas que usen otro intérprete o accedan al bus fuera de
 `SOFollower` no quedan cubiertos.
 
-La web conserva sus funciones de voz, plan visual, escena 3D, Buddy y demo de
-inspección. La HMI solo muestra estado; no controla motores ni clasifica piezas
-físicas por sí misma. El clasificador real y la imagen de cámara deben
-conectarse por separado si se necesitan en esta ejecución local.
+La web conserva la escena 3D, la mascota visual y la demo de inspección; ya no
+muestra globos ni bitácora de comentarios del Buddy. «Dentro del robot»
+muestra los ángulos de la escena y, cuando la fuente es LeRobot, los valores
+calibrados del follower (cinco ejes en grados y pinza en porcentaje). El panel permite
+editar la relación entre piezas con/sin perno, clase buena/mala y cajas verde/
+blanca; la configuración se aplica al siguiente ciclo. El estado y el destino
+del ciclo físico aparecen en directo. **EMPEZAR** solicita un ciclo a
+`24_pick_and_classify_app.py` cuando está conectado y en reposo. El servidor no
+abre conexiones serie: el selector solo solicita a esa aplicación cambiar el
+origen de control; en Manual, la aplicación lee el leader y envía sus objetivos
+al follower mediante su conexión existente. Telegram admite texto y notas de voz para cambiar
+la regla, y requiere confirmar por separado el inicio de un ciclo. La imagen de
+cámara debe conectarse por separado si se necesita en la HMI.
 
 La fuente de RecoveryKit sigue disponible como simulación, no como posición
 física:
@@ -290,9 +355,10 @@ física:
 python demos/hmi/server.py --source http://127.0.0.1:8770 --open
 ```
 
-Endpoints de voz: `GET /api/voice/status`, `POST /api/voice/transcribe` (bytes
-de audio) y `POST /api/command` (`{"text":"…","source":"text|voice"}`). El
-navegador captura el micrófono tras autorización del usuario.
+Telegram utiliza `GET /api/voice/status` y `POST /api/voice/transcribe` para
+transcribir notas de voz localmente. La HMI ya no captura audio desde el
+navegador. `/api/command` permanece disponible para integraciones de planes de
+demostración y no inicia movimientos físicos.
 
 ## Conectar una fuente más adelante
 
@@ -305,16 +371,18 @@ la imagen de su cámara:
 ```
 
 También existe `--source publisher`: el proceso que ya posee el robot puede
-publicar JSON a `POST /api/telemetry`, sin abrir una segunda conexión serie.
+publicar JSON a `POST /api/telemetry`, sin abrir otra conexión al follower.
 Se admiten `links: {nombre: [[x,y,z], [w,x,y,z]]}` en metros y marco Z-up,
 o `joints` con los seis nombres de articulación y valores en radianes en la
 convención del modelo USD. Los valores normalizados de LeRobot necesitan
 su conversión y alineación antes de publicarse. La HMI no hace esa calibración.
-Los JPEG se publican como bytes a `POST /api/frame.jpg`.
+Los JPEG se publican como bytes a `POST /api/frame.jpg`. Las imágenes `front`
+y `wrist` de la observación se publican a `POST /api/camera/front.jpg` y
+`POST /api/camera/wrist.jpg`.
 
-`--camera /dev/videoN` permite seleccionar explícitamente una cámara física.
-Requiere OpenCV. No debe abrirse desde aquí si otro proceso ya la utiliza.
-No hay endpoints de control de motores.
+`--camera /dev/videoN` permite seleccionar explícitamente una cámara física
+independiente. Requiere OpenCV. No debe abrirse desde aquí si otro proceso ya
+la utiliza. No hay endpoints de control de motores.
 
 ## Verificación
 

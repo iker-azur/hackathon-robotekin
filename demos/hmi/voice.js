@@ -1,318 +1,220 @@
-// Microphone capture is independent of the 3D renderer and never controls motors.
-export function initVoiceInterface(root = document, browser = window) {
+// Local classification controls; voice input is handled by the Telegram bot.
+export function initControlInterface(root = document, browser = window) {
   const $ = id => root.getElementById(id);
-  let stream = null;
-  let recorder = null;
-  let audioContext = null;
-  let meterFrame = null;
-  let recordingTimer = null;
-  let limitTimer = null;
-  let audioURL = null;
+  let ruleSignature = null;
   let busy = false;
-  let recording = false;
-  let disposed = false;
-  let cancelled = false;
-  let source = 'text';
-  let pendingVoiceTranscript = false;
-  let hasPlan = false;
-  let requestController = null;
-  function notify(type, detail) {
-    if (root.dispatchEvent && browser.CustomEvent) root.dispatchEvent(new browser.CustomEvent(type, { detail }));
+  let robotState = null;
+
+  function complementary(value) {
+    return value === 'with_pin' || value === 'good' ?
+      (value === 'with_pin' ? 'without_pin' : 'bad') :
+      (value === 'without_pin' ? 'with_pin' : 'good');
   }
 
-  function status(label, detail, active = false) {
-    $('voice-status').textContent = label;
-    $('voice-help').textContent = detail;
-    $('voice-status').classList.toggle('recording', active);
-    $('microphone').classList.toggle('recording', active);
-    $('microphone').setAttribute('aria-pressed', String(active));
-    if (active) notify('hmi:phase', 'listening');
-    else if (label === 'TRANSCRIBIENDO') notify('hmi:phase', 'understanding');
-    else if (['ERROR', 'AUDIO GUARDADO', 'SIN AUDIO', 'MICRÓFONO NO DISPONIBLE', 'CAPTURA NO DISPONIBLE', 'ERROR DE CAPTURA'].includes(label)) notify('hmi:phase', 'idle');
-  }
-  function setBusy(value) {
-    busy = value;
-    $('microphone').disabled = value;
-    $('analyze-command').disabled = value || recording;
-    $('command-text').readOnly = value || recording;
-    root.querySelectorAll('[data-command]').forEach(button => { button.disabled = value || recording; });
-  }
-  function clearPlan(label = 'SIN ANALIZAR') {
-    hasPlan = false;
-    $('plan-badge').textContent = label;
-    $('plan-intents').replaceChildren();
-    $('plan-steps').replaceChildren();
-    $('plan-issues').replaceChildren();
-    $('plan-issues').hidden = true;
-    const text = root.createElement('p');
-    text.textContent = 'Analiza la orden para actualizar la intención y el plan.';
-    $('plan-summary').replaceChildren(text);
-    if ($('plan-panel')) $('plan-panel').hidden = label !== 'ANALIZANDO';
-    notify('hmi:plan', null);
-    notify('hmi:phase', label === 'ANALIZANDO' ? 'understanding' : label === 'ESCUCHANDO' ? 'listening' : 'idle');
-  }
-  function renderPlan(plan) {
-    hasPlan = true;
-    $('plan-badge').textContent = plan.status === 'proposed' ? 'PLAN PROPUESTO' : 'NECESITA ACLARACIÓN';
-    const title = root.createElement('h2');
-    title.textContent = plan.actions.map(action => action.label).join(' → ') || 'Intención no reconocida';
-    const meta = root.createElement('p');
-    meta.textContent = `${plan.classifier}${Number.isFinite(plan.confidence) ? ` · Confianza ${Math.round(plan.confidence * 100)}%` : ''} · ${plan.source === 'voice' ? 'Entrada por voz' : 'Entrada de texto'}`;
-    $('plan-summary').replaceChildren(title, meta);
-    $('plan-intents').replaceChildren();
-    for (const action of plan.actions) {
-      const tag = root.createElement('span');
-      tag.className = 'intent-tag';
-      tag.textContent = `${action.negated ? 'NO · ' : ''}${action.intent}${Number.isFinite(action.confidence) ? ` · ${Math.round(action.confidence * 100)}%` : ''}`;
-      $('plan-intents').append(tag);
-      const labels = { object_type: 'Objeto', object_color: 'Color', object_feature: 'Característica', quantity: 'Cantidad', quantity_mode: 'Cantidad', object_quality: 'Calidad', destination_type: 'Destino', destination_color: 'Color destino', destination_role: 'Caja' };
-      const params = root.createElement('span');
-      params.className = 'intent-parameters';
-      params.textContent = Object.entries(action.parameters).filter(([, value]) => value !== null && value !== 'UNSPECIFIED' && value !== '').map(([key, value]) => `${labels[key] || key}: ${value}`).join(' · ');
-      if (params.textContent) $('plan-intents').append(params);
+  function setRule(ruleState) {
+    const signature = JSON.stringify(ruleState);
+    if (signature === ruleSignature) return;
+    ruleSignature = signature;
+    const rule = ruleState?.rule;
+    if (rule) {
+      $('good-condition').value = rule.good_has_pin ? 'with_pin' : 'without_pin';
+      $('bad-condition').value = complementary($('good-condition').value);
+      $('green-quality').value = rule.good_destination === 'green' ? 'good' : 'bad';
+      $('white-quality').value = complementary($('green-quality').value);
+      $('rule-status').textContent = 'Configuración activa';
+    } else {
+      $('good-condition').value = 'with_pin';
+      $('bad-condition').value = 'without_pin';
+      $('green-quality').value = 'good';
+      $('white-quality').value = 'bad';
+      $('rule-status').textContent = 'Configuración sin aplicar';
     }
-    $('plan-issues').replaceChildren();
-    $('plan-issues').hidden = plan.issues.length === 0;
-    for (const issue of plan.issues) {
-      const line = root.createElement('p');
-      line.textContent = issue;
-      $('plan-issues').append(line);
-    }
-    $('plan-steps').replaceChildren();
-    for (const step of plan.steps) {
-      const row = root.createElement('li');
-      const number = root.createElement('span');
-      number.className = 'plan-number';
-      number.textContent = String(step.number).padStart(2, '0');
-      const text = root.createElement('span');
-      text.textContent = step.text;
-      row.append(number, text);
-      $('plan-steps').append(row);
-    }
-    if ($('plan-panel')) $('plan-panel').hidden = false;
-    notify('hmi:plan', plan);
   }
-  async function jsonRequest(url, options = {}) {
-    const response = await browser.fetch(url, options);
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || `Error ${response.status}`);
-    return result;
+
+  function markEdited() {
+    $('rule-status').textContent = 'Cambios sin aplicar';
   }
-  async function analyze() {
-    const text = $('command-text').value.trim();
-    if (!text) {
-      clearPlan('SIN ORDEN');
-      status('FALTA UNA ORDEN', 'Graba una orden o escribe el texto que quieres analizar.');
+
+  async function applyRule() {
+    if (busy) return;
+    const good = $('good-condition').value;
+    const bad = $('bad-condition').value;
+    const green = $('green-quality').value;
+    const white = $('white-quality').value;
+    if (good === bad || green === white) {
+      $('control-feedback').textContent = 'Las piezas y las cajas deben tener asignaciones opuestas.';
       return;
     }
-    setBusy(true);
-    clearPlan('ANALIZANDO');
+    const condition = value => value === 'with_pin' ? 'con perno' : 'sin perno';
+    const destination = quality => green === quality ? 'verde' : 'blanca';
+    const text = `Las piezas ${condition(good)} son buenas y van a la caja ${destination('good')}. ` +
+      `Las piezas ${condition(bad)} son malas y van a la caja ${destination('bad')}.`;
+    busy = true;
+    $('apply-rule').disabled = true;
+    $('control-feedback').textContent = 'Aplicando configuración…';
     try {
-      if (source === 'voice') {
-        const result = await jsonRequest('/api/sorting-rule', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
-        });
-        if (disposed) return;
-        notify('hmi:sorting-rule', result);
-        pendingVoiceTranscript = result.status === 'needs_repeat';
-        clearPlan(result.status === 'active' || result.status === 'stopped' ? 'REGLA DE VOZ' : 'REPITE EL AUDIO');
-        status(result.status === 'active' ? 'REGLA ACTIVA' : result.status === 'stopped' ? 'REGLA DESACTIVADA' : 'REPITE EL AUDIO', result.message);
-        return;
-      }
-      const plan = await jsonRequest('/api/command', {
+      const response = await browser.fetch('/api/sorting-rule', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, source }),
+        body: JSON.stringify({ text }),
       });
-      if (disposed) return;
-      renderPlan(plan);
-      status('MICRÓFONO APAGADO', plan.status === 'proposed'
-        ? 'Intención y plan preparados. Puedes corregir la orden o grabar otra.'
-        : 'La orden necesita aclaración. Revisa el mensaje del panel de planificación.');
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || `Error ${response.status}`);
+      if (result.status !== 'active') throw new Error(result.message || 'No se pudo interpretar la configuración.');
+      ruleSignature = null;
+      setRule({ active: true, rule: result.rule });
+      $('control-feedback').textContent = 'Configuración aplicada a la próxima recogida.';
+      root.dispatchEvent(new browser.CustomEvent('hmi:sorting-rule', { detail: { active: true, rule: result.rule } }));
     } catch (error) {
-      if (disposed) return;
-      clearPlan('ERROR DE ANÁLISIS');
-      status('ERROR', `No se pudo analizar la orden: ${error.message}`);
+      $('control-feedback').textContent = `No se pudo aplicar: ${error.message}`;
     } finally {
-      if (!disposed) setBusy(false);
+      busy = false;
+      $('apply-rule').disabled = false;
     }
   }
-  function releaseMicrophone() {
-    stream?.getTracks().forEach(track => track.stop());
-    stream = null;
-    browser.clearInterval(recordingTimer);
-    browser.clearTimeout(limitTimer);
-    if (meterFrame !== null) browser.cancelAnimationFrame(meterFrame);
-    meterFrame = null;
-    if (audioContext) { audioContext.close().catch(() => {}); audioContext = null; }
-    $('audio-level-fill').style.width = '0%';
-    $('audio-level').setAttribute('aria-valuenow', '0');
-    notify('hmi:level', 0);
-  }
-  function startMeter(activeStream) {
-    const Context = browser.AudioContext || browser.webkitAudioContext;
-    if (!Context) return;
-    try {
-      audioContext = new Context();
-      audioContext.resume().catch(() => {});
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 256;
-      audioContext.createMediaStreamSource(activeStream).connect(analyser);
-      const samples = new Uint8Array(analyser.fftSize);
-      function meter() {
-        if (!recording) return;
-        analyser.getByteTimeDomainData(samples);
-        const rms = Math.sqrt(samples.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0) / samples.length);
-        const level = Math.min(100, Math.round(rms * 400));
-        notify('hmi:level', level / 100);
-        $('audio-level-fill').style.width = `${level}%`;
-        $('audio-level').setAttribute('aria-valuenow', String(level));
-        meterFrame = browser.requestAnimationFrame(meter);
-      }
-      meter();
-    } catch (error) { /* Recording still works if only the level meter is unavailable. */ }
-  }
-  async function finishRecording(chunks, mimeType) {
-    recording = false;
-    releaseMicrophone();
-    $('microphone-label').textContent = 'Activar micrófono';
-    if (cancelled || disposed) { if (!disposed) setBusy(false); return; }
-    setBusy(true);
-    status('AUDIO CAPTURADO', 'Grabación finalizada. Preparando la transcripción local…');
-    const blob = new browser.Blob(chunks, { type: mimeType });
-    if (!blob.size) {
-      status('SIN AUDIO', 'La grabación no contiene audio. Vuelve a intentarlo.');
-      setBusy(false);
-      return;
+
+  function updateRobot(state) {
+    robotState = state;
+    const labels = {
+      starting: 'Preparando aplicación', idle: 'En reposo', running: 'Recogida en curso',
+      classifying: 'Clasificando pieza', routing: 'Trasladando a la caja',
+      result: 'Ciclo terminado', manual: 'Modo manual activo', homing: 'Volviendo a casa', offline: 'Aplicación desconectada',
+    };
+    const connected = Boolean(state?.connected);
+    const phase = connected ? state.phase : 'offline';
+    $('robot-app-state').textContent = connected ? 'APLICACIÓN CONECTADA' : 'APLICACIÓN DESCONECTADA';
+    $('robot-phase').textContent = labels[phase] || 'Estado desconocido';
+    $('robot-plan-detail').textContent = connected
+      ? (state.note || (phase === 'idle' ? 'Lista para iniciar un ciclo.' : 'Planificación en curso.'))
+      : 'Inicia la aplicación de recogida para ver el plan real.';
+    $('robot-plan-result').textContent = state?.result || '';
+    const destinations = { green: 'caja verde', white: 'caja blanca' };
+    $('robot-plan-destination').textContent = state?.destination
+      ? `Destino actual: ${destinations[state.destination]}` : '';
+    $('robot-plan-settings').textContent = state?.settings?.pick_seconds
+      ? `Duración máxima de recogida: ${state.settings.pick_seconds} s` : '';
+    $('start-cycle').disabled = busy || !connected || !['idle', 'result'].includes(phase);
+    $('home-cycle').disabled = busy || !connected || !['idle', 'result'].includes(phase) ||
+      state?.control_mode !== 'automatic';
+    if (root.activeElement !== $('robot-control-mode')) {
+      $('robot-control-mode').value = state?.control_mode === 'manual' ? 'manual' : 'automatic';
     }
-    if (audioURL) browser.URL.revokeObjectURL(audioURL);
-    audioURL = browser.URL.createObjectURL(blob);
-    $('audio-playback').src = audioURL;
-    $('audio-download').href = audioURL;
-    $('audio-download').download = `orden.${mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp4') ? 'm4a' : 'webm'}`;
-    $('recorded-audio').hidden = false;
-    requestController = new browser.AbortController();
-    const timeout = browser.setTimeout(() => requestController?.abort(), 180000);
+    $('robot-control-mode').disabled = !connected || !['idle', 'result', 'manual'].includes(phase);
+    $('apply-control-mode').disabled = busy || !connected || !['idle', 'result', 'manual'].includes(phase) ||
+      ($('robot-control-mode').value === 'manual' && !state.leader_available) ||
+      $('robot-control-mode').value === (state?.control_mode === 'manual' ? 'manual' : 'automatic');
+    $('control-mode-status').textContent = !connected ? 'Conecta la aplicación para cambiar de modo.'
+      : !state.leader_available ? (state.leader_status || 'Maestro no conectado o sin calibración disponible.')
+        : state.control_mode === 'manual' ? 'Modo manual activo: el follower sigue al maestro.'
+          : 'Modo automático activo: el programa controla el follower.';
+    const selectedMode = $('robot-control-mode').value;
+    const currentMode = state?.control_mode === 'manual' ? 'manual' : 'automatic';
+    $('control-mode-status').textContent = !connected ? 'Conecta la aplicación para cambiar de modo.'
+      : selectedMode === 'manual' && !state.leader_available
+        ? (state.leader_status || 'Maestro no conectado o sin calibración disponible.')
+        : selectedMode !== currentMode
+          ? 'Leader verificado. Pulsa CAMBIAR MODO para activar el modo seleccionado.'
+          : currentMode === 'manual' ? 'Modo manual activo: el follower sigue al maestro.'
+            : 'Modo automático activo: el programa controla al follower.';
+    if (!state?.demo) {
+      root.querySelectorAll('.inspection-flow li').forEach(item => item.classList.remove('active'));
+    }
+    if (phase === 'running') root.querySelector('[data-stage="recogiendo"]').classList.add('active');
+    if (phase === 'classifying') root.querySelector('[data-stage="clasificando"]').classList.add('active');
+    if (phase === 'routing') root.querySelector('[data-stage="depositando"]').classList.add('active');
+  }
+
+  async function startCycle() {
+    if (busy || $('start-cycle').disabled) return;
+    busy = true;
+    $('start-cycle').disabled = true;
+    $('control-feedback').textContent = 'Solicitando un ciclo…';
     try {
-      const capability = await jsonRequest('/api/voice/status');
-      if (!capability.available) {
-        $('voice-setup').hidden = false;
-        $('voice-install').textContent = capability.install_command;
-        throw new Error('Falta instalar Whisper. Puedes escuchar el audio y escribir la orden mientras preparas la transcripción.');
-      }
-      status('TRANSCRIBIENDO', 'Whisper está procesando el audio. La primera vez puede descargar y cargar el modelo.');
-      const result = await jsonRequest('/api/voice/transcribe', {
-        method: 'POST', headers: { 'Content-Type': blob.type }, body: blob,
-        signal: requestController.signal,
+      const response = await browser.fetch('/api/robot/start', {
+        method: 'POST',
       });
-      if (disposed) return;
-      $('command-text').value = result.text;
-      source = 'voice';
-      pendingVoiceTranscript = true;
-      status('TRANSCRIPCIÓN LISTA', 'Revisa el texto y pulsa ↗ para aceptar la regla.');
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || 'La aplicación no está disponible.');
+      $('control-feedback').textContent = 'Ciclo solicitado a la aplicación.';
     } catch (error) {
-      if (!disposed) status('AUDIO GUARDADO', error.name === 'AbortError'
-        ? 'La transcripción ha tardado demasiado. El audio sigue disponible; puedes escribir la orden.'
-        : error.message);
+      $('control-feedback').textContent = error.message;
     } finally {
-      browser.clearTimeout(timeout);
-      requestController = null;
-      if (!disposed) setBusy(false);
+      busy = false;
+      const phase = $('robot-app-state').textContent;
+      $('start-cycle').disabled = phase !== 'APLICACIÓN CONECTADA' ||
+        !['En reposo', 'Ciclo terminado'].includes($('robot-phase').textContent);
     }
   }
-  function stopRecording() {
-    if (recorder && recorder.state !== 'inactive') {
-      $('microphone').disabled = true;
-      recorder.stop();
-      releaseMicrophone();
-    }
-  }
-  async function startRecording() {
-    if (busy || recording || disposed) return;
-    if (!browser.navigator.mediaDevices?.getUserMedia || !browser.MediaRecorder) {
-      status('CAPTURA NO DISPONIBLE', 'Este navegador no permite grabar audio aquí. Abre la HMI en localhost y utiliza Firefox o Chrome; también puedes escribir la orden.');
-      return;
-    }
-    setBusy(true);
-    status('ACTIVANDO MICRÓFONO', 'Permite el acceso al micrófono en el navegador.');
+
+  async function applyControlMode() {
+    if (busy || $('apply-control-mode').disabled) return;
+    const mode = $('robot-control-mode').value;
+    if (mode === 'manual' && !browser.confirm('El follower seguirá los movimientos del maestro. ¿Activar el modo manual?')) return;
+    busy = true;
+    $('apply-control-mode').disabled = true;
+    $('control-feedback').textContent = 'Solicitando cambio de control…';
     try {
-      stream = await browser.navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
-      if (disposed) { releaseMicrophone(); return; }
-      cancelled = false;
-      pendingVoiceTranscript = false;
-      const mimeType = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(type => browser.MediaRecorder.isTypeSupported(type));
-      recorder = new browser.MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      const chunks = [];
-      recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
-      recorder.onstop = () => finishRecording(chunks, recorder.mimeType);
-      recorder.onerror = () => {
-        cancelled = true;
-        recording = false;
-        releaseMicrophone();
-        $('microphone-label').textContent = 'Activar micrófono';
-        status('ERROR DE CAPTURA', 'El navegador no pudo completar la grabación. Vuelve a intentarlo.');
-        setBusy(false);
-      };
-      stream.getAudioTracks().forEach(track => track.addEventListener('ended', stopRecording, { once: true }));
-      clearPlan('ESCUCHANDO');
-      $('command-text').value = '';
-      source = 'text';
-      $('recorded-audio').hidden = true;
-      $('audio-playback').pause();
-      recorder.start(250);
-      recording = true;
-      setBusy(false);
-      $('microphone-label').textContent = 'Detener y transcribir';
-      status('ESCUCHANDO', 'Di tu orden y pulsa de nuevo para terminar. La grabación se detendrá a los 30 segundos.', true);
-      startMeter(stream);
-      const started = Date.now();
-      $('record-time').textContent = '00:00';
-      recordingTimer = browser.setInterval(() => {
-        $('record-time').textContent = `00:${String(Math.min(30, Math.floor((Date.now() - started) / 1000))).padStart(2, '0')}`;
-      }, 200);
-      limitTimer = browser.setTimeout(stopRecording, 30000);
+      const response = await browser.fetch('/api/robot/control', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || `Error ${response.status}`);
+      $('control-feedback').textContent = result.detail;
     } catch (error) {
-      recording = false;
-      releaseMicrophone();
-      const messages = {
-        NotAllowedError: 'Acceso al micrófono denegado. Permítelo desde el icono de permisos del navegador y vuelve a pulsar.',
-        NotFoundError: 'No se ha encontrado un micrófono. Conecta uno o escribe la orden.',
-        NotReadableError: 'No se puede utilizar el micrófono. Comprueba si otra aplicación lo está usando.',
-      };
-      status('MICRÓFONO NO DISPONIBLE', messages[error.name] || `No se pudo iniciar la grabación: ${error.message}`);
-      setBusy(false);
+      $('control-feedback').textContent = error.message;
+    } finally {
+      busy = false;
+      if (robotState) updateRobot(robotState);
     }
   }
-  $('microphone').addEventListener('click', () => recording ? stopRecording() : startRecording());
-  $('command-form').addEventListener('submit', event => { event.preventDefault(); if (!busy && !recording) analyze(); });
-  $('command-text').addEventListener('input', () => { if (!pendingVoiceTranscript) source = 'text'; if (hasPlan) clearPlan(); });
-  root.querySelectorAll('[data-command]').forEach(button => button.addEventListener('click', () => {
-    if (busy || recording) return;
-    pendingVoiceTranscript = false;
-    $('command-text').value = button.dataset.command;
-    source = 'text';
-    analyze();
-  }));
-  function destroy() {
-    disposed = true;
-    cancelled = true;
-    stopRecording();
-    releaseMicrophone();
-    requestController?.abort();
-    if (audioURL) browser.URL.revokeObjectURL(audioURL);
-  }
-  browser.addEventListener('pagehide', destroy);
-  async function checkVoice() {
+
+  async function requestHome() {
+    if (busy || $('home-cycle').disabled) return;
+    if (!browser.confirm('El follower se moverá a la posición de casa guardada. ¿Continuar?')) return;
+    busy = true;
+    $('home-cycle').disabled = true;
+    $('control-feedback').textContent = 'Solicitando vuelta a casa…';
     try {
-      const capability = await jsonRequest('/api/voice/status');
-      if (disposed) return;
-      $('voice-setup').hidden = capability.available;
-      $('voice-install').textContent = capability.install_command;
-      if (!capability.available && !busy && !recording) $('voice-help').textContent = 'Whisper sin preparar · Puedes escribir la orden.';
-    } catch (error) { if (!busy && !recording) $('voice-help').textContent = 'Sin conexión.'; }
+      const response = await browser.fetch('/api/robot/home', { method: 'POST' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || `Error ${response.status}`);
+      $('control-feedback').textContent = result.detail;
+    } catch (error) {
+      $('control-feedback').textContent = error.message;
+    } finally {
+      busy = false;
+      if (robotState) updateRobot(robotState);
+    }
   }
-  checkVoice();
-  return { startRecording, stopRecording, analyze, destroy };
+
+  $('good-condition').addEventListener('change', () => {
+    $('bad-condition').value = complementary($('good-condition').value);
+    markEdited();
+  });
+  $('bad-condition').addEventListener('change', () => {
+    $('good-condition').value = complementary($('bad-condition').value);
+    markEdited();
+  });
+  $('green-quality').addEventListener('change', () => {
+    $('white-quality').value = complementary($('green-quality').value);
+    markEdited();
+  });
+  $('white-quality').addEventListener('change', () => {
+    $('green-quality').value = complementary($('white-quality').value);
+    markEdited();
+  });
+  $('apply-rule').addEventListener('click', applyRule);
+  $('home-cycle').addEventListener('click', requestHome);
+  $('start-cycle').addEventListener('click', startCycle);
+  $('apply-control-mode').addEventListener('click', applyControlMode);
+  $('robot-control-mode').addEventListener('change', () => {
+    if (robotState) updateRobot(robotState);
+  });
+  root.addEventListener('hmi:sorting-rule', event => setRule(event.detail));
+  root.addEventListener('hmi:robot-state', event => updateRobot(event.detail));
+
+  browser.fetch('/api/sorting-rule').then(response => response.json()).then(setRule).catch(() => {});
+  return { setRule, updateRobot };
 }
 
-if (typeof document !== 'undefined') initVoiceInterface();
+if (typeof document !== 'undefined') initControlInterface();

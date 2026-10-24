@@ -86,6 +86,27 @@ footer{inset:auto 28px 24px;pointer-events:none}
 .joint-details .tiny{font-size:8px}
 .selection-caption{font-size:9px}
 
+/* Editable sorting map, direct cycle control and real controller status. */
+#plan-panel.live-plan-panel{left:auto;right:42px;top:360px;width:260px;max-height:190px;padding:15px 17px;pointer-events:none}
+.live-plan-panel .panel-title{margin-bottom:9px}
+.live-plan-panel #robot-plan-summary h2{margin:9px 0 5px;font-size:17px;line-height:1.25}
+.live-plan-panel #robot-plan-summary p,.live-plan-panel .plan-note{margin:5px 0;color:#687567;font-size:11px;line-height:1.4}
+.live-plan-panel .plan-badge{display:inline-block}
+#robot-controls .robot-control-dock{padding:13px 15px 11px;border-radius:18px}
+.robot-control-heading,.robot-control-actions{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.robot-control-heading{margin-bottom:10px}
+#rule-status{font-size:10px;color:#75816f}
+.rule-editor{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
+.rule-editor label{display:grid;gap:4px;color:#667261;font-size:10px}
+.rule-editor select{width:100%;min-width:0;padding:7px 8px;border:1px solid #71816c35;border-radius:8px;background:#fffdf7;color:#344138;font:inherit;font-size:11px}
+.robot-control-actions{justify-content:flex-start;margin-top:11px}
+.robot-control-actions button{padding:8px 11px;border:1px solid #71816c35;border-radius:18px;background:#f7f4e9;color:#53694e;font-size:10px}
+.robot-control-actions #start-cycle{margin-left:auto;background:#263b31;color:#fff8e9;border-color:#263b31;font-weight:650;letter-spacing:.6px}
+.robot-control-actions button:disabled{opacity:.38}
+#control-feedback{min-height:15px;margin:6px 0 0;color:#75816f;font-size:10px;line-height:1.4}
+@media(max-width:850px){#plan-panel.live-plan-panel{right:20px;top:330px;width:220px;max-height:175px}.live-plan-panel #robot-plan-summary h2{font-size:15px}.live-plan-panel #robot-plan-summary p,.live-plan-panel .plan-note{font-size:10px}}
+@media(max-width:480px){#robot-controls.voice-workspace{left:12px;bottom:12px;width:calc(100% - 24px);max-height:270px;overflow:auto}.robot-control-dock{padding:10px 12px 8px!important}.rule-editor{gap:6px 9px}.rule-editor label{font-size:9px}.rule-editor select{padding:6px;font-size:10px}.robot-control-actions{margin-top:8px}.robot-control-actions button{padding:7px 9px;font-size:9px}#control-feedback{font-size:9px}#plan-panel.live-plan-panel{top:auto;right:12px;bottom:302px;width:calc(50% - 18px);max-height:142px;padding:10px 11px}.live-plan-panel #robot-app-state{font-size:8px}.live-plan-panel #robot-plan-summary h2{font-size:13px}.live-plan-panel #robot-plan-summary p,.live-plan-panel .plan-note{font-size:9px}}
+
 /* Stable spacing and readable type for inspection, plan and voice overlays. */
 .tiny{font-size:10px;letter-spacing:1px}
 .inspection-flow>span{font-size:10px}
@@ -118,3 +139,45 @@ footer{inset:auto 28px 24px;pointer-events:none}
   .plan-panel #plan-summary p,.plan-steps li,.plan-issues p{font-size:12px}
   .voice-workspace{left:12px;bottom:48px;width:calc(100% - 24px)}
 }
+.control-mode-actions{align-items:center;border-top:1px solid #d5dacb77;margin-top:6px;padding-top:7px}
+.control-mode-actions label{font-size:8px;color:#7d8974;white-space:nowrap}
+.control-mode-actions select{min-width:0;max-width:145px;border:0;border-bottom:1px solid #c9d0bf;background:transparent;color:#52634e;font:inherit;font-size:9px;padding:4px}
+.control-mode-actions button{font-size:7px;letter-spacing:.5px;color:var(--orange);white-space:nowrap}
+#control-mode-status{font-size:8px;line-height:1.6;color:#87937a;margin:5px 0}
+.joint-row{display:grid;grid-template-columns:16px minmax(0,1fr) auto auto;gap:5px;align-items:center}
+.joint-measured{min-width:42px;text-align:right;color:#a45a3d;font-size:8px;font-variant-numeric:tabular-nums}
+.joint-details{width:290px;font-size:13px}
+.joint-details .tiny{font-size:11px;letter-spacing:1.4px}
+.joint-row{grid-template-columns:24px minmax(110px,1fr) auto auto;gap:9px;padding:11px 0;font-size:13px}
+.joint-index{font-size:10px}
+.joint-value{font-size:14px}
+.joint-measured{min-width:70px;font-size:13px}
+#joint-note{font-size:11px;line-height:1.65}
+#buddy-journal-toggle,.buddy-journal,.buddy-comment{display:none!important}
+@media(max-width:480px){.joint-details{width:min(290px,calc(100vw - 32px));font-size:12px}.joint-row{grid-template-columns:20px minmax(90px,1fr) auto auto;gap:6px;font-size:12px}.joint-measured{min-width:60px;font-size:12px}}
+
+/* Readable desktop controls and visible mode confirmation. */
+.tiny,.inspection-flow>span,.camera-heading .tiny,.camera-status,.source-bin-label,.result-bin-label{font-size:12px}
+.inspection-flow{width:min(400px,calc(100vw - 48px));padding:15px 17px}
+.inspection-flow ol{gap:7px}
+#plan-panel.live-plan-panel{width:320px;max-height:220px}
+.inspection-flow li{font-size:13px;line-height:1.4}
+.inspection-flow li span,.inspection-flow p{font-size:12px;line-height:1.5}
+.live-plan-panel .plan-badge,.live-plan-panel #robot-plan-summary p,.live-plan-panel .plan-note{font-size:13px;line-height:1.5}
+.live-plan-panel #robot-plan-summary h2{font-size:20px}
+#rule-status,.rule-editor label{font-size:12px}
+.rule-editor select{font-size:14px;padding:9px 10px}
+.robot-control-actions button{font-size:12px;padding:10px 13px}
+#home-cycle:not(:disabled){background:#f4e8d8;color:#93421f;border-color:#c54c2766}
+.control-mode-actions label{font-size:12px}
+.control-mode-actions{display:grid;grid-template-columns:minmax(0,1fr) minmax(145px,1.2fr);gap:8px}
+.control-mode-actions select{width:100%;max-width:none;font-size:13px;padding:7px}
+.control-mode-actions button{font-size:11px;letter-spacing:.4px;padding:10px 13px}
+.control-mode-actions #apply-control-mode{grid-column:2;justify-self:end}
+.control-mode-actions #apply-control-mode:not(:disabled){background:#263b31;color:#fff8e9;border-color:#263b31;opacity:1;cursor:pointer}
+#control-mode-status,#control-feedback{font-size:12px;line-height:1.5}
+.pill,.joint-details>summary,.selection-caption,.view-tabs button,.scene-tools #ghost-toggle{font-size:12px}
+@media(max-width:850px){.live-plan-panel #robot-plan-summary h2{font-size:18px}.live-plan-panel #robot-plan-summary p,.live-plan-panel .plan-note{font-size:12px}}
+@media(max-width:480px){.rule-editor label,.control-mode-actions label{font-size:11px}.rule-editor select,.control-mode-actions select{font-size:12px}.robot-control-actions button,.control-mode-actions button{font-size:11px}.live-plan-panel #robot-plan-summary p,.live-plan-panel .plan-note{font-size:11px}}
+#camera-feed{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#17211d}
+#viewport.show-camera-feed #object-labels,#viewport.show-camera-feed .buddy-comment{display:none}

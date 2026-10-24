@@ -34,7 +34,9 @@ def observation_payload(observation, invert_gripper: bool = False) -> dict | Non
         gripper_percent = 100.0 - gripper_percent
     low, high = GRIPPER_LIMITS_RAD
     joints["gripper"] = low + (high - low) * gripper_percent / 100.0
-    return {"joints": joints}
+    return {"joints": joints,
+            "measured": {name: float(observation[f"{name}.pos"])
+                         for name in (*ARM_JOINTS, "gripper")}}
 
 
 class LatestPosePublisher:

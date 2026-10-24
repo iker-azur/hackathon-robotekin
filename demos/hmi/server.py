@@ -1,10 +1,11 @@
-"""Read-only SO-101 HMI: local assets, pose telemetry and camera frames.
+"""SO-101 HMI: local assets, pose telemetry, sorting rules and Telegram start confirmation.
 
 Run: python demos/hmi/server.py --open (animated demo, no hardware)
 An existing RecoveryKit instance can supply Isaac Sim poses and JPEGs with
 --source URL. A process that already reads a physical robot can POST measured
-link poses to /api/telemetry and JPEG bytes to /api/frame.jpg. No endpoint
-sends commands to the robot.
+link poses to /api/telemetry, generic JPEG bytes to /api/frame.jpg and follower
+camera images to /api/camera/front.jpg and /api/camera/wrist.jpg. A Telegram
+start request is forwarded only to the local pick application after confirmation.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import argparse
 import json
 import math
 import mimetypes
+import os
 import sys
 import threading
 import time
@@ -29,10 +31,12 @@ from commands import make_plan
 from speech import SpeechService, SpeechUnavailable
 from intent_service import IntentService, IntentUnavailable, DEFAULT_MODEL, WORKER_PYTHON
 from sorting_rules import SortingRuleStore
+from telegram_control import RobotStartRequests, TelegramControl
 from comparison import demo_joints, comparison_sample, tcp_position, PERIOD
 RECOVERY = ROOT.parent / "08_recovery_kit"
 VENDOR = RECOVERY / "server" / "static" / "vendor"
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
+CAMERA_ENDPOINTS = {f"/api/camera/{name}.jpg": name for name in ("front", "wrist")}
 INSPECTION_CYCLE = 20.0
 
 
@@ -93,6 +97,13 @@ def validate_poses(data):
     if not isinstance(data, dict):
         raise ValueError("telemetry must be an object")
     data = dict(data)
+    measured = data.get("measured")
+    if measured is not None:
+        if not isinstance(measured, dict) or set(measured) != set(JOINTS):
+            raise ValueError("measured must contain all six SO-101 joints")
+        if not all(isinstance(value, (int, float)) and math.isfinite(value)
+                   for value in measured.values()):
+            raise ValueError("measured joint values must be finite numbers")
     if "joints" in data:
         data["links"] = joint_poses(data["joints"])
     links = data.get("links")
@@ -120,6 +131,10 @@ class Telemetry:
         self.jpeg = None
         self.frame_time = None
         self.frame_id = 0
+        self.camera_frames = {
+            name: {"jpeg": None, "frame_time": None, "frame_id": 0}
+            for name in ("front", "wrist")
+        }
         self.error = "Esperando fuente de datos"
         self.mode = "live"
         self.paused = False
@@ -139,6 +154,17 @@ class Telemetry:
             self.frame_time = time.monotonic()
             self.frame_id += 1
 
+    def camera_frame(self, name, jpeg):
+        if name not in self.camera_frames:
+            raise ValueError("unknown camera")
+        if not jpeg.startswith(b"\xff\xd8") or not jpeg.endswith(b"\xff\xd9"):
+            raise ValueError("expected JPEG bytes")
+        with self.lock:
+            frame = self.camera_frames[name]
+            frame["jpeg"] = jpeg
+            frame["frame_time"] = time.monotonic()
+            frame["frame_id"] += 1
+
     def snapshot(self):
         now = time.monotonic()
         with self.lock:
@@ -147,7 +173,13 @@ class Telemetry:
             return {"source": self.source, "mode": self.mode, "paused": self.paused,
                     "connected": age is not None and age < 2,
                     "pose_age": age, "frame_age": frame_age,
-                    "frame_id": self.frame_id, "poses": self.poses, "error": self.error}
+                    "frame_id": self.frame_id,
+                    "camera_frames": {
+                        name: {"frame_age": None if frame["frame_time"] is None else now - frame["frame_time"],
+                              "frame_id": frame["frame_id"]}
+                        for name, frame in self.camera_frames.items()
+                    },
+                    "poses": self.poses, "error": self.error}
 
 
 def demo_worker(telemetry, stop):
@@ -254,9 +286,10 @@ def camera_worker(telemetry, device, stop):
         capture.release()
 
 
-def make_handler(telemetry, speech=None, intent=None, sorting_rules=None):
+def make_handler(telemetry, speech=None, intent=None, sorting_rules=None, robot_starts=None):
     speech = speech or SpeechService()
     sorting_rules = sorting_rules or SortingRuleStore()
+    robot_starts = robot_starts or RobotStartRequests()
     reference_path = None
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -284,6 +317,7 @@ def make_handler(telemetry, speech=None, intent=None, sorting_rules=None):
             if path == "/api/state":
                 state = telemetry.snapshot()
                 state["sorting_rule"] = sorting_rules.snapshot()
+                state["robot_app"] = robot_starts.snapshot()
                 self.send(200, json.dumps(state, allow_nan=False).encode())
                 return
             if path == "/api/sorting-rule":
@@ -300,6 +334,12 @@ def make_handler(telemetry, speech=None, intent=None, sorting_rules=None):
             if path == "/api/frame.jpg":
                 with telemetry.lock:
                     jpeg = telemetry.jpeg
+                self.send(200 if jpeg else 404, jpeg or b'{"detail":"Sin imagen"}',
+                          "image/jpeg" if jpeg else "application/json")
+                return
+            if path in CAMERA_ENDPOINTS:
+                with telemetry.lock:
+                    jpeg = telemetry.camera_frames[CAMERA_ENDPOINTS[path]]["jpeg"]
                 self.send(200 if jpeg else 404, jpeg or b'{"detail":"Sin imagen"}',
                           "image/jpeg" if jpeg else "application/json")
                 return
@@ -327,12 +367,40 @@ def make_handler(telemetry, speech=None, intent=None, sorting_rules=None):
 
         def do_POST(self):
             path = urlsplit(self.path).path
+            if path in ("/api/robot/poll", "/api/robot/start", "/api/robot/home", "/api/robot/control") and self.client_address[0] not in ("127.0.0.1", "::1"):
+                self.send(403, b'{"detail":"Solo se permite el controlador local"}')
+                return
+            if path == "/api/robot/start":
+                accepted, detail = robot_starts.request_start()
+                response = {"ok": accepted, "detail": detail or "Ciclo solicitado."}
+                self.send(202 if accepted else 409, json.dumps(response, ensure_ascii=False).encode())
+                return
+            if path == "/api/robot/home":
+                accepted, detail = robot_starts.request_home()
+                response = {"ok": accepted, "detail": detail or "Vuelta a casa solicitada."}
+                self.send(202 if accepted else 409, json.dumps(response, ensure_ascii=False).encode())
+                return
+            if path == "/api/robot/control":
+                try:
+                    size = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < size <= 1000:
+                        raise ValueError("invalid payload size")
+                    payload = json.loads(self.rfile.read(size))
+                    if not isinstance(payload, dict):
+                        raise ValueError("El modo de control debe enviarse como un objeto.")
+                    accepted, detail = robot_starts.request_control_mode(payload.get("mode"))
+                    response = {"ok": accepted, "detail": detail}
+                    self.send(202 if accepted else 409, json.dumps(response, ensure_ascii=False).encode())
+                except (ValueError, TypeError) as exc:
+                    self.send(400, json.dumps({"detail": str(exc)}, ensure_ascii=False).encode())
+                return
             if path == "/api/demo/toggle" and telemetry.mode == "demo":
                 with telemetry.lock:
                     telemetry.paused = not telemetry.paused
                 self.send(200, b'{"ok":true}')
                 return
-            if path not in ("/api/telemetry", "/api/frame.jpg", "/api/command", "/api/voice/transcribe", "/api/sorting-rule"):
+            if path not in ("/api/telemetry", "/api/frame.jpg", *CAMERA_ENDPOINTS,
+                            "/api/command", "/api/voice/transcribe", "/api/sorting-rule", "/api/robot/poll"):
                 self.send(404, b'{"detail":"No encontrado"}')
                 return
             try:
@@ -340,7 +408,16 @@ def make_handler(telemetry, speech=None, intent=None, sorting_rules=None):
                 if not 0 < size <= 8_000_000:
                     raise ValueError("invalid payload size")
                 body = self.rfile.read(size)
-                if path == "/api/sorting-rule":
+                if path == "/api/robot/poll":
+                    payload = json.loads(body)
+                    if not isinstance(payload, dict):
+                        raise ValueError("El estado del robot debe ser un objeto.")
+                    sorting_rules.observe_controller(payload.get("report"))
+                    result = robot_starts.poll(payload.get("phase"), payload.get("report"))
+                    result["configuration"] = sorting_rules.snapshot()
+                    self.send(200, json.dumps(result, ensure_ascii=False).encode())
+                    return
+                elif path == "/api/sorting-rule":
                     payload = json.loads(body)
                     if not isinstance(payload, dict):
                         raise ValueError("La regla debe enviarse como un objeto con texto.")
@@ -360,6 +437,8 @@ def make_handler(telemetry, speech=None, intent=None, sorting_rules=None):
                     return
                 elif path == "/api/telemetry":
                     telemetry.publish(json.loads(body))
+                elif path in CAMERA_ENDPOINTS:
+                    telemetry.camera_frame(CAMERA_ENDPOINTS[path], body)
                 else:
                     telemetry.frame(body)
             except (SpeechUnavailable, IntentUnavailable) as exc:
@@ -414,8 +493,24 @@ def main():
     if source and (urlsplit(source).scheme not in ("http", "https") or not urlsplit(source).netloc):
         parser.error("--source must be an http(s) URL or 'publisher'")
     telemetry = Telemetry(source)
+    sorting_rules = SortingRuleStore()
+    robot_starts = RobotStartRequests()
     stop = threading.Event()
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(telemetry, speech, intent, SortingRuleStore()))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(
+        telemetry, speech, intent, sorting_rules, robot_starts))
+    telegram_token = os.environ.get("ROBOT_TELEGRAM_BOT_TOKEN", "").strip()
+    telegram_user_id = os.environ.get("ROBOT_TELEGRAM_USER_ID", "").strip()
+    telegram = None
+    if telegram_token:
+        try:
+            if telegram_user_id:
+                int(telegram_user_id)
+            telegram = TelegramControl(telegram_token, telegram_user_id, speech, sorting_rules, robot_starts)
+            telegram.start()
+        except ValueError:
+            parser.error("ROBOT_TELEGRAM_USER_ID debe ser un entero.")
+    else:
+        print("Telegram desactivado: define ROBOT_TELEGRAM_BOT_TOKEN para habilitarlo.", flush=True)
     if args.source == "demo":
         threading.Thread(target=demo_worker, args=(telemetry, stop), daemon=True).start()
     elif args.source == "publisher":
@@ -436,6 +531,8 @@ def main():
     finally:
         stop.set()
         server.server_close()
+        if telegram is not None:
+            telegram.close()
         if intent is not None:
             intent.close()
 

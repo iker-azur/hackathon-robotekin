@@ -13,6 +13,7 @@ spec = importlib.util.spec_from_file_location('hmi_server', ROOT / 'server.py')
 hmi = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = hmi
 spec.loader.exec_module(hmi)
+from telegram_control import RobotStartRequests, TelegramControl, control_mode_from_text
 
 
 class HMIChecks(unittest.TestCase):
@@ -81,6 +82,39 @@ class HMIChecks(unittest.TestCase):
         frame = b'\xff\xd8frame\xff\xd9'
         self.assertEqual(self.request('/api/frame.jpg', frame)[0], 200)
         self.assertEqual(self.request('/api/frame.jpg')[1:], (frame, 'image/jpeg'))
+        for name in ('front', 'wrist'):
+            path = f'/api/camera/{name}.jpg'
+            self.assertEqual(self.request(path, frame)[0], 200)
+            self.assertEqual(self.request(path)[1:], (frame, 'image/jpeg'))
+            self.assertEqual(json.loads(self.request('/api/state')[1])['camera_frames'][name]['frame_id'], 1)
+
+    def test_telegram_recognizes_and_confirms_manual_mode_phrases(self):
+        requests = RobotStartRequests()
+        requests.poll('idle', {'control_mode': 'automatic', 'leader_available': True})
+        bot = TelegramControl('token', 1, None, None, requests)
+        messages = []
+        bot._send = lambda chat_id, text: messages.append(text)
+
+        self.assertEqual(control_mode_from_text('pon el modo manual'), 'manual')
+        self.assertEqual(control_mode_from_text('controla con el maestro'), 'manual')
+        self.assertEqual(control_mode_from_text('cambia a modo automático'), 'automatic')
+        self.assertIsNone(control_mode_from_text('no pongas el modo manual'))
+
+        bot._handle_text(1, 'pon el modo manual')
+        self.assertIn('CONFIRMAR', messages[-1])
+        self.assertEqual(requests.requested_control_mode, 'automatic')
+        bot._handle_text(1, 'confirmar')
+        self.assertEqual(requests.requested_control_mode, 'manual')
+
+    def test_telegram_automatic_mode_is_requested_without_motion_confirmation(self):
+        requests = RobotStartRequests()
+        requests.poll('manual', {'control_mode': 'manual', 'leader_available': True})
+        bot = TelegramControl('token', 1, None, None, requests)
+        messages = []
+        bot._send = lambda chat_id, text: messages.append(text)
+        bot._handle_text(1, 'pon el modo automático')
+        self.assertEqual(requests.requested_control_mode, 'automatic')
+        self.assertIn('automático', messages[-1].casefold())
 
     def test_every_frontend_asset_and_reference_is_served(self):
         for path in ['/', '/style.css', '/app.js', '/robot-model.js', '/robot_meshes.json', '/api/reference',

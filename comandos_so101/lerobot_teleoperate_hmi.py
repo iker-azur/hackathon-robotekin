@@ -34,7 +34,7 @@ def _teleop_loop_with_hmi_telemetry(*args, **kwargs):
     def get_observation_with_telemetry():
         observation = original_get_observation()
         try:
-            publisher.offer(observation_to_usd_radians(observation, calibration, use_degrees))
+            publisher.offer(observation_to_usd_radians(observation, calibration, use_degrees), observation)
         except Exception:
             logger.exception("No se pudo convertir la observación para la telemetría HMI")
         return observation

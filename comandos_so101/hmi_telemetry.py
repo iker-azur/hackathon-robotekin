@@ -30,6 +30,7 @@ with KINEMATICS_PATH.open(encoding="utf-8") as kinematics_file:
     }
 MOTOR_RESOLUTION = 4095
 PUBLISH_PERIOD_S = 1 / 20
+CAMERA_PUBLISH_PERIOD_S = 1 / 10
 # Add 180° to the previous 90° correction; the equivalent wrist offset is -90°.
 USD_ZERO_OFFSETS_RAD = {"wrist_roll": -1.5707963267948966}
 
@@ -65,7 +66,8 @@ def observation_to_usd_radians(observation, calibration, use_degrees):
             + USD_ZERO_OFFSETS_RAD.get(name, 0.0)
         )
 
-    return {"joints": joints}
+    return {"joints": joints,
+            "measured": {name: float(observation[f"{name}.pos"]) for name in JOINTS}}
 
 
 class LatestTelemetryPublisher:
@@ -80,9 +82,14 @@ class LatestTelemetryPublisher:
     def start(self):
         self._thread.start()
 
-    def offer(self, payload):
+    def offer(self, payload, observation=None):
+        cameras = {
+            name: observation[name]
+            for name in ("front", "wrist")
+            if isinstance(observation, dict) and name in observation
+        }
         with self._condition:
-            self._latest = payload
+            self._latest = (payload, cameras)
             self._condition.notify()
 
     def stop(self):
@@ -92,6 +99,7 @@ class LatestTelemetryPublisher:
 
     def _run(self):
         last_post = 0.0
+        last_camera_post = 0.0
         last_warning = 0.0
         while True:
             with self._condition:
@@ -104,7 +112,7 @@ class LatestTelemetryPublisher:
                     if self._stopping:
                         return
                     delay = PUBLISH_PERIOD_S - (time.monotonic() - last_post)
-                payload = self._latest
+                payload, cameras = self._latest
                 self._latest = None
 
             request = Request(
@@ -122,3 +130,30 @@ class LatestTelemetryPublisher:
                     logger.warning("No se pudo publicar telemetría en la HMI: %s", exc)
                     last_warning = now
             last_post = time.monotonic()
+            if cameras and last_post - last_camera_post >= CAMERA_PUBLISH_PERIOD_S:
+                try:
+                    import cv2
+
+                    for name, image in cameras.items():
+                        if getattr(image, "ndim", 0) != 3 or image.shape[-1] not in (3, 4):
+                            continue
+                        frame = image[..., :3][..., ::-1].copy()
+                        ok, encoded = cv2.imencode(
+                            ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75]
+                        )
+                        if not ok:
+                            continue
+                        request = Request(
+                            HMI_TELEMETRY_URL.replace("/api/telemetry", f"/api/camera/{name}.jpg"),
+                            data=encoded.tobytes(),
+                            headers={"Content-Type": "image/jpeg"},
+                            method="POST",
+                        )
+                        with urlopen(request, timeout=1.0) as response:
+                            response.read()
+                    last_camera_post = time.monotonic()
+                except Exception as exc:
+                    now = time.monotonic()
+                    if now - last_warning >= 5.0:
+                        logger.warning("No se pudieron publicar las cámaras de la HMI: %s", exc)
+                        last_warning = now

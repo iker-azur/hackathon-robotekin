@@ -1,4 +1,4 @@
-"""Lazy local Whisper transcription of audio captured by the browser."""
+"""Lazy local Whisper transcription for browser or Telegram audio."""
 from __future__ import annotations
 
 import importlib.util
@@ -59,10 +59,15 @@ class SpeechService:
         try:
             self.load()
             try:
-                segments, _ = self.model.transcribe(samples, language='es', beam_size=3,
-                                                    condition_on_previous_text=False, vad_filter=True,
-                                                    initial_prompt='Las piezas con perno son buenas y van a la caja verde. Las piezas sin perno son malas y van a la caja blanca. Las que tengan perno son buenas y las que no tengan son malas. Para la clasificación.')
+                segments, _ = self.model.transcribe(samples, language='es', beam_size=5,
+                                                    condition_on_previous_text=False, vad_filter=True)
+                segments = list(segments)
+                if not segments or any(segment.no_speech_prob > 0.5 or segment.avg_logprob < -1.0
+                                       for segment in segments):
+                    raise ValueError("No he reconocido el audio con suficiente seguridad. Repite la frase.")
                 text = ' '.join(segment.text.strip() for segment in segments).strip()
+            except ValueError:
+                raise
             except Exception as exc:
                 raise SpeechUnavailable('Whisper no pudo transcribir el audio. Comprueba la instalación del motor local.') from exc
             if not text:

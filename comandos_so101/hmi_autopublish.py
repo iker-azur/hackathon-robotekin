@@ -33,7 +33,7 @@ def install(follower_class=None):
                 robot._hmi_telemetry_publisher = publisher
             publisher.offer(observation_to_usd_radians(
                 observation, robot.calibration, robot.config.use_degrees
-            ))
+            ), observation)
         except Exception:
             if not getattr(robot, "_hmi_telemetry_error_reported", False):
                 logger.exception("No se pudo publicar la observación del follower en la HMI")

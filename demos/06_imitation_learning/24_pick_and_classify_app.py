@@ -17,7 +17,7 @@ After the result, ``policy_routes.json`` selects a trajectory policy. The window
 choose the Up-down BAD checkpoint used for the white box. S holds the current pose and stops the
 active pick, classifier, or route.
 
-Keys (the window must have focus):  SPACE start the pick   S stop it   Q / Esc quit.
+Keys (the window must have focus):  SPACE start the pick   S stop it   P print measured joints   Q / Esc quit.
 
 The classifier is a visual judgement trained on about 1000 labelled frames and was about 80 % right on
 unseen sessions in cross-validation, so treat the result as a hint. Quitting disconnects the follower,
@@ -43,9 +43,12 @@ import time
 from collections import deque
 from functools import lru_cache
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 DEMO_DIR = Path(__file__).resolve().parent
+REPOSITORY_ROOT = DEMO_DIR.parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 PREVIEW_INTERVAL = 1 / 6  # camera view and classifier refresh
 SETTLE_S = 0.5  # let the arm and camera view settle after the hold command
 RESULT_WINDOW_S = 1.5  # classify only stationary frames captured after settling
@@ -55,39 +58,89 @@ STOP_ARM_MOTION_DEG = 2.0
 STOP_ARM_ERROR_DEG = 6.0
 STOP_GRIPPER_MOTION = 5.0  # percentage points; contact prevents full closure on a held piece
 COLORS = {"idle": "#1f7a3a", "running": "#b3261e", "classifying": "#1565c0",
-          "routing": "#7b4ca0", "result": "#9a6700"}
+          "routing": "#7b4ca0", "result": "#9a6700", "manual": "#9a6700", "homing": "#9a6700"}
+HOME_APPROACH_TARGET = {"shoulder_pan": 10.59, "shoulder_lift": -25.36, "elbow_flex": -59.30,
+                        "wrist_flex": 48.04, "wrist_roll": -0.66, "gripper": 1.1}
+HOME_TARGET = {"shoulder_pan": 2.59, "shoulder_lift": -103.52, "elbow_flex": 19.12,
+               "wrist_flex": 95.87, "wrist_roll": 0.40, "gripper": 2.8}
+HOME_WAYPOINTS = (HOME_APPROACH_TARGET, HOME_TARGET)
+HOME_ARM_TOLERANCE_DEG = 2.0
+HOME_GRIPPER_TOLERANCE_PERCENT = 3.0
+HOME_TIMEOUT_S = 45.0
+# Keep the home target cap aligned with the app's usual 7-degree step setting.
+# This limits position error; it does not change the servo's torque limit.
+HOME_MAX_STEP = 7.0
 _ROUTE_CLEARANCE_NOTICE = None
 
 
 class HmiSortingRuleMonitor:
     """Poll the HMI rule off the control loop and expose only the latest update."""
 
-    def __init__(self, url: str):
-        self.url = url.rstrip("/") + "/api/sorting-rule"
+    def __init__(self, url: str, initial_settings: dict):
+        base_url = url.rstrip("/")
+        self.url = base_url + "/api/sorting-rule"
+        self.start_url = base_url + "/api/robot/poll"
         self.updates = queue.Queue()
+        self.start_requests = queue.Queue()
+        self.home_requests = queue.Queue()
+        self.home_stop_requests = queue.Queue()
+        self.control_requests = queue.Queue()
+        self.phase_lock = threading.Lock()
+        self.phase = "starting"
+        self.report = {"note": "", "result": "", "destination": None,
+                       "settings": initial_settings.copy(),
+                       "defaults": initial_settings.copy(), "config_revision": 0}
+        self.config_revision = 0
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
     def _run(self):
-        previous = None
+        previous_revision = None
+        previous_mode = None
         while not self.stop.is_set():
             try:
                 with urlopen(self.url, timeout=0.5) as response:
                     state = json.loads(response.read())
-                rule = state.get("rule") if state.get("active") else None
-                if rule:
-                    routes = rule["routes"]
-                    update = (True, routes["with_pin"]["destination"],
-                              routes["without_pin"]["destination"])
-                    if update[1] not in ("green", "white") or update[2] not in ("green", "white"):
+                config = {"rule": state.get("rule"), "active": state.get("active", False),
+                          "settings": state.get("settings"), "defaults": state.get("defaults"),
+                          "revision": state.get("revision", 0)}
+                if config["active"]:
+                    routes = config["rule"].get("routes", {})
+                    if any(routes.get(key, {}).get("destination") not in ("green", "white")
+                           for key in ("with_pin", "without_pin")):
                         raise ValueError("invalid sorting destinations")
-                else:
-                    update = (False, None, None)
-                if update != previous:
-                    self.updates.put(update)
-                    previous = update
+                if config["revision"] != previous_revision:
+                    self.updates.put(config)
+                    previous_revision = config["revision"]
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                pass
+            try:
+                with self.phase_lock:
+                    phase = self.phase
+                    report = self.report.copy()
+                request = Request(self.start_url,
+                                  data=json.dumps({"phase": phase, "report": report}).encode("utf-8"),
+                                  headers={"Content-Type": "application/json"})
+                with urlopen(request, timeout=0.5) as response:
+                    command = json.loads(response.read())
+                configuration = command.get("configuration") or {}
+                if configuration.get("revision") == self.config_revision:
+                    settings = configuration.get("settings")
+                    if isinstance(settings, dict):
+                        with self.phase_lock:
+                            self.report["settings"] = settings
+                if command.get("start"):
+                    self.start_requests.put(True)
+                if command.get("home"):
+                    self.home_requests.put(True)
+                if command.get("stop_home"):
+                    self.home_stop_requests.put(True)
+                requested_mode = command.get("control_mode")
+                if requested_mode in ("automatic", "manual") and requested_mode != previous_mode:
+                    self.control_requests.put(requested_mode)
+                    previous_mode = requested_mode
+            except (OSError, ValueError, TypeError, AttributeError):
                 pass
             self.stop.wait(0.2)
 
@@ -99,8 +152,58 @@ class HmiSortingRuleMonitor:
             except queue.Empty:
                 return update
 
+    def set_state(self, phase, note, result, destination, settings, defaults,
+                  leader_available=False, control_mode="automatic", leader_status=""):
+        with self.phase_lock:
+            self.phase = phase
+            self.report = {"note": note, "result": result, "destination": destination,
+                           "settings": settings, "defaults": defaults,
+                           "config_revision": self.config_revision,
+                           "leader_available": leader_available, "control_mode": control_mode,
+                           "leader_status": leader_status}
+
+    def acknowledge_configuration(self, revision):
+        with self.phase_lock:
+            self.config_revision = revision
+
+    def take_start_request(self):
+        try:
+            self.start_requests.get_nowait()
+            return True
+        except queue.Empty:
+            return False
+
+    def take_home_request(self):
+        try:
+            self.home_requests.get_nowait()
+            return True
+        except queue.Empty:
+            return False
+
+    def take_home_stop_request(self):
+        try:
+            self.home_stop_requests.get_nowait()
+            return True
+        except queue.Empty:
+            return False
+
+    def take_control_mode(self):
+        mode = None
+        while True:
+            try:
+                mode = self.control_requests.get_nowait()
+            except queue.Empty:
+                return mode
+
     def close(self):
         self.stop.set()
+
+
+def find_leader_port(requested_port):
+    if requested_port:
+        return requested_port
+    candidates = sorted(Path("/dev/serial/by-id").glob("*5A7A054669*"))
+    return str(candidates[0]) if len(candidates) == 1 else None
 
 
 def load_script(name: str):
@@ -370,13 +473,16 @@ class Window:
         choice = self.pin_destination if classifier_label == "PIN" else self.no_pin_destination
         return "green" if choice.get() == "Verde" else "white"
 
-    def apply_voice_rule(self, update):
+    def apply_hmi_configuration(self, update):
         if update is None or not self.open:
             return
-        active, with_pin, without_pin = update
+        active = update.get("active")
+        rule = update.get("rule") if active else None
         if active:
             if not self._voice_rule_active:
                 self._manual_destinations = (self.pin_destination.get(), self.no_pin_destination.get())
+            with_pin = rule["routes"]["with_pin"]["destination"]
+            without_pin = rule["routes"]["without_pin"]["destination"]
             self.pin_destination.set("Verde" if with_pin == "green" else "Blanca")
             self.no_pin_destination.set("Verde" if without_pin == "green" else "Blanca")
             self.voice_rule_status.configure(text="Regla HMI activa · se aplicará a la siguiente recogida")
@@ -387,6 +493,13 @@ class Window:
         else:
             self.voice_rule_status.configure(text="Regla HMI conectada · sin regla activa")
         self._voice_rule_active = active
+        settings = update.get("settings")
+        if settings:
+            for key, value in settings.items():
+                if key in self.motion.variables:
+                    self.motion.variables[key].set(self.motion.display(value))
+            if not active:
+                self.voice_rule_status.configure(text="Ajustes HMI recibidos · próximo ciclo")
         for selector in self._destination_selectors:
             selector.configure(state="disabled" if self._running or active else "readonly")
 
@@ -445,6 +558,8 @@ def main() -> int:
                         help="JSON mapping classifier labels to post-classification policies")
     parser.add_argument("--follower-port", default=runner.DEFAULT_FOLLOWER_PORT,
                         help="follower serial path (default: the one 23_run_act_so101.py uses)")
+    parser.add_argument("--leader-port", default=None,
+                        help="SO-101 leader serial path (default: unique /dev/serial/by-id entry containing 5A7A054669)")
     parser.add_argument("--camera-front", default="auto", help="device path, or 'auto' to detect by USB ID")
     parser.add_argument("--camera-wrist", default="auto", help="device path, or 'auto' to detect by USB ID")
     parser.add_argument("--camera-width", type=int, default=640)
@@ -466,7 +581,11 @@ def main() -> int:
     from lerobot.cameras.opencv import OpenCVCameraConfig
     from lerobot.robots import make_robot_from_config
     from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig  # noqa: F401
+    from lerobot.teleoperators.so_leader import SOLeader, SOLeaderTeleopConfig
     from lerobot.utils.robot_utils import precise_sleep
+    from comandos_so101.hmi_autopublish import install as install_hmi_telemetry
+
+    install_hmi_telemetry(SOFollower)
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     classifier = PinClassifier(resolve_classifier(args.classifier), device)
@@ -495,29 +614,116 @@ def main() -> int:
     keys = []
     run_settings = motion_controls.default_settings(pick_seconds=args.pick_seconds, pick_step=args.max_step,
                                                    control_hz=args.fps)
+    default_settings = run_settings.copy()
     window = Window(keys.append, policy_registry.checkpoint_options("white"),
                     tuple(pick_choices), initial_pick, run_settings)
-    sorting_rule_monitor = HmiSortingRuleMonitor(args.hmi_url)
+    sorting_rule_monitor = HmiSortingRuleMonitor(args.hmi_url, default_settings)
     cycle_destinations, cycle_checkpoints = None, {}
     phase, run_start, first, history, result, note = "idle", 0.0, False, [], "", ""
+    control_mode = "automatic"
+    home_started = None
+    home_return_step = None
+    home_waypoint_index = None
+    manual_first_action = False
+    manual_blocked = False
+    leader = None
+    leader_available = False
+    leader_status = "No se ha detectado el leader con ID USB 5A7A054669."
     classification_enabled, classify_start, stop_requested = False, 0.0, False
     last_gripper_target = None
     route_runtime, route_started, route_released = None, 0.0, False
     route_last_gripper_target = None
     pose_history = deque()
+    leader_read_error_reported = False
     stop_status, next_stop_report = "Auto-stop waits for the pick to start", 0.0
     next_show = 0.0
     obs = None
     robot.connect()
+    leader_port = find_leader_port(args.leader_port)
+    if leader_port:
+        try:
+            leader = SOLeader(SOLeaderTeleopConfig(port=leader_port, id="mi_leader"))
+            leader.bus.connect()
+            if leader.is_calibrated:
+                leader_available = True
+                leader_status = "Leader conectado; calibración verificada."
+                print(f"Leader conectado en modo lectura: {leader_port}", flush=True)
+            else:
+                leader_status = "La calibración del leader no coincide con mi_leader; modo manual bloqueado."
+                print(leader_status, flush=True)
+                leader.bus.disconnect(disable_torque=False)
+                leader = None
+        except Exception as exc:
+            leader_status = f"No se pudo abrir el leader: {exc}"
+            print(f"{leader_status}; la aplicación automática sigue activa.", flush=True)
+            if leader is not None and leader.bus.is_connected:
+                leader.bus.disconnect(disable_torque=False)
+            leader = None
+    else:
+        print(f"{leader_status} Conecta ese USB o indica --leader-port.", flush=True)
     try:
         period = 1 / args.fps
         while window.open:
             cycle = time.perf_counter()
-            window.apply_voice_rule(sorting_rule_monitor.latest())
+            destination = route_runtime.get("destination") if route_runtime else None
+            try:
+                current_settings = window.motion_settings()
+            except ValueError:
+                current_settings = run_settings.copy()
+            sorting_rule_monitor.set_state(phase, note, result, destination,
+                                           current_settings, default_settings,
+                                           leader_available, control_mode, leader_status)
+            update = sorting_rule_monitor.latest()
+            if update is not None:
+                window.apply_hmi_configuration(update)
+                sorting_rule_monitor.acknowledge_configuration(update["revision"])
+            if sorting_rule_monitor.take_start_request():
+                if phase in ("idle", "result"):
+                    keys.append("space")
+                    print("Starting one pick cycle after Telegram confirmation", flush=True)
+                else:
+                    print("Ignored Telegram start request: the pick application is busy", flush=True)
+            if sorting_rule_monitor.take_home_request():
+                if phase in ("idle", "result") and control_mode == "automatic":
+                    home_started = cycle
+                    home_return_step = robot.config.max_relative_target
+                    home_waypoint_index = 0
+                    robot.config.max_relative_target = min(float(current_settings["pick_step"]), HOME_MAX_STEP)
+                    phase, note = "homing", "Volviendo a la posición de casa solicitada por Telegram."
+                    classification_enabled = False
+                    print("Returning follower to the saved home pose", flush=True)
+                else:
+                    print("Ignored home request: automatic mode and an idle app are required", flush=True)
+            if sorting_rule_monitor.take_home_stop_request() and phase == "homing":
+                stop_requested = True
+            requested_mode = sorting_rule_monitor.take_control_mode()
+            if requested_mode == "manual" and leader_available and phase in ("idle", "result"):
+                control_mode = "manual"
+                manual_first_action, manual_blocked = True, False
+                phase, note = "manual", "El follower sigue al maestro; el ciclo automático está pausado."
+                classification_enabled = False
+                stop_requested = False
+                robot.config.max_relative_target = run_settings["pick_step"]
+                print("Control manual con leader activado desde la HMI", flush=True)
+            elif requested_mode == "automatic" and phase == "manual":
+                control_mode = "automatic"
+                manual_first_action, manual_blocked = False, False
+                phase, note = "idle", "Control automático listo; el follower mantiene su posición."
+                print("Control manual detenido desde la HMI", flush=True)
             while keys:
                 key = keys.pop(0)
                 if key in ("q", "escape"):
                     window.close()
+                    break
+                elif key == "p":
+                    if obs is None:
+                        print("No follower observation available yet", flush=True)
+                    else:
+                        positions = [f"{joint}={float(obs[f'{joint}.pos']):.2f}"
+                                     for joint in runner.JOINTS[:-1]]
+                        positions.append(f"gripper={float(obs['gripper.pos']):.1f}")
+                        print("Measured follower positions (arm: degrees, gripper: percent): "
+                              + ", ".join(positions), flush=True)
                 elif key == "space" and phase in ("idle", "result"):
                     try:
                         run_settings = window.motion_settings()
@@ -558,12 +764,61 @@ def main() -> int:
                     last_gripper_target = None
                     pose_history.clear()
                     stop_status, next_stop_report = "Auto-stop: waiting for movement", cycle
-                elif key == "s" and phase in ("running", "classifying", "routing"):
+                elif key == "s" and phase in ("running", "classifying", "routing", "homing"):
                     stop_requested = True
             if not window.open:
                 break
 
             obs = robot.get_observation()
+            if phase == "homing" and not stop_requested:
+                home_pose = HOME_WAYPOINTS[home_waypoint_index]
+                arm_error = max(abs(float(obs[f"{joint}.pos"]) - home_pose[joint])
+                                for joint in runner.JOINTS[:-1])
+                gripper_error = abs(float(obs["gripper.pos"]) - home_pose["gripper"])
+                if arm_error <= HOME_ARM_TOLERANCE_DEG and gripper_error <= HOME_GRIPPER_TOLERANCE_PERCENT:
+                    if home_waypoint_index + 1 < len(HOME_WAYPOINTS):
+                        home_waypoint_index += 1
+                        note = "Punto de paso alcanzado; continuando a casa."
+                        print(note, flush=True)
+                        home_pose = HOME_WAYPOINTS[home_waypoint_index]
+                        robot.send_action({f"{joint}.pos": home_pose[joint] for joint in runner.JOINTS})
+                    else:
+                        robot.send_action({f"{joint}.pos": float(obs[f"{joint}.pos"]) for joint in runner.JOINTS})
+                        robot.config.max_relative_target = home_return_step
+                        phase, note, home_started = "idle", "Posición de casa alcanzada.", None
+                        home_return_step = None
+                        home_waypoint_index = None
+                        print(note, flush=True)
+                elif cycle - home_started >= HOME_TIMEOUT_S:
+                    robot.send_action({f"{joint}.pos": float(obs[f"{joint}.pos"]) for joint in runner.JOINTS})
+                    robot.config.max_relative_target = home_return_step
+                    phase, note, home_started = "idle", "Vuelta a casa detenida por tiempo; follower en espera.", None
+                    home_return_step = None
+                    home_waypoint_index = None
+                    print(note, flush=True)
+                else:
+                    robot.send_action({f"{joint}.pos": home_pose[joint] for joint in runner.JOINTS})
+            if phase == "manual" and not manual_blocked:
+                try:
+                    action = leader.get_action()
+                    action_gap = max(abs(float(action[f"{joint}.pos"]) - float(obs[f"{joint}.pos"]))
+                                     for joint in runner.JOINTS)
+                    if manual_first_action and action_gap > runner.MAX_FIRST_GAP:
+                        manual_blocked = True
+                        note = (f"Modo manual bloqueado: maestro y follower difieren {action_gap:.0f}; "
+                                "alinea ambos brazos, selecciona Automático y vuelve a Manual.")
+                        print(note, flush=True)
+                    else:
+                        sent_action = robot.send_action({f"{joint}.pos": float(action[f"{joint}.pos"])
+                                                         for joint in runner.JOINTS})
+                        last_gripper_target = sent_action["gripper.pos"]
+                        leader_read_error_reported = False
+                    manual_first_action = False
+                except Exception as exc:
+                    note = f"Sin lectura del leader; no se envían consignas: {exc}"
+                    if not leader_read_error_reported:
+                        print(note, flush=True)
+                        leader_read_error_reported = True
             timed_out = phase == "running" and cycle - run_start >= run_settings["pick_seconds"]
             reached_pose = False
             if phase == "running" and not stop_requested and not timed_out:
@@ -605,6 +860,11 @@ def main() -> int:
                 history, result = [], ""
                 classification_enabled = not stop_requested
                 phase = "classifying" if classification_enabled else "idle"
+                if home_return_step is not None:
+                    robot.config.max_relative_target = home_return_step
+                home_started = None
+                home_return_step = None
+                home_waypoint_index = None
                 reason = "position reached" if reached_pose else "time limit reached"
                 note = f"{reason}; holding pose" if classification_enabled else "stopped; holding pose"
                 print(f"Pick stopped: {note}", flush=True)
@@ -618,7 +878,9 @@ def main() -> int:
                         "running": stop_status,
                         "classifying": "Holding pose; waiting for the camera view to settle",
                         "routing": f"Running post-classification policy: {route_runtime['route'].name if route_runtime else 'policy'}",
-                        "result": "Classification finished; motors holding pose"}[phase]
+                        "result": "Classification finished; motors holding pose",
+                        "manual": "Follower controlled by the leader; automatic cycle paused",
+                        "homing": "Moving to the saved home pose"}[phase]
                 if phase == "running" and cycle >= next_stop_report:
                     print(stop_status, flush=True)
                     next_stop_report = cycle + 1.0
@@ -671,8 +933,10 @@ def main() -> int:
                           "running": f"PICKING {cycle - run_start:4.1f} s / {run_settings['pick_seconds']:g} s - S stops",
                           "classifying": "CLASSIFYING - motors holding pose - S cancels",
                           "routing": f"ROUTING {route_runtime['route'].name if route_runtime else 'policy'} - S stops",
-                          "result": "DONE - SPACE picks again"}[phase]
-                window.set_running(phase in ("running", "classifying", "routing"))
+                          "result": "DONE - SPACE picks again",
+                          "manual": "LEADER CONTROL - change mode in the HMI",
+                          "homing": "RETURNING HOME - S stops"}[phase]
+                window.set_running(phase in ("running", "classifying", "routing", "manual", "homing"))
                 window.show([obs["front"], obs["wrist"]], f"{status}   {note}", COLORS[phase],
                             live, result)
                 next_show = cycle + PREVIEW_INTERVAL
@@ -702,12 +966,14 @@ def main() -> int:
                     action = add_route_clearance(action, route_released, state, run_settings, destination)
                     sent_action = robot.send_action(action)
                     route_last_gripper_target = sent_action["gripper.pos"]
-            window.set_running(phase in ("running", "classifying", "routing"))
+            window.set_running(phase in ("running", "classifying", "routing", "manual", "homing"))
             precise_sleep(max(period - (time.perf_counter() - cycle), 0.0))
     except KeyboardInterrupt:
         print("stopped by Ctrl-C")
     finally:
         sorting_rule_monitor.close()
+        if leader is not None and leader.bus.is_connected:
+            leader.bus.disconnect(disable_torque=False)
         robot.disconnect()
         window.close()
     return 0

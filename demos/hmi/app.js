@@ -10,7 +10,7 @@ const jointNames = {
   wrist_flex: 'Flexión de muñeca', wrist_roll: 'Giro de muñeca', gripper: 'Pinza',
 };
 $('joints').innerHTML = Object.entries(jointNames).map(([key, name], index) =>
-  `<div class="joint-row"><span class="joint-index">0${index + 1}</span><span class="joint-name">${name}</span><span class="joint-value" id="joint-${key}">—</span></div>`).join('');
+  `<div class="joint-row"><span class="joint-index">0${index + 1}</span><span class="joint-name">${name}</span><span class="joint-value" id="joint-${key}">—</span><span class="joint-measured" id="measured-${key}">—</span></div>`).join('');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xeeeae2);
@@ -163,6 +163,10 @@ let frameId = -1;
 let frameURL = null;
 let framePending = false;
 let frameFresh = false;
+const cameraFeeds = {
+  front: { id: -1, age: null, url: null, pendingId: null },
+  wrist: { id: -1, age: null, url: null, pendingId: null },
+};
 let reference = null;
 let view = 'perspective';
 let activePlan = null;
@@ -185,13 +189,50 @@ destinationLabel.className = 'piece-label destination-label';
 destinationLabel.hidden = true;
 $('object-labels').append(destinationLabel);
 
+function cameraRoleForView(name = view) {
+  return name === 'pilot' ? 'wrist' : name === 'top' ? 'front' : null;
+}
+function updateViewportSource() {
+  const role = cameraRoleForView();
+  const feed = role ? cameraFeeds[role] : null;
+  const cameraFeedVisible = !demo && Boolean(feed?.url && feed.age !== null && feed.age < 2);
+  const sourceFrameVisible = !demo && view === 'top' && frameFresh && Boolean(frameURL) && !cameraFeedVisible;
+  if (cameraFeedVisible && $('camera-feed').src !== feed.url) $('camera-feed').src = feed.url;
+  $('camera-feed').hidden = !cameraFeedVisible;
+  $('camera').hidden = !sourceFrameVisible;
+  canvas.style.visibility = cameraFeedVisible || sourceFrameVisible ? 'hidden' : 'visible';
+  $('viewport').classList.toggle('show-camera-feed', cameraFeedVisible || sourceFrameVisible);
+}
+async function updateCameraFeed(name, id) {
+  const feed = cameraFeeds[name];
+  if (!feed || feed.pendingId !== null || feed.id === id) return;
+  feed.pendingId = id;
+  try {
+    const response = await fetch(`/api/camera/${name}.jpg?id=${id}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error('Sin imagen');
+    const url = URL.createObjectURL(await response.blob());
+    const image = new Image();
+    image.src = url;
+    try { await image.decode(); } catch (error) { URL.revokeObjectURL(url); throw error; }
+    if (feed.url) URL.revokeObjectURL(feed.url);
+    feed.url = url;
+    feed.id = id;
+    updateViewportSource();
+  } catch (error) {
+    if (feed.url) URL.revokeObjectURL(feed.url);
+    feed.url = null;
+    feed.id = -1;
+  } finally {
+    feed.pendingId = null;
+    updateViewportSource();
+  }
+}
 function setView(name = 'perspective') {
   view = name;
   document.body.dataset.view = name;
   controls.enabled = name !== 'pilot';
   for (const id of ['zoom-in', 'zoom-out']) $(id).disabled = name === 'pilot';
-  $('camera').hidden = name !== 'pilot' || demo || !frameFresh;
-  canvas.style.visibility = !$('camera').hidden ? 'hidden' : 'visible';
+  updateViewportSource();
   const target = base.clone().add(new THREE.Vector3(-.07, -.13, .11));
   controls.target.copy(target);
   if (name === 'top') camera.position.copy(target).add(new THREE.Vector3(.001, 0, 1.05));
@@ -255,7 +296,6 @@ function selectPiece(name) {
   const mesh = pieces.get(name);
   if (!mesh?.visible) return;
   selectedPiece = name;
-  $('plan-panel').hidden = true;
   $('selection').hidden = false;
   const color = { red: 'roja', blue: 'azul', green: 'verde', yellow: 'amarilla' }[mesh.userData.color];
   $('selection-title').textContent = mesh.userData.shape === 'casting'
@@ -317,25 +357,22 @@ function setPhase(phase) {
 }
 document.addEventListener('hmi:phase', event => setPhase(event.detail));
 let sortingRuleState = null;
-function showSortingRule(state) {
+let lastSortingRuleSignature = null;
+function showSortingRule(state, dispatch = true) {
   sortingRuleState = state;
+  const signature = JSON.stringify(state);
+  if (signature !== lastSortingRuleSignature) {
+    lastSortingRuleSignature = signature;
+    if (dispatch) document.dispatchEvent(new CustomEvent('hmi:sorting-rule', { detail: state }));
+  }
   const rule = state?.rule;
+  const condition = value => value ? 'con perno' : 'sin perno';
   const destination = value => value === 'green' ? 'caja verde' : 'caja blanca';
   $('classifier-state').textContent = rule
-    ? `Regla por voz activa · con perno → ${destination(rule.routes.with_pin.destination)}; sin perno → ${destination(rule.routes.without_pin.destination)} · solo configuración HMI`
-    : 'Regla por voz inactiva';
+    ? `Configuración activa · buena: ${condition(rule.good_has_pin)} → ${destination(rule.good_destination)}; mala: ${condition(!rule.good_has_pin)} → ${destination(rule.bad_destination)}`
+    : 'Configuración sin aplicar';
 }
-document.addEventListener('hmi:sorting-rule', event => showSortingRule(event.detail));
-document.addEventListener('hmi:plan', event => {
-  activePlan = event.detail;
-  $('selection').hidden = true;
-  updatePlanProjection();
-  if (activePlan) setPhase(activePlan.status === 'proposed' ? 'planning' : 'understanding');
-  const pinSort = activePlan?.actions?.some(action =>
-    ['CLASSIFY_OBJECT', 'SORT_OBJECTS'].includes(action.intent)) && /perno/i.test(activePlan?.text || '');
-  if (activePlan) $('classifier-state').textContent = pinSort ? 'Orden lista · Clasificador sin conectar' : 'Clasificador sin conectar';
-  else if (sortingRuleState) showSortingRule(sortingRuleState);
-});
+document.addEventListener('hmi:sorting-rule', event => showSortingRule(event.detail, false));
 const raycaster = new THREE.Raycaster();
 let pointerStart = null;
 canvas.addEventListener('pointerdown', event => { pointerStart = [event.clientX, event.clientY]; });
@@ -348,8 +385,6 @@ canvas.addEventListener('pointerup', event => {
   if (match) selectPiece(match.object.name);
 });
 $('selection-close').addEventListener('click', () => { $('selection').hidden = true; selectedPiece = null; updatePlanProjection(); });
-$('plan-close').addEventListener('click', () => { $('plan-panel').hidden = true; });
-$('show-plan').addEventListener('click', () => { $('plan-panel').hidden = !$('plan-panel').hidden; $('selection').hidden = true; });
 function applyPoses(poses, live = false, sourceError = null) {
   const workflow = poses.workflow;
   robotModel.update(poses);
@@ -413,6 +448,9 @@ function applyPoses(poses, live = false, sourceError = null) {
   for (const [name] of Object.entries(jointNames)) {
     const angle = poses.joints?.[name];
     $(`joint-${name}`).textContent = Number.isFinite(angle) ? `${(angle * 180 / Math.PI).toFixed(1)}°` : '—';
+    const measured = poses.measured?.[name];
+    $(`measured-${name}`).textContent = Number.isFinite(measured)
+      ? `${measured.toFixed(name === 'gripper' ? 1 : 2)}${name === 'gripper' ? '%' : '°'}` : '—';
   }
   const comparison = poses.comparison;
   if (demo && comparison?.kind === 'illustrative') {
@@ -555,8 +593,8 @@ function cameraUnavailable() {
   $('virtual-camera').hidden = true;
   $('camera-empty').hidden = false;
   $('camera-age').textContent = '—';
-  canvas.style.visibility = 'visible';
   $('trace-distance').textContent = '—';
+  updateViewportSource();
 }
 async function updateFrame(id) {
   if (framePending || frameId === id) return;
@@ -572,20 +610,37 @@ async function updateFrame(id) {
     frameURL = url;
     $('camera').src = url;
     frameId = id;
+    updateViewportSource();
   } catch (error) {
     cameraUnavailable();
   } finally {
     framePending = false;
   }
 }
+let lastRobotAppSignature = null;
 async function poll() {
   try {
     const response = await fetch('/api/state', { signal: AbortSignal.timeout(1800), cache: 'no-store' });
     if (!response.ok) throw new Error(`Servidor: ${response.status}`);
     const state = await response.json();
     if (state.sorting_rule) showSortingRule(state.sorting_rule);
+    const robotApp = { ...(state.robot_app || {}), demo: state.mode === 'demo' || Boolean(state.poses?.workflow) };
+    const robotSignature = JSON.stringify(robotApp);
+    if (robotSignature !== lastRobotAppSignature) {
+      lastRobotAppSignature = robotSignature;
+      document.dispatchEvent(new CustomEvent('hmi:robot-state', { detail: robotApp }));
+    }
     frameFresh = state.mode !== 'demo' && state.frame_age !== null && state.frame_age < 2;
     demo = state.mode === 'demo';
+    const selectedCamera = cameraRoleForView();
+    for (const name of ['front', 'wrist']) {
+      const metadata = state.camera_frames?.[name];
+      cameraFeeds[name].age = metadata?.frame_age ?? null;
+      if (name === selectedCamera && metadata?.frame_age !== null && metadata?.frame_age < 2 &&
+          metadata?.frame_id !== undefined && cameraFeeds[name].id !== metadata.frame_id) {
+        void updateCameraFeed(name, metadata.frame_id);
+      }
+    }
     $('joint-heading').textContent = demo ? 'POSICIÓN SIMULADA' : 'POSICIÓN MEDIDA';
     $('source').textContent = state.source;
     $('pause-demo').hidden = !demo;
@@ -607,7 +662,8 @@ async function poll() {
       $('pose-status').textContent = `${demo ? 'Demo' : 'Poses recibidas'} · ${(state.pose_age * 1000).toFixed(0)} ms desde la última muestra`;
       $('live-state').textContent = demo ? (state.paused ? 'Demo en pausa' : 'Demo en movimiento') : 'Siguiendo el robot';
       $('live-detail').textContent = demo ? 'Referencia, robot y cámara virtual de ejemplo · Sin hardware ni política conectados' : 'Poses recibidas de la fuente · Navegación independiente';
-      $('joint-note').textContent = demo ? 'Ángulos de la demo · No son mediciones del robot físico.' : 'Ángulos en grados; «—» si la fuente solo proporciona poses.';
+      $('joint-note').textContent = demo ? 'Ángulos de la demo · No son mediciones del robot físico.'
+        : 'Simulación (izq.) · LeRobot calibrado (dcha.; articulaciones en grados, pinza en %).';
     } else showDisconnected(state.error || 'No llegan poses recientes de la fuente.');
     if (demo && healthy) {
       $('camera').hidden = true;
@@ -617,12 +673,9 @@ async function poll() {
       $('camera-status').classList.add('live');
       $('camera-source').textContent = '';
       $('camera-age').textContent = 'SIMULADA';
-      canvas.style.visibility = 'visible';
     } else if (!demo && state.frame_age !== null && state.frame_age < 2) {
       await updateFrame(state.frame_id);
       const available = frameId === state.frame_id;
-      $('camera').hidden = !available || view !== 'pilot';
-      canvas.style.visibility = !$('camera').hidden ? 'hidden' : 'visible';
       $('virtual-camera').hidden = !healthy;
       $('camera-empty').hidden = healthy;
       $('camera-status').textContent = available ? 'EN DIRECTO' : 'CARGANDO';
@@ -631,11 +684,11 @@ async function poll() {
       $('camera-source').textContent = '';
     } else if (healthy) {
       $('camera').hidden = true;
-      canvas.style.visibility = 'visible';
       $('virtual-camera').hidden = false;
       $('camera-empty').hidden = true;
       $('camera-source').textContent = '';
     } else cameraUnavailable();
+    updateViewportSource();
   } catch (error) {
     showDisconnected(`No se puede acceder a la fuente: ${error.message}`);
     $('scene-notice').dataset.error = 'true';
