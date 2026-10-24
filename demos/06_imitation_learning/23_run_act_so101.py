@@ -3,7 +3,7 @@
 Loads the policy from a local ``pretrained_model`` folder or from a Hugging Face repo, e.g.
 
     outputs/act_pick_all/checkpoints/006000/pretrained_model     (a checkpoint of ``20_train_act_so101.py``)
-    MikelRubi/act-pick-6000                                      (the same folder uploaded to the hub)
+    IkerAzurmendi/act-pick-6000                                      (the same folder uploaded to the hub)
 
 and drives the follower at the dataset rate: read both cameras + joints, predict, send the
 action. It uses the same ports, cameras and 640x480 / 30 fps as ``17b_record_real_so101_live.py``,
@@ -13,8 +13,8 @@ Put the piece in the tray, keep a hand near the power supply, and try ``--dry-ru
 does everything except sending the action, so you can compare the predicted action with the
 real state. Ctrl-C stops; the follower's torque is released on disconnect, so hold the arm.
 
-    python 23_run_act_so101.py --policy MikelRubi/act-pick-6000 --dry-run
-    python 23_run_act_so101.py --policy MikelRubi/act-pick-6000 --seconds 30
+    python 23_run_act_so101.py --policy IkerAzurmendi/act-pick-6000 --dry-run
+    python 23_run_act_so101.py --policy IkerAzurmendi/act-pick-6000 --seconds 30
 """
 
 from __future__ import annotations
