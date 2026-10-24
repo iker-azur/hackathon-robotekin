@@ -987,6 +987,20 @@ class TrainingWindow(QMainWindow):
         self.output_path.setObjectName("mutedText")
         self.output_path.setWordWrap(True)
         output_layout.addWidget(self.output_path)
+        self.hf_checkpoint_upload = QCheckBox("Back up checkpoints to Hugging Face (private repository)")
+        self.hf_checkpoint_upload.setChecked(True)
+        self.hf_checkpoint_repo = QLineEdit("MikelRubi/robotekin-act-checkpoints")
+        self.hf_checkpoint_upload.toggled.connect(self.hf_checkpoint_repo.setEnabled)
+        output_layout.addWidget(self.hf_checkpoint_upload)
+        output_layout.addWidget(QLabel("Hugging Face model repository"))
+        output_layout.addWidget(self.hf_checkpoint_repo)
+        hf_checkpoint_note = QLabel(
+            "Requires `hf auth login` with write access. Each full checkpoint is uploaded before older local checkpoints are removed. "
+            "Keep at least 2 GB free locally for checkpoint creation."
+        )
+        hf_checkpoint_note.setObjectName("mutedText")
+        hf_checkpoint_note.setWordWrap(True)
+        output_layout.addWidget(hf_checkpoint_note)
         layout.addWidget(output_card)
 
         layout.addStretch(1)
@@ -2602,6 +2616,8 @@ class TrainingWindow(QMainWindow):
         dataset = self.dataset.text().strip()
         output = self.output_name.text().strip()
         learning_rate = self.learning_rate.text().strip()
+        hub_repo_id = self.hf_checkpoint_repo.text().strip()
+        upload_checkpoints = self.hf_checkpoint_upload.isChecked()
         if not python.is_file():
             self._show_error("Select an existing python.exe executable.")
             return
@@ -2617,6 +2633,11 @@ class TrainingWindow(QMainWindow):
             return
         if not _NAME.fullmatch(output):
             self._show_error("Run names may contain only letters, numbers, periods, hyphens and underscores.")
+            return
+        if upload_checkpoints and not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*", hub_repo_id
+        ):
+            self._show_error("Enter a Hugging Face model repository in the form account/repository.")
             return
         task_stage = str(self.output_stage.currentData())
         output_dir = OUTPUTS_DIR / task_stage
@@ -2716,6 +2737,11 @@ class TrainingWindow(QMainWindow):
             "--validation-freq", str(self.log_freq.value()),
             "--stage", pipeline_stage,
         ]
+        if upload_checkpoints:
+            args.extend([
+                "--hub-repo-id", hub_repo_id,
+                "--hub-path-prefix", output_dir.relative_to(OUTPUTS_DIR).as_posix(),
+            ])
         if episode_split["validation_episodes"]:
             args.extend(["--validation-episodes", self._compress_episode_ids(episode_split["validation_episodes"])])
         args.extend(["--lr", learning_rate])
@@ -2771,6 +2797,8 @@ class TrainingWindow(QMainWindow):
             "use_vae": not self.no_vae.isChecked(),
             "use_robot_state": self.use_robot_state.isChecked(),
             "fine_tuned_from": str(pretrained) if self.training_mode.currentData() == "transfer" else None,
+            "checkpoint_hub_repo": hub_repo_id if upload_checkpoints else None,
+            "checkpoint_hub_prefix": output_dir.relative_to(OUTPUTS_DIR).as_posix() if upload_checkpoints else None,
         } if pipeline_stage in {"train", "all"} else None
         self._pipeline_requested_stage = pipeline_stage
         self._pipeline_current_stage = "validate"
@@ -3007,9 +3035,17 @@ class TrainingWindow(QMainWindow):
             "gpu_mem_gb": r"\b(?:gpu_mem_gb|mem_gb)\s*[:=]\s*([-+0-9.eE]+)",
         }
         for line in lines:
-            step_match = re.search(r"\bstep\s*[:=]?\s*(\d+)", line, re.IGNORECASE)
+            # LeRobot abbreviates large counters in its log output (for example,
+            # ``step:2K``). Parse the suffix so the metric card does not regress to 2.
+            step_match = re.search(
+                r"\bstep\s*[:=]?\s*(\d+(?:\.\d+)?)\s*([kmbtq]?)\b",
+                line,
+                re.IGNORECASE,
+            )
             if step_match:
-                self._metric_step = int(step_match.group(1))
+                suffix_multiplier = {"": 1, "k": 1_000, "m": 1_000_000, "b": 1_000_000_000,
+                                     "t": 1_000_000_000_000, "q": 1_000_000_000_000_000}
+                self._metric_step = int(float(step_match.group(1)) * suffix_multiplier[step_match.group(2).lower()])
                 self.live_metric_labels["step"].setText(
                     f"{self._metric_step} / {self._task_total_steps}" if self._task_total_steps else str(self._metric_step)
                 )

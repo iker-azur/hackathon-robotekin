@@ -144,6 +144,89 @@ def patch_last_checkpoint_windows() -> None:
     lerobot_train.make_pre_post_processors = make_pre_post_processors_with_partial_checkpoint
 
 
+def validate_checkpoint_hub(args) -> None:
+    """Require a private, writable Hub model repository when checkpoint backup is enabled."""
+    if not args.hub_repo_id or args.stage not in {"train", "all"}:
+        return
+
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    try:
+        api.whoami()
+        api.create_repo(repo_id=args.hub_repo_id, repo_type="model", private=True, exist_ok=True)
+        repo = api.repo_info(repo_id=args.hub_repo_id, repo_type="model")
+    except Exception as error:
+        raise SystemExit(
+            f"[Validate] No se puede escribir en Hugging Face ({args.hub_repo_id}): {error}. "
+            "Inicia sesión con `hf auth login` usando una cuenta con permiso de escritura."
+        ) from error
+    if not repo.private:
+        raise SystemExit(
+            f"[Validate] El repositorio {args.hub_repo_id} ya existe y es público. "
+            "Usa un repositorio privado para subir checkpoints."
+        )
+    print(f"[Validate] Checkpoint backup: repositorio privado {args.hub_repo_id} listo.", flush=True)
+
+
+def patch_hf_checkpoint_upload(args) -> None:
+    """Upload each complete checkpoint, then prune older local numbered checkpoints."""
+    if not args.hub_repo_id:
+        return
+
+    import shutil
+
+    from huggingface_hub import HfApi
+    import lerobot.scripts.lerobot_train as lerobot_train
+
+    api = HfApi()
+    original_save_checkpoint = lerobot_train.save_checkpoint
+
+    def save_checkpoint_and_upload(*save_args, **save_kwargs):
+        checkpoint_dir = Path(save_kwargs.get("checkpoint_dir", save_args[0] if save_args else ""))
+        original_save_checkpoint(*save_args, **save_kwargs)
+
+        write_info(args, Path(args.dataset_root).resolve(), Path(args.output).resolve())
+        relative_checkpoint = f"{args.hub_path_prefix.strip('/')}/checkpoints/{checkpoint_dir.name}".strip("/")
+        print(
+            f"[Hub] Uploading complete checkpoint {checkpoint_dir.name} to "
+            f"{args.hub_repo_id}/{relative_checkpoint}...",
+            flush=True,
+        )
+        try:
+            commit = api.upload_folder(
+                folder_path=str(checkpoint_dir),
+                repo_id=args.hub_repo_id,
+                repo_type="model",
+                path_in_repo=relative_checkpoint,
+                commit_message=f"Save ACT checkpoint {checkpoint_dir.name}",
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"Checkpoint {checkpoint_dir} is complete locally, but its Hugging Face upload failed. "
+                "It was kept locally and older checkpoints were not removed. "
+                f"Upload error: {error}"
+            ) from error
+
+        print(
+            f"[Hub] Uploaded checkpoint {checkpoint_dir.name} "
+            f"(commit {getattr(commit, 'oid', 'created')}).",
+            flush=True,
+        )
+        for previous in checkpoint_dir.parent.iterdir():
+            if previous != checkpoint_dir and previous.is_dir() and previous.name.isdigit():
+                try:
+                    shutil.rmtree(previous)
+                except OSError as error:
+                    raise RuntimeError(
+                        f"Checkpoint {checkpoint_dir.name} is safely stored on Hugging Face, "
+                        f"but older local checkpoint {previous.name} could not be removed: {error}"
+                    ) from error
+                print(f"[Checkpoint] Removed older local checkpoint {previous.name} after Hub upload.", flush=True)
+
+    lerobot_train.save_checkpoint = save_checkpoint_and_upload
+
+
 def patch_live_validation(args, cfg) -> None:
     """Log ACT loss on a fixed sample of held-out episodes while training."""
     import random
@@ -435,6 +518,14 @@ def _lerobot_version() -> str:
 def configure_local_hf_cache() -> None:
     """Use a short, writable local cache path to avoid profile ACL and Windows path-length errors."""
     default_home = Path(tempfile.gettempdir()) / "rkhf"
+    if "HF_TOKEN_PATH" not in os.environ:
+        original_hf_home = os.environ.get("HF_HOME")
+        if original_hf_home:
+            token_path = Path(original_hf_home).expanduser() / "token"
+        else:
+            cache_home = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))).expanduser()
+            token_path = cache_home / "huggingface" / "token"
+        os.environ["HF_TOKEN_PATH"] = str(token_path)
     hf_home = Path(os.environ.setdefault("HF_HOME", str(default_home))).expanduser()
     os.environ.setdefault("HF_HUB_CACHE", str(hf_home / "hub"))
     os.environ.setdefault("HF_DATASETS_CACHE", str(hf_home / "ds"))
@@ -548,6 +639,8 @@ def main() -> int:
     ap.add_argument("--log-freq", type=int, default=200)
     ap.add_argument("--validation-freq", type=int, default=None, help="frecuencia de cálculo de métricas de validación")
     ap.add_argument("--init-from", default=None, help="carpeta pretrained_model desde la que continuar (afinado)")
+    ap.add_argument("--hub-repo-id", default=None, help="repositorio privado de modelos para guardar checkpoints")
+    ap.add_argument("--hub-path-prefix", default="", help="subcarpeta del repo Hub para esta ejecución")
     ap.add_argument("--no-pretrained-backbone", action="store_true", help="no descargar los pesos ImageNet del ResNet (sin red)")
     ap.add_argument("--stage", choices=("validate", "prepare", "train", "all"), default="all",
                     help="validate runtime/data, prepare ACT config, train, or run all stages")
@@ -578,6 +671,7 @@ def main() -> int:
     validate_runtime(args)
     report_stage_progress("validate", 1, 2)
     validate_dataset(args)
+    validate_checkpoint_hub(args)
     report_stage_progress("validate", 2, 2)
     if args.stage == "validate":
         print("[Validate] Validación completada correctamente.", flush=True)
@@ -597,6 +691,7 @@ def main() -> int:
           f"{args.steps} pasos × lote {args.batch} · {args.device}", flush=True)
     if sys.platform == "win32":
         patch_last_checkpoint_windows()
+    patch_hf_checkpoint_upload(args)
     patch_live_validation(args, cfg)
     from lerobot.scripts.lerobot_train import train
 

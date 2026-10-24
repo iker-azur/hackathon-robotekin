@@ -53,13 +53,21 @@ states together.
 Public datasets can be downloaded directly. For private datasets, sign in on
 this computer first with `hf auth login`; the studio uses the Hugging Face
 credentials already stored locally and never asks for a token in the app.
+Checkpoint backup is enabled by default in **Experiment output**. It creates or
+uses the private model repository `MikelRubi/robotekin-act-checkpoints`, uploads
+each complete checkpoint (including optimizer state) under the run's folder, and
+removes older numbered local checkpoints only after Hugging Face confirms the
+upload. Keep at least 2 GB free locally: LeRobot must write a checkpoint before
+it can be uploaded. If upload fails, training stops and the local checkpoint is
+kept. You can change the model repository in the app; the account must have write
+access and the repository must be private.
 
 ## Workflow
 
 1. Collect demonstrations with `demos/09_voice_bin_picking/tools/collect_demos.py`.
 2. Validate them with `tools/validate_dataset.py`.
 3. Choose a dataset, observation mode, held-out split and new output name. Keep at least one episode in the validation split.
-4. Choose **Pick-up** or **Up-down** in **Experiment output**, then run the stages from **Training Dashboard**. Pick-up checkpoints are saved under `runs/Pick-up/<run name>`; Up-down checkpoints are grouped under `runs/Up-down/Good/<run name>` or `runs/Up-down/Bad/<run name>`. The Up-down branch is inferred from a Good/Bad token in the selected dataset name and can be changed in Experiment output.
+4. Choose **Pick-up** or **Up-down** in **Experiment output**, then run the stages from **Training Dashboard**. Pick-up checkpoints are saved under `runs/Pick-up/<run name>`; Up-down checkpoints are grouped under `runs/Up-down/Good/<run name>` or `runs/Up-down/Bad/<run name>`. The Up-down branch is inferred from a Good/Bad token in the selected dataset name and can be changed in Experiment output. With Hub backup enabled, checkpoints are uploaded below the same relative run path in the selected private model repository.
 5. Run held-out action evaluation and full sorting evaluation from **Training Runs**.
 
 The first-run baseline is 10,000 steps, batch 8, chunk size 50, 10 actions per
