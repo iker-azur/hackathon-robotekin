@@ -13,6 +13,7 @@ Robotekin Hackathon branding.
 - **Training Dashboard:** runs Validate, Prepare and Train separately or together; shows stage status, step progress, train/validation ACT loss, action L1, VAE KL, gradient norm, learning rate, throughput and GPU memory.
 - **Results:** lists ACT checkpoints and full sorting evaluation reports.
 - **Bin Picking Metrics:** reads segmentation, offline action and end-to-end reports; the selected report chart is collapsible.
+- **Inspección de pernos:** independent supervised front/wrist classifier with local download destination, labelled snapshot download from `MikelRubi`, session selection, pair previews, grouped validation, live training metrics and two-image inference. See [the pin inspection guide](../10_pin_inspection/README.md) for its separate training dependencies and outputs.
 
 The studio launches `demos/09_voice_bin_picking/tools/train_act.py` for training,
 `offline_eval_policy.py` for action-error evaluation on held-out episodes, and
@@ -38,8 +39,11 @@ In **Datasets**, choose **Refresh Hub list**, check the repositories you want,
 and choose **Download checked**. Downloads are stored under
 `demos/09_voice_bin_picking/data` and checked for LeRobot episode metadata,
 actions and camera images before the studio makes them available to ACT.
-Use the **Pick-cube** and **Up-down** quick selectors to check repositories with
-matching names; individual repository checkboxes remain available afterward.
+Use the **Pick-cube**, **Up-down Good** and **Up-down Bad** quick selectors to check
+repositories with matching names; individual repository checkboxes remain available
+afterward. Up-down Bad matches names containing `bad` (`up-down-bad_<date>`); Up-down
+Good matches the remaining `up-down_<date>` recordings, so each branch can be
+downloaded and trained independently.
 When task metadata is present, the dataset details list its task groups and
 episode counts. Checking or unchecking a group updates the episode checklist;
 you can then choose individual episodes. All selected episodes feed the

@@ -202,6 +202,7 @@ When the user corrects your approach, append a one-line rule here before ending 
 - For Drive export listing, use scandir metadata and bounded parallel folders, not per-file resolve/is_file/stat calls; checkpoint frozen-output inventories and require refresh after in-place mask edits.
 
 - Read SO-101 photo labels from pin_snapshots/index.json (pin/nopin, front/wrist, location); download that folder instead of robot videos when preparing the pin classifier.
+- Use mouse-editable QSpinBox controls for pin-classifier parameters; verify editor width and mouse/keyboard input with Qt 6.12 on Windows, not only offscreen Fusion or setValue().
 
 ---
 

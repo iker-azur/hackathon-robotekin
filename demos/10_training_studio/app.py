@@ -65,6 +65,9 @@ def infer_updown_subpolicy(dataset_name: str) -> str | None:
     """Infer the Good/Bad placement branch from a Hugging Face or local dataset name."""
     tokens = set(re.findall(r"[a-z0-9]+", dataset_name.casefold()))
     matches = [label for label in UPDOWN_SUBPOLICIES if label.casefold() in tokens]
+    if not matches and "updown" in re.sub(r"[^a-z0-9]", "", dataset_name.casefold()):
+        # Normal recordings are named "up-down_<date>"; only the Bad branch carries its label.
+        return "Good"
     return matches[0] if len(matches) == 1 else None
 
 
@@ -306,6 +309,7 @@ class TrainingWindow(QMainWindow):
             ("Experiments", 4, 1),
             ("Inference", 4, 0),
         )),
+        ("INSPECTION", (("Inspección de pernos", 6, None),)),
         ("SETTINGS", (("Runtime Environment", 3, None),)),
     )
 
@@ -357,6 +361,10 @@ class TrainingWindow(QMainWindow):
         self.pages.addWidget(self._build_training())
         self.pages.addWidget(self._build_results())
         self.pages.addWidget(self._build_console())
+        from pin_inspection_page import PinInspectionPage
+
+        self.pin_page = PinInspectionPage(self)
+        self.pages.addWidget(self.pin_page)
         shell_layout.addWidget(self.pages, 1)
         self.setCentralWidget(shell)
 
@@ -579,12 +587,16 @@ class TrainingWindow(QMainWindow):
         self.hub_pickcube_button = QPushButton("Pick-cube")
         self.hub_pickcube_button.setToolTip("Select repositories whose names contain 'pick-cube' or 'pickcube'.")
         self.hub_pickcube_button.clicked.connect(lambda: self._set_hub_task_selection("pickcube"))
-        self.hub_updown_button = QPushButton("Up-down")
-        self.hub_updown_button.setToolTip("Select repositories whose names contain 'up down' or 'updown'.")
-        self.hub_updown_button.clicked.connect(lambda: self._set_hub_task_selection("updown"))
+        self.hub_updown_good_button = QPushButton("Up-down Good")
+        self.hub_updown_good_button.setToolTip("Select normal Up-down repositories: 'up-down' without 'bad' in the name.")
+        self.hub_updown_good_button.clicked.connect(lambda: self._set_hub_task_selection("updown_good"))
+        self.hub_updown_bad_button = QPushButton("Up-down Bad")
+        self.hub_updown_bad_button.setToolTip("Select Up-down repositories whose names contain 'bad'.")
+        self.hub_updown_bad_button.clicked.connect(lambda: self._set_hub_task_selection("updown_bad"))
         hub_selection_actions.addWidget(self.hub_select_all_button)
         hub_selection_actions.addWidget(self.hub_pickcube_button)
-        hub_selection_actions.addWidget(self.hub_updown_button)
+        hub_selection_actions.addWidget(self.hub_updown_good_button)
+        hub_selection_actions.addWidget(self.hub_updown_bad_button)
         hub_selection_actions.addWidget(self.hub_clear_button)
         hub_selection_actions.addWidget(hub_open)
         hub_selection_actions.addStretch(1)
@@ -1686,8 +1698,9 @@ class TrainingWindow(QMainWindow):
         self._hub_dataset_selection_changed()
 
     def _set_hub_task_selection(self, task: str) -> None:
-        keywords = {"pickcube": "pickcube", "updown": "updown"}
-        display_names = {"pickcube": "Pick-cube", "updown": "Up-down"}
+        keywords = {"pickcube": "pickcube", "updown_good": "updown", "updown_bad": "updown"}
+        display_names = {"pickcube": "Pick-cube", "updown_good": "Up-down Good", "updown_bad": "Up-down Bad"}
+        subpolicies = {"updown_good": "Good", "updown_bad": "Bad"}
         keyword = keywords.get(task)
         if keyword is None:
             return
@@ -1697,7 +1710,9 @@ class TrainingWindow(QMainWindow):
             item = self.hub_dataset_list.item(row)
             repo_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
             normalized_name = re.sub(r"[^a-z0-9]", "", repo_id.casefold())
-            matches = keyword in normalized_name
+            matches = keyword in normalized_name and (
+                task not in subpolicies or infer_updown_subpolicy(repo_id) == subpolicies[task]
+            )
             item.setCheckState(Qt.CheckState.Checked if matches else Qt.CheckState.Unchecked)
             selected_count += int(matches)
         self.hub_dataset_list.blockSignals(False)
@@ -2850,6 +2865,9 @@ class TrainingWindow(QMainWindow):
         self._launch_process(python, args, "offline evaluation", output_dir.name)
 
     def _launch_process(self, python: Path, args: list[str], kind: str, name: str) -> None:
+        if self.pin_page.is_training:
+            self._show_error("Espera a que termine el entrenamiento del clasificador de pernos.")
+            return
         if self.process.state() != QProcess.NotRunning:
             return
         self.log.clear()
@@ -3127,6 +3145,10 @@ class TrainingWindow(QMainWindow):
     @staticmethod
     def _show_error(message: str) -> None:
         QMessageBox.warning(None, "Cannot continue", message)
+
+    def closeEvent(self, event) -> None:
+        self.pin_page.shutdown()
+        super().closeEvent(event)
 
     @staticmethod
     def _stylesheet() -> str:
