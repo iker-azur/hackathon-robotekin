@@ -10,7 +10,7 @@ Robotekin Hackathon branding.
 - **Datasets:** discovers local datasets, lists repositories from the `MikelRubi` Hugging Face account, downloads a selected LeRobot dataset, and lets you select task groups and individual episodes for training.
 - **Preparation:** links demonstration collection, dataset validation and ACT training.
 - **Training:** selects RGB plus target mask, RGB-only or mask-only observations, optional joint-state input, ACT VAE, fine-tuning, episode split, vision backbone, transformer/VAE architecture, optimizer regularization, mixed precision, learning rate, batch size, action chunk and checkpoint/log intervals.
-- **Training Dashboard:** shows live ACT metrics and a collapsible training-loss plot.
+- **Training Dashboard:** runs Validate, Prepare and Train separately or together; shows stage status, step progress, train/validation ACT loss, action L1, VAE KL, gradient norm, learning rate, throughput and GPU memory.
 - **Results:** lists ACT checkpoints and full sorting evaluation reports.
 - **Bin Picking Metrics:** reads segmentation, offline action and end-to-end reports; the selected report chart is collapsible.
 
@@ -18,8 +18,10 @@ The studio launches `demos/09_voice_bin_picking/tools/train_act.py` for training
 `offline_eval_policy.py` for action-error evaluation on held-out episodes, and
 `eval_sorting.py` for complete sorting evaluation in Isaac Sim. Automatic and
 manual episode splits are saved in `studio_run_config.json` after a successful
-training run. ACT training logs do not include in-loop validation, so held-out
-action and task metrics are produced by the evaluation commands after training.
+training run. During ACT training, the dashboard reports validation loss and
+action L1 on a fixed sample of up to 64 frames from held-out episodes at the
+logging interval. At least one validation episode must be held out; post-training
+offline and full sorting evaluations remain available for broader checks.
 
 ## Install and launch on Windows
 
@@ -52,8 +54,8 @@ credentials already stored locally and never asks for a token in the app.
 
 1. Collect demonstrations with `demos/09_voice_bin_picking/tools/collect_demos.py`.
 2. Validate them with `tools/validate_dataset.py`.
-3. Choose a dataset, observation mode, held-out split and new output name.
-4. Choose **Pick-up** or **Up-down** in **Experiment output**, then train ACT. Checkpoints are saved under `demos/09_voice_bin_picking/outputs/<task>/<run name>`.
+3. Choose a dataset, observation mode, held-out split and new output name. Keep at least one episode in the validation split.
+4. Choose **Pick-up** or **Up-down** in **Experiment output**, then run the stages from **Training Dashboard**. Checkpoints are saved under `runs/<task>/<run name>`.
 5. Run held-out action evaluation and full sorting evaluation from **Training Runs**.
 
 The first-run baseline is 10,000 steps, batch 8, chunk size 50, 10 actions per

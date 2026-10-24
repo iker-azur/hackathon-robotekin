@@ -93,30 +93,28 @@ def patch_last_checkpoint_windows() -> None:
     def update_last_checkpoint(checkpoint_dir):
         checkpoint_dir = Path(checkpoint_dir)
         link = checkpoint_dir.parent / LAST_CHECKPOINT_LINK
-        suffix = f"{os.getpid()}-{time.time_ns()}"
-        staged = link.with_name(f"{link.name}.tmp-{suffix}")
-        backup = link.with_name(f"{link.name}.old-{suffix}")
-        shutil.copytree(checkpoint_dir, staged)
+        step = checkpoint_dir.name
+        staged = checkpoint_dir.parent / f"t{step}"
+        backup = checkpoint_dir.parent / f"b{step}"
 
         try:
+            shutil.copytree(checkpoint_dir, staged)
             if link.exists() or link.is_symlink():
                 os.replace(link, backup)
             os.replace(staged, link)
-        except OSError as exc:
+        except (OSError, shutil.Error) as exc:
             if backup.exists() and not link.exists():
                 try:
                     os.replace(backup, link)
                 except OSError:
                     pass
             shutil.rmtree(staged, ignore_errors=True)
-            if link.exists():
-                print(
-                    f"[Checkpoint] Could not refresh 'last' because Windows/OneDrive locked it: {exc}. "
-                    f"The numbered checkpoint at {checkpoint_dir} is saved; keeping the previous 'last'.",
-                    flush=True,
-                )
-                return link
-            raise
+            print(
+                f"[Checkpoint] Could not refresh 'last' because Windows/OneDrive could not copy or replace it: {exc}. "
+                f"The numbered checkpoint at {checkpoint_dir} is saved; training will continue.",
+                flush=True,
+            )
+            return link
 
         if backup.exists():
             shutil.rmtree(backup, ignore_errors=True)
@@ -140,6 +138,143 @@ def patch_last_checkpoint_windows() -> None:
         return make_pre_post_processors(policy_cfg=policy_cfg, pretrained_path=pretrained_path, **kwargs)
 
     lerobot_train.make_pre_post_processors = make_pre_post_processors_with_partial_checkpoint
+
+
+def patch_live_validation(args, cfg) -> None:
+    """Log ACT loss on a fixed sample of held-out episodes while training."""
+    import random
+
+    import torch
+    import lerobot.scripts.lerobot_train as lerobot_train
+    from lerobot.datasets.factory import resolve_delta_timestamps
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+    from torch.utils.data import DataLoader, Subset
+
+    validation_episodes = parse_episodes(args.validation_episodes)
+    if not validation_episodes:
+        raise SystemExit("[Validate] Select held-out validation episodes to calculate live validation loss.")
+
+    repo_id = args.repo_id or Path(args.dataset_root).name
+    metadata = LeRobotDatasetMetadata(repo_id, root=Path(args.dataset_root))
+    validation_dataset = LeRobotDataset(
+        repo_id=repo_id,
+        root=Path(args.dataset_root),
+        episodes=validation_episodes,
+        delta_timestamps=resolve_delta_timestamps(cfg.policy, metadata),
+    )
+    if not len(validation_dataset):
+        raise SystemExit("[Validate] The selected validation episodes contain no frames.")
+
+    sample_size = min(64, len(validation_dataset))
+    sample_indices = sorted(random.Random(args.seed).sample(range(len(validation_dataset)), sample_size))
+    validation_loader = DataLoader(
+        Subset(validation_dataset, sample_indices),
+        batch_size=args.batch,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=args.device == "cuda",
+    )
+    print(
+        f"Live validation: {len(validation_episodes)} held-out episodes, {sample_size} fixed frames, "
+        f"every {args.validation_freq} steps.",
+        flush=True,
+    )
+
+    state = {"preprocessor": None, "step": 0, "train_sums": {}, "train_count": 0}
+    original_processor_factory = lerobot_train.make_pre_post_processors
+    original_update_policy = lerobot_train.update_policy
+
+    def capture_preprocessor(*factory_args, **factory_kwargs):
+        preprocessor, postprocessor = original_processor_factory(*factory_args, **factory_kwargs)
+        state["preprocessor"] = preprocessor
+        return preprocessor, postprocessor
+
+    def update_policy_with_validation(
+        train_metrics, policy, batch, optimizer, grad_clip_norm, accelerator,
+        lr_scheduler=None, lock=None, rabc_weights_provider=None,
+    ):
+        train_metrics, output_dict = original_update_policy(
+            train_metrics,
+            policy,
+            batch,
+            optimizer,
+            grad_clip_norm,
+            accelerator,
+            lr_scheduler=lr_scheduler,
+            lock=lock,
+            rabc_weights_provider=rabc_weights_provider,
+        )
+        state["step"] += 1
+        for key in ("l1_loss", "kld_loss"):
+            if key in output_dict:
+                state["train_sums"][key] = state["train_sums"].get(key, 0.0) + float(output_dict[key])
+        state["train_count"] += 1
+
+        step = state["step"]
+        if step != 1 and step % args.validation_freq and step != args.steps:
+            return train_metrics, output_dict
+
+        train_values = {
+            key: value / state["train_count"]
+            for key, value in state["train_sums"].items()
+        }
+        train_loss = train_values.get("l1_loss", 0.0) + args.kl_weight * train_values.get("kld_loss", 0.0)
+        preprocessor = state["preprocessor"]
+        if preprocessor is None:
+            print(f"Live validation unavailable at step {step}: ACT preprocessor is not ready.", flush=True)
+            return train_metrics, output_dict
+
+        loss_sum = 0.0
+        component_sums = {}
+        sample_count = 0
+        was_training = policy.training
+        policy.eval()
+        try:
+            cuda_devices = [torch.cuda.current_device()] if args.device == "cuda" and torch.cuda.is_available() else []
+            with torch.random.fork_rng(devices=cuda_devices):
+                torch.manual_seed(args.seed)
+                if cuda_devices:
+                    torch.cuda.manual_seed_all(args.seed)
+                with torch.no_grad(), accelerator.autocast():
+                    for validation_batch in validation_loader:
+                        validation_batch = preprocessor(validation_batch)
+                        loss, components = policy.forward(validation_batch)
+                        count = int(validation_batch[ACTION_KEY].shape[0])
+                        loss_sum += float(loss.detach().float().item()) * count
+                        sample_count += count
+                        for key in ("l1_loss", "kld_loss"):
+                            if key in components:
+                                component_sums[key] = component_sums.get(key, 0.0) + float(components[key]) * count
+        except Exception as error:
+            print(f"Live validation unavailable at step {step}: {error}", flush=True)
+            return train_metrics, output_dict
+        finally:
+            policy.train(was_training)
+
+        fields = [f"step: {step}", f"loss: {train_loss:.6f}"]
+        if "l1_loss" in train_values:
+            fields.append(f"train_l1_loss: {train_values['l1_loss']:.6f}")
+        if "kld_loss" in train_values:
+            fields.append(f"train_kld_loss: {train_values['kld_loss']:.6f}")
+        fields.append(f"eval_loss: {loss_sum / sample_count:.6f}")
+        if "l1_loss" in component_sums:
+            fields.append(f"eval_l1_loss: {component_sums['l1_loss'] / sample_count:.6f}")
+        if "kld_loss" in component_sums:
+            fields.append(f"eval_kld_loss: {component_sums['kld_loss'] / sample_count:.6f}")
+        fields.append(f"grad_norm: {train_metrics.grad_norm.val:.6f}")
+        fields.append(f"lr: {train_metrics.lr.val:.8g}")
+        elapsed = train_metrics.update_s.val + train_metrics.dataloading_s.val
+        if elapsed > 0:
+            fields.append(f"samples_per_s: {args.batch / elapsed:.4f}")
+        if args.device == "cuda" and torch.cuda.is_available():
+            fields.append(f"gpu_mem_gb: {torch.cuda.max_memory_allocated() / 1024**3:.3f}")
+        print(" ".join(fields), flush=True)
+        state["train_sums"] = {}
+        state["train_count"] = 0
+        return train_metrics, output_dict
+
+    lerobot_train.make_pre_post_processors = capture_preprocessor
+    lerobot_train.update_policy = update_policy_with_validation
 
 
 def build_cfg(args):
@@ -255,7 +390,10 @@ def write_info(args, root: Path, out: Path) -> None:
                                     "decoder_layers": args.decoder_layers, "latent_dim": args.latent_dim,
                                     "vae_encoder_layers": args.vae_encoder_layers, "pre_norm": args.pre_norm,
                                     "use_amp": args.use_amp, "kl_weight": args.kl_weight},
-                 "episodes": args.episodes or "todos", "lerobot": _lerobot_version()})
+                 "episodes": args.episodes or "todos",
+                 "validation_episodes": parse_episodes(args.validation_episodes) or [],
+                 "validation_freq": args.validation_freq,
+                 "lerobot": _lerobot_version()})
     text = json.dumps(info, indent=2, ensure_ascii=False)
     (out / "binpick_info.json").write_text(text, encoding="utf-8")
     for ck in (out / "checkpoints").glob("*/pretrained_model"):
@@ -330,7 +468,21 @@ def validate_dataset(args) -> None:
     selected = parse_episodes(args.episodes)
     if selected is not None and any(index < 0 or index >= total for index in selected):
         raise SystemExit(f"Los episodios seleccionados deben estar entre 0 y {total - 1}.")
-    print(f"[Validate] Dataset: {root.name} · {total} episodios · entradas visuales: {image_inputs}", flush=True)
+    validation = parse_episodes(args.validation_episodes)
+    if args.stage in {"train", "all"} and not validation:
+        raise SystemExit("[Validate] Select at least one held-out episode for live validation loss.")
+    if validation is not None:
+        if any(index < 0 or index >= total for index in validation):
+            raise SystemExit(f"Los episodios de validación deben estar entre 0 y {total - 1}.")
+        training_ids = set(selected) if selected is not None else set(range(total))
+        if training_ids & set(validation):
+            raise SystemExit("Los episodios de entrenamiento y validación no pueden solaparse.")
+    print(
+        f"[Validate] Dataset: {root.name} · {total} episodios · "
+        f"train: {len(selected) if selected is not None else total} · "
+        f"validation: {len(validation or [])} · entradas visuales: {image_inputs}",
+        flush=True,
+    )
 
 
 def main() -> int:
@@ -363,17 +515,22 @@ def main() -> int:
     ap.add_argument("--no-state", action="store_true", help="no dar las articulaciones como entrada (experimento anti copia de pose)")
     ap.add_argument("--kl-weight", type=float, default=10.0)
     ap.add_argument("--episodes", default=None, help="p. ej. 0-449 (deja el resto sin ver para la evaluación offline)")
+    ap.add_argument("--validation-episodes", default=None, help="episodios held-out para la métrica live eval_loss")
     ap.add_argument("--output", default=None, help="carpeta nueva (LeRobot no reutiliza una existente)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=0)
     ap.add_argument("--save-freq", type=int, default=None)
     ap.add_argument("--log-freq", type=int, default=200)
+    ap.add_argument("--validation-freq", type=int, default=None, help="frecuencia de cálculo de métricas de validación")
     ap.add_argument("--init-from", default=None, help="carpeta pretrained_model desde la que continuar (afinado)")
     ap.add_argument("--no-pretrained-backbone", action="store_true", help="no descargar los pesos ImageNet del ResNet (sin red)")
     ap.add_argument("--stage", choices=("validate", "prepare", "train", "all"), default="all",
                     help="validate runtime/data, prepare ACT config, train, or run all stages")
     args = ap.parse_args()
+    args.validation_freq = args.validation_freq or args.log_freq
+    if args.validation_freq < 1:
+        ap.error("--validation-freq must be positive")
     configure_local_hf_cache()
 
     if args.dim_model % args.attention_heads:
@@ -410,6 +567,7 @@ def main() -> int:
           f"{args.steps} pasos × lote {args.batch} · {args.device}", flush=True)
     if sys.platform == "win32":
         patch_last_checkpoint_windows()
+    patch_live_validation(args, cfg)
     from lerobot.scripts.lerobot_train import train
 
     t0 = time.time()

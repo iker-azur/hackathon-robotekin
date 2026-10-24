@@ -60,6 +60,25 @@ _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 OUTPUT_TASKS = ("Pick-up", "Up-down")
 
 
+def resolve_pretrained_policy_dir(selected: Path) -> Path | None:
+    """Accept a policy folder, its checkpoint folder, or the enclosing run folder."""
+    config_names = ("config.json", "policy_config.json")
+    candidates = [selected, selected / "pretrained_model"]
+    checkpoints = selected if selected.name.lower() == "checkpoints" else selected / "checkpoints"
+    if checkpoints.is_dir():
+        numbered = sorted(
+            (folder for folder in checkpoints.iterdir() if folder.is_dir() and folder.name.isdigit()),
+            key=lambda folder: int(folder.name),
+            reverse=True,
+        )
+        candidates.extend(folder / "pretrained_model" for folder in numbered)
+        candidates.append(checkpoints / "last" / "pretrained_model")
+    for folder in candidates:
+        if folder.is_dir() and any((folder / name).is_file() for name in config_names):
+            return folder
+    return None
+
+
 class KeyboardOnlyComboBox(QComboBox):
     """Allow mouse and keyboard selection while preventing wheel changes."""
 
@@ -125,9 +144,10 @@ class LiveLossChart(QWidget):
 
     SERIES_COLORS = {"Training loss": QColor("#198754"), "Validation loss": QColor("#e07a24")}
 
-    def __init__(self) -> None:
+    def __init__(self, series_colors: dict[str, QColor] | None = None) -> None:
         super().__init__()
-        self.series: dict[str, list[tuple[int, float]]] = {key: [] for key in self.SERIES_COLORS}
+        self.series_colors = series_colors or self.SERIES_COLORS
+        self.series: dict[str, list[tuple[int, float]]] = {key: [] for key in self.series_colors}
         self.setMinimumHeight(190)
 
     def clear(self) -> None:
@@ -137,7 +157,10 @@ class LiveLossChart(QWidget):
 
     def add_value(self, name: str, step: int, value: float) -> None:
         points = self.series[name]
-        points.append((step, value))
+        if points and points[-1][0] == step:
+            points[-1] = (step, value)
+        else:
+            points.append((step, value))
         del points[:-400]
         self.update()
 
@@ -177,10 +200,10 @@ class LiveLossChart(QWidget):
                 px = area.left() + (x - min_x) / (max_x - min_x) * area.width()
                 py = area.bottom() - (y - min_y) / (max_y - min_y) * area.height()
                 (path.moveTo if index == 0 else path.lineTo)(QPointF(px, py))
-            painter.setPen(QPen(self.SERIES_COLORS[name], 2))
+            painter.setPen(QPen(self.series_colors[name], 2))
             painter.drawPath(path)
         legend_x = area.left()
-        for name, color in self.SERIES_COLORS.items():
+        for name, color in self.series_colors.items():
             if not self.series[name]:
                 continue
             painter.setPen(QPen(color, 3))
@@ -933,35 +956,6 @@ class TrainingWindow(QMainWindow):
         output_layout.addWidget(self.output_path)
         layout.addWidget(output_card)
 
-        pipeline_card, pipeline_layout = self._card(
-            "Training pipeline",
-            "Run each stage on its own to diagnose problems, or run the full Validate → Prepare → Train pipeline.",
-        )
-        pipeline_status_row = QHBoxLayout()
-        for stage, title in (("validate", "Validate"), ("prepare", "Prepare"), ("train", "Train")):
-            status = QLabel(f"{title}: Not run")
-            status.setObjectName("mutedText")
-            self._pipeline_status_labels[stage] = status
-            pipeline_status_row.addWidget(status)
-        pipeline_status_row.addStretch(1)
-        pipeline_layout.addLayout(pipeline_status_row)
-        controls = QHBoxLayout()
-        self.pipeline_buttons = []
-        for stage, title in (("validate", "Validate"), ("prepare", "Prepare"), ("train", "Train")):
-            button = QPushButton(title)
-            button.clicked.connect(lambda _checked=False, selected=stage: self._start_training(selected))
-            controls.addWidget(button)
-            self.pipeline_buttons.append(button)
-        self.start_button = QPushButton("Run all stages")
-        self.start_button.setObjectName("primaryButton")
-        self.start_button.clicked.connect(lambda: self._start_training("all"))
-        controls.addWidget(self.start_button)
-        go_console = QPushButton("Open console")
-        go_console.clicked.connect(lambda: self._show_page(5))
-        controls.addWidget(go_console)
-        controls.addStretch(1)
-        pipeline_layout.addLayout(controls)
-        layout.addWidget(pipeline_card)
         layout.addStretch(1)
         return page
 
@@ -1072,21 +1066,77 @@ class TrainingWindow(QMainWindow):
     def _build_console(self) -> QWidget:
         page, layout = self._new_page(
             "Training Dashboard",
-            "Follow the latest training metrics and inspect the live process output.",
+            "Run or monitor each ACT stage, follow live metrics, and decide when a training setup needs adjustment.",
         )
+        pipeline_card, pipeline_layout = self._card(
+            "Training pipeline",
+            "Run one stage to diagnose it, or run Validate → Prepare → Train in sequence.",
+        )
+        pipeline_status_row = QHBoxLayout()
+        for stage, title in (("validate", "Validate"), ("prepare", "Prepare"), ("train", "Train")):
+            tile = QFrame()
+            tile.setObjectName("pipelineStep")
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setContentsMargins(12, 9, 12, 9)
+            stage_title = QLabel(title)
+            stage_title.setObjectName("stepTitle")
+            status = QLabel(f"{title}: Not run")
+            status.setObjectName("mutedText")
+            tile_layout.addWidget(stage_title)
+            tile_layout.addWidget(status)
+            self._pipeline_status_labels[stage] = status
+            pipeline_status_row.addWidget(tile, 1)
+        pipeline_layout.addLayout(pipeline_status_row)
+        pipeline_controls = QHBoxLayout()
+        self.pipeline_buttons = []
+        for stage, title in (("validate", "Run Validate"), ("prepare", "Run Prepare"), ("train", "Run Train")):
+            button = QPushButton(title)
+            button.clicked.connect(lambda _checked=False, selected=stage: self._start_training(selected))
+            pipeline_controls.addWidget(button)
+            self.pipeline_buttons.append(button)
+        self.start_button = QPushButton("Run all steps")
+        self.start_button.setObjectName("primaryButton")
+        self.start_button.clicked.connect(lambda: self._start_training("all"))
+        pipeline_controls.addWidget(self.start_button)
+        pipeline_layout.addLayout(pipeline_controls)
+        layout.addWidget(pipeline_card)
+
         bar = QHBoxLayout()
         self.task_label = QLabel("No active process")
         self.task_label.setObjectName("consoleStatus")
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.hide()
+        self.progress.setTextVisible(True)
+        self.progress.setFormat("%p% · %v / %m")
+        self.progress.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.progress.setMinimumWidth(260)
+        self.stop_button = QPushButton("Stop process")
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self._stop_process)
+        clear = QPushButton("Clear console")
+        clear.clicked.connect(lambda: self.log.clear())
+        bar.addWidget(self.task_label)
+        bar.addStretch(1)
+        bar.addWidget(self.progress, 1)
+        bar.addWidget(self.stop_button)
+        bar.addWidget(clear)
+        layout.addLayout(bar)
+
         self.live_metric_labels = {}
         metrics_card, metrics_layout = self._card(
             "Live training metrics",
-            "The bin-picking ACT trainer reports training loss during the run. Validation is performed offline after training."
+            "Validation is measured after the first update and at each log interval on a fixed sample of held-out episodes. Compare both loss curves; falling train loss alone does not confirm generalization.",
         )
         live_grid = QGridLayout()
         for index, (key, title, initial) in enumerate((
             ("step", "Step", "—"),
-            ("loss", "Train loss", "—"),
-            ("eval_loss", "Validation loss", "—"),
+            ("loss", "Train ACT loss", "—"),
+            ("eval_loss", "Validation ACT loss", "—"),
+            ("train_l1_loss", "Train action L1", "—"),
+            ("eval_l1_loss", "Validation action L1", "—"),
+            ("train_kld_loss", "Train KL loss", "—"),
+            ("eval_kld_loss", "Validation KL loss", "—"),
             ("grad_norm", "Gradient norm", "—"),
             ("lr", "Learning rate", "—"),
             ("samples_per_s", "Samples / sec", "—"),
@@ -1099,35 +1149,100 @@ class TrainingWindow(QMainWindow):
             value_label.setObjectName("metricValue")
             cell.addWidget(title_label)
             cell.addWidget(value_label)
-            live_grid.addLayout(cell, index // 4, index % 4)
+            live_grid.addLayout(cell, index // 3, index % 3)
             self.live_metric_labels[key] = value_label
         metrics_layout.addLayout(live_grid)
         layout.addWidget(metrics_card)
         loss_content = QWidget()
         loss_layout = QVBoxLayout(loss_content)
         loss_layout.setContentsMargins(0, 0, 0, 0)
-        loss_note = QLabel("Lower validation loss is useful only when measured on episodes held out from training.")
+        loss_note = QLabel("ACT loss combines action reconstruction and the weighted VAE KL term. L1 charts show action error separately.")
         loss_note.setObjectName("mutedText")
+        loss_note.setWordWrap(True)
         loss_layout.addWidget(loss_note)
         self.live_loss_chart = LiveLossChart()
         loss_layout.addWidget(self.live_loss_chart)
-        self.live_loss_dropdown = CollapsiblePanel("Show training and validation loss chart", loss_content, expanded=False)
+        self.live_loss_dropdown = CollapsiblePanel("Show ACT training and validation loss", loss_content, expanded=True)
         layout.addWidget(self.live_loss_dropdown)
-        self.stop_button = QPushButton("Stop process")
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self._stop_process)
-        clear = QPushButton("Clear console")
-        clear.clicked.connect(lambda: self.log.clear())
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 0)
-        self.progress.setTextVisible(False)
-        self.progress.hide()
-        bar.addWidget(self.task_label)
-        bar.addStretch(1)
-        bar.addWidget(self.progress, 1)
-        bar.addWidget(self.stop_button)
-        bar.addWidget(clear)
-        layout.addLayout(bar)
+
+        action_content = QWidget()
+        action_layout = QVBoxLayout(action_content)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_note = QLabel("Lower action L1 means closer predictions in normalized action units on the fixed validation sample.")
+        action_note.setObjectName("mutedText")
+        action_note.setWordWrap(True)
+        action_layout.addWidget(action_note)
+        self.live_action_chart = LiveLossChart({
+            "Train action L1": QColor("#27866b"),
+            "Validation action L1": QColor("#e07a24"),
+        })
+        action_layout.addWidget(self.live_action_chart)
+        self.live_action_dropdown = CollapsiblePanel("Show action prediction error (L1)", action_content, expanded=False)
+        layout.addWidget(self.live_action_dropdown)
+
+        kl_content = QWidget()
+        kl_layout = QVBoxLayout(kl_content)
+        kl_layout.setContentsMargins(0, 0, 0, 0)
+        kl_note = QLabel("The KL term regularizes ACT's VAE latent space; it is absent when the VAE is disabled.")
+        kl_note.setObjectName("mutedText")
+        kl_note.setWordWrap(True)
+        kl_layout.addWidget(kl_note)
+        self.live_kl_chart = LiveLossChart({
+            "Train KL loss": QColor("#27866b"),
+            "Validation KL loss": QColor("#e07a24"),
+        })
+        kl_layout.addWidget(self.live_kl_chart)
+        self.live_kl_dropdown = CollapsiblePanel("Show VAE KL loss", kl_content, expanded=False)
+        layout.addWidget(self.live_kl_dropdown)
+
+        gradient_content = QWidget()
+        gradient_layout = QVBoxLayout(gradient_content)
+        gradient_layout.setContentsMargins(0, 0, 0, 0)
+        gradient_note = QLabel("The configured clipping limit is 10. Norms above it are clipped before the optimizer update.")
+        gradient_note.setObjectName("mutedText")
+        gradient_note.setWordWrap(True)
+        gradient_layout.addWidget(gradient_note)
+        self.live_gradient_chart = LiveLossChart({"Gradient norm": QColor("#7157a5")})
+        gradient_layout.addWidget(self.live_gradient_chart)
+        self.live_gradient_dropdown = CollapsiblePanel("Show gradient norm stability", gradient_content, expanded=False)
+        layout.addWidget(self.live_gradient_dropdown)
+
+        lr_content = QWidget()
+        lr_layout = QVBoxLayout(lr_content)
+        lr_layout.setContentsMargins(0, 0, 0, 0)
+        lr_note = QLabel("A flat line is expected when training uses a constant learning rate.")
+        lr_note.setObjectName("mutedText")
+        lr_note.setWordWrap(True)
+        lr_layout.addWidget(lr_note)
+        self.live_lr_chart = LiveLossChart({"Learning rate": QColor("#4f8dc9")})
+        lr_layout.addWidget(self.live_lr_chart)
+        self.live_lr_dropdown = CollapsiblePanel("Show learning rate schedule", lr_content, expanded=False)
+        layout.addWidget(self.live_lr_dropdown)
+
+        guidance_card, guidance_layout = self._card(
+            "How to interpret the run",
+            "Treat these as training signals. Confirm the final policy on held-out episodes and in the real sorting task before relying on it.",
+        )
+        guidance_grid = QGridLayout()
+        for index, (title, detail) in enumerate((
+            ("Train and validation loss both fall", "Good sign: ACT is fitting demonstrations and the held-out sample. Continue, then evaluate the final checkpoint."),
+            ("Train falls, validation rises", "Possible overfitting. Check for duplicate or similar episodes across the split, add varied demonstrations, and consider fewer steps or stronger regularization."),
+            ("Both losses flatten", "Check image/action alignment and episode consistency first. If data is sound, try a modest learning-rate change or a smaller model."),
+            ("Gradient norm spikes", "A brief spike can happen. Repeated large spikes or non-finite losses suggest unstable updates; lower the learning rate and inspect the data."),
+            ("Action L1 falls", "Predicted actions are getting closer to the demonstrations in normalized units. This alone does not prove successful grasping or sorting."),
+            ("Speed and GPU memory", "These describe runtime and hardware use, not policy quality. Reduce batch size only if memory is exhausted."),
+        )):
+            item = QVBoxLayout()
+            heading = QLabel(title)
+            heading.setObjectName("stepTitle")
+            description = QLabel(detail)
+            description.setObjectName("mutedText")
+            description.setWordWrap(True)
+            item.addWidget(heading)
+            item.addWidget(description)
+            guidance_grid.addLayout(item, index // 2, index % 2)
+        guidance_layout.addLayout(guidance_grid)
+        layout.addWidget(guidance_card)
 
         console, console_layout = self._card("Console")
         self.log = QPlainTextEdit()
@@ -1224,7 +1339,7 @@ class TrainingWindow(QMainWindow):
         ranges.append(f"{start}-{previous}" if start != previous else str(start))
         return ",".join(ranges)
 
-    def _prepare_episode_split(self) -> dict:
+    def _prepare_episode_split(self, require_validation: bool = False) -> dict:
         metadata_path = self._dataset_dir() / "meta" / "info.json"
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         total = int(metadata.get("total_episodes", 0))
@@ -1265,13 +1380,20 @@ class TrainingWindow(QMainWindow):
             available = available[:keep]
             n_train = max(1, int(len(available) * percentages[0] / 100))
             n_validation = int(len(available) * percentages[1] / 100)
+            if percentages[1] > 0 and len(available) > 1:
+                n_validation = max(1, n_validation)
             if n_train + n_validation > len(available):
-                n_validation = max(0, len(available) - n_train)
+                n_train = max(1, len(available) - n_validation)
             train_ids = available[:n_train]
             validation_ids = available[n_train:n_train + n_validation]
             test_ids = available[n_train + n_validation:]
         if not train_ids:
             raise ValueError("The split produced no training episodes.")
+        if require_validation and not validation_ids:
+            raise ValueError(
+                "Live validation loss needs at least one held-out validation episode. "
+                "Select more episodes or assign validation episodes in a manual split."
+            )
         if self.split_mode.currentData() == "manual" and self.dataset_fraction < 1.0:
             rng = random.Random(self.seed.value())
             rng.shuffle(train_ids)
@@ -1297,8 +1419,8 @@ class TrainingWindow(QMainWindow):
         for widget in self.manual_episode_edits:
             widget.setEnabled(manual)
         self.split_note.setText(
-            "Training episodes are passed to ACT; validation/test episodes remain held out for offline policy or full sorting evaluation."
-            if manual else "Episodes are split before training. Validation/test sets are held out for offline or full sorting evaluation; ACT has no in-loop validation."
+            "Training episodes are passed to ACT. Held-out validation episodes are measured during training and can also be used for offline evaluation; test episodes stay untouched until final evaluation."
+            if manual else "Episodes are split before training. Held-out validation episodes are measured during training; test episodes stay untouched until final evaluation."
         )
 
     def _training_mode_changed(self, _index: int) -> None:
@@ -2407,11 +2529,17 @@ class TrainingWindow(QMainWindow):
             if not pretrained.is_dir():
                 self._show_error("Select an existing pretrained ACT checkpoint folder for fine-tuning.")
                 return
-            if not any((pretrained / name).is_file() for name in ("config.json", "policy_config.json")):
-                self._show_error("The selected folder does not contain an ACT policy config file.")
+            resolved_pretrained = resolve_pretrained_policy_dir(pretrained)
+            if resolved_pretrained is None:
+                self._show_error(
+                    "The selected folder does not contain an ACT policy config. Select its pretrained_model folder, "
+                    "the numbered checkpoint folder, or the run folder."
+                )
                 return
+            pretrained = resolved_pretrained
+            self.pretrained_policy.setText(str(pretrained))
         try:
-            episode_split = self._prepare_episode_split()
+            episode_split = self._prepare_episode_split(require_validation=pipeline_stage in {"train", "all"})
         except (OSError, ValueError, json.JSONDecodeError) as error:
             self._show_error(str(error))
             return
@@ -2444,8 +2572,11 @@ class TrainingWindow(QMainWindow):
             "--save-freq", str(self.save_freq.value()),
             "--log-freq", str(self.log_freq.value()),
             "--episodes", self._compress_episode_ids(episode_split["train_episodes"]),
+            "--validation-freq", str(self.log_freq.value()),
             "--stage", pipeline_stage,
         ]
+        if episode_split["validation_episodes"]:
+            args.extend(["--validation-episodes", self._compress_episode_ids(episode_split["validation_episodes"])])
         args.extend(["--lr", learning_rate])
         if not self.pretrained_backbone.isChecked():
             args.append("--no-pretrained-backbone")
@@ -2590,12 +2721,17 @@ class TrainingWindow(QMainWindow):
         self._live_output_buffer = ""
         self._metric_step = 0
         self.live_loss_chart.clear()
+        self.live_action_chart.clear()
+        self.live_kl_chart.clear()
+        self.live_gradient_chart.clear()
+        self.live_lr_chart.clear()
         for label in self.live_metric_labels.values():
             label.setText("—")
         self._task_kind = kind
         self._task_output = name
         self._task_total_steps = self.steps.value() if kind == "training" and hasattr(self, "steps") else 0
-        if self._task_total_steps:
+        running_all = self._pipeline_requested_stage == "all"
+        if self._task_total_steps and not running_all and self._pipeline_requested_stage == "train":
             self.progress.setRange(0, self._task_total_steps)
             self.progress.setValue(0)
         else:
@@ -2606,7 +2742,9 @@ class TrainingWindow(QMainWindow):
         self.process.setProcessEnvironment(environment)
         self.process.setWorkingDirectory(str(REPO_ROOT))
         self.process.start(str(python), args)
-        self.task_label.setText(f"{kind.title()} running · {name}")
+        self.task_label.setText(
+            f"Running all steps · Validate · {name}" if running_all else f"{kind.title()} running · {name}"
+        )
         self.stop_button.setEnabled(True)
         self.progress.show()
         self.metric_refresh_timer.start()
@@ -2661,6 +2799,13 @@ class TrainingWindow(QMainWindow):
                 self._set_pipeline_status(stage, "Complete")
             else:
                 self._set_pipeline_status(stage, "Running")
+            if self._pipeline_requested_stage == "all":
+                self.task_label.setText(f"Running all steps · {stage.title()} · {self._task_output}")
+                if stage == "train" and self._task_total_steps:
+                    self.progress.setRange(0, self._task_total_steps)
+                    self.progress.setValue(min(self._metric_step, self._task_total_steps))
+                elif stage != "train":
+                    self.progress.setRange(0, 0)
 
     def _consume_live_metrics(self, text: str) -> None:
         self._live_output_buffer += text
@@ -2671,6 +2816,10 @@ class TrainingWindow(QMainWindow):
         patterns = {
             "loss": r"\bloss\s*[:=]\s*([-+0-9.eE]+)",
             "eval_loss": r"\beval_loss\s*[:=]\s*([-+0-9.eE]+)",
+            "train_l1_loss": r"\btrain_l1_loss\s*[:=]\s*([-+0-9.eE]+)",
+            "eval_l1_loss": r"\beval_l1_loss\s*[:=]\s*([-+0-9.eE]+)",
+            "train_kld_loss": r"\btrain_kld_loss\s*[:=]\s*([-+0-9.eE]+)",
+            "eval_kld_loss": r"\beval_kld_loss\s*[:=]\s*([-+0-9.eE]+)",
             "grad_norm": r"\b(?:grad_norm|grdn)\s*[:=]\s*([-+0-9.eE]+)",
             "lr": r"\blr\s*[:=]\s*([-+0-9.eE]+)",
             "samples_per_s": r"\b(?:samples_per_s|smp/s)\s*[:=]\s*([-+0-9.eE]+)",
@@ -2699,6 +2848,16 @@ class TrainingWindow(QMainWindow):
                             )
                         except ValueError:
                             pass
+                    elif key in {"train_l1_loss", "eval_l1_loss"} and self._metric_step:
+                        name = "Train action L1" if key == "train_l1_loss" else "Validation action L1"
+                        self.live_action_chart.add_value(name, self._metric_step, float(raw_value))
+                    elif key in {"train_kld_loss", "eval_kld_loss"} and self._metric_step:
+                        name = "Train KL loss" if key == "train_kld_loss" else "Validation KL loss"
+                        self.live_kl_chart.add_value(name, self._metric_step, float(raw_value))
+                    elif key == "grad_norm" and self._metric_step:
+                        self.live_gradient_chart.add_value("Gradient norm", self._metric_step, float(raw_value))
+                    elif key == "lr" and self._metric_step:
+                        self.live_lr_chart.add_value("Learning rate", self._metric_step, float(raw_value))
 
     def _append_text(self, text: str) -> None:
         cursor = self.log.textCursor()
@@ -2848,7 +3007,7 @@ class TrainingWindow(QMainWindow):
             QPushButton:disabled { color: #a4a8b0; background: #f1f2f4; }
             QPushButton#primaryButton { color: #ffffff; background: #c91d30; border-color: #c91d30; }
             QPushButton#primaryButton:hover { background: #ad1829; }
-            QProgressBar { border: 0; background: #e4e5e9; border-radius: 4px; height: 8px; }
+            QProgressBar { border: 0; background: #e4e5e9; border-radius: 5px; height: 18px; color: #373c45; font-size: 10px; }
             QProgressBar::chunk { background: #d51f34; border-radius: 4px; }
             QStatusBar { background: #e8e9ed; color: #5c626d; }
             QCheckBox { spacing: 8px; }
