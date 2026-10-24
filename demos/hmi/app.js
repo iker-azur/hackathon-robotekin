@@ -418,7 +418,7 @@ function applyPoses(poses, live = false, sourceError = null) {
     $('trace-distance').textContent = '—';
   }
   traces.visible = demo && ghostsVisible;
-  workcellBoxes.visible = demo;
+  workcellBoxes.visible = true;
   inspectionSpot.visible = demo;
   if (workflow) {
     $('classifier-state').textContent = workflow.stage === 'clasificando'
