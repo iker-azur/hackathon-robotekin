@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+MAX_FIRST_GAP = 60  # degrees; a larger first action means the input is not what the policy was trained on
 CAMERA_IDS = {  # same USB IDs as 17b_record_real_so101_live.py
     "front": "*Wed_Camera*video-index0",
     "wrist": "*USB2.0_CAM1*video-index0",
@@ -50,8 +51,11 @@ def main() -> int:
     parser.add_argument("--camera-height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--seconds", type=float, default=30, help="stop after this long")
-    parser.add_argument("--max-step", type=float, default=8,
-                        help="largest joint move (degrees) the follower accepts per step; lower is safer")
+    parser.add_argument("--max-step", type=float, default=3,
+                        help="largest joint move (degrees) the follower accepts per step; teleop moves "
+                             "about 3 per frame at the 95th percentile, so lower is safer")
+    parser.add_argument("--save-frames", default=None,
+                        help="folder to save the first front and wrist frame the policy sees (JPEG)")
     parser.add_argument("--dry-run", action="store_true", help="predict and print, but do not move the arm")
     parser.add_argument("--device", default=None, help="default: cuda if available, else cpu")
     args = parser.parse_args()
@@ -104,12 +108,25 @@ def main() -> int:
             batch["task"], batch["robot_type"] = "", ""
             with torch.inference_mode():
                 action = post(policy.select_action(pre(batch))).squeeze(0).cpu().numpy()
+            if steps == 0:
+                if args.save_frames:
+                    import cv2
+                    Path(args.save_frames).mkdir(parents=True, exist_ok=True)
+                    for name in cameras:
+                        cv2.imwrite(str(Path(args.save_frames) / f"first_{name}.jpg"),
+                                    cv2.cvtColor(obs[name], cv2.COLOR_RGB2BGR))
+                print(f"joints {JOINTS}", flush=True)
+                if not args.dry_run and np.abs(action - state).max() > MAX_FIRST_GAP:
+                    raise RuntimeError(
+                        f"the first action is {np.abs(action - state).max():.0f} degrees from the arm's "
+                        f"position (state {state.round().tolist()}, action {action.round().tolist()}); "
+                        "not moving. Run with --dry-run and --save-frames to see why.")
             if not args.dry_run:
                 robot.send_action({f"{j}.pos": float(a) for j, a in zip(JOINTS, action)})
             steps += 1
-            if steps % args.fps == 0:
-                print(f"t={time.perf_counter() - start:5.1f}s  max |action-state|="
-                      f"{np.abs(action - state).max():5.1f}  gripper action {action[-1]:5.1f}", flush=True)
+            if steps == 1 or steps % args.fps == 0:
+                print(f"t={time.perf_counter() - start:5.1f}s  state {state.round().astype(int).tolist()}  "
+                      f"action {action.round().astype(int).tolist()}", flush=True)
             precise_sleep(max(period - (time.perf_counter() - cycle), 0.0))
         elapsed = time.perf_counter() - start
         print(f"done: {steps} steps in {elapsed:.1f} s ({steps / elapsed:.1f} steps/s; the target is {args.fps})")
