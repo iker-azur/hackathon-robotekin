@@ -93,11 +93,33 @@ def patch_last_checkpoint_windows() -> None:
     def update_last_checkpoint(checkpoint_dir):
         checkpoint_dir = Path(checkpoint_dir)
         link = checkpoint_dir.parent / LAST_CHECKPOINT_LINK
-        if link.is_symlink() or link.is_file():
-            link.unlink()
-        elif link.is_dir():
-            shutil.rmtree(link)
-        shutil.copytree(checkpoint_dir, link)
+        suffix = f"{os.getpid()}-{time.time_ns()}"
+        staged = link.with_name(f"{link.name}.tmp-{suffix}")
+        backup = link.with_name(f"{link.name}.old-{suffix}")
+        shutil.copytree(checkpoint_dir, staged)
+
+        try:
+            if link.exists() or link.is_symlink():
+                os.replace(link, backup)
+            os.replace(staged, link)
+        except OSError as exc:
+            if backup.exists() and not link.exists():
+                try:
+                    os.replace(backup, link)
+                except OSError:
+                    pass
+            shutil.rmtree(staged, ignore_errors=True)
+            if link.exists():
+                print(
+                    f"[Checkpoint] Could not refresh 'last' because Windows/OneDrive locked it: {exc}. "
+                    f"The numbered checkpoint at {checkpoint_dir} is saved; keeping the previous 'last'.",
+                    flush=True,
+                )
+                return link
+            raise
+
+        if backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
         return link
 
     train_utils.update_last_checkpoint = update_last_checkpoint
