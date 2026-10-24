@@ -218,10 +218,15 @@ def patch_hf_checkpoint_upload(args) -> None:
                 try:
                     shutil.rmtree(previous)
                 except OSError as error:
-                    raise RuntimeError(
-                        f"Checkpoint {checkpoint_dir.name} is safely stored on Hugging Face, "
-                        f"but older local checkpoint {previous.name} could not be removed: {error}"
-                    ) from error
+                    # OneDrive may hold a reparse-point/junction open. The new checkpoint
+                    # is already verified on the Hub; failure to prune a local copy must
+                    # not abort the remaining training steps.
+                    print(
+                        f"[Checkpoint] Warning: {checkpoint_dir.name} is safely stored on Hugging Face, "
+                        f"but older local checkpoint {previous.name} could not be removed: {error}",
+                        flush=True,
+                    )
+                    continue
                 print(f"[Checkpoint] Removed older local checkpoint {previous.name} after Hub upload.", flush=True)
 
     lerobot_train.save_checkpoint = save_checkpoint_and_upload
@@ -474,11 +479,51 @@ def build_cfg(args):
     if args.init_from:
         policy.pretrained_path = Path(args.init_from)
     out = Path(args.output).resolve()
-    return TrainPipelineConfig(
+    cfg = TrainPipelineConfig(
         dataset=DatasetConfig(repo_id=repo_id, root=str(root), episodes=parse_episodes(args.episodes)),
         policy=policy, output_dir=out, job_name=out.name, seed=args.seed, batch_size=args.batch, steps=args.steps,
         num_workers=args.workers, save_freq=args.save_freq or max(1000, args.steps // 5), log_freq=args.log_freq,
         eval_freq=args.steps + 1)       # LeRobot no tiene aquí un entorno de evaluación: se evalúa con tools/eval_sorting.py
+    if args.lr_schedule == "cosine":
+        from lerobot.optim.schedulers import CosineDecayWithWarmupSchedulerConfig
+
+        cfg.use_policy_training_preset = False
+        cfg.optimizer = policy.get_optimizer_preset()
+        cfg.scheduler = CosineDecayWithWarmupSchedulerConfig(
+            num_warmup_steps=min(args.lr_warmup_steps, max(0, args.steps - 1)),
+            num_decay_steps=args.steps,
+            peak_lr=args.lr,
+            decay_lr=args.lr * args.lr_final_fraction,
+        )
+    return cfg
+
+
+def configure_resume(cfg, checkpoint_dir: str | Path, target_steps: int) -> None:
+    """Resume optimizer, scheduler, RNG and policy weights from a complete local checkpoint."""
+    checkpoint = Path(checkpoint_dir).resolve()
+    required = (
+        checkpoint / "pretrained_model" / "config.json",
+        checkpoint / "pretrained_model" / "model.safetensors",
+        checkpoint / "training_state" / "training_step.json",
+        checkpoint / "training_state" / "optimizer_state.safetensors",
+        checkpoint / "training_state" / "scheduler_state.json",
+    )
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise SystemExit("El checkpoint no está completo; faltan: " + ", ".join(missing))
+
+    step_data = json.loads((checkpoint / "training_state" / "training_step.json").read_text(encoding="utf-8"))
+    resume_step = int(step_data.get("step", -1))
+    if resume_step < 0 or resume_step >= target_steps:
+        raise SystemExit(f"El checkpoint está en el paso {resume_step}; el objetivo debe ser mayor que ese valor.")
+
+    cfg.resume = True
+    cfg.checkpoint_path = checkpoint
+    cfg.policy.pretrained_path = checkpoint / "pretrained_model"
+    # build_cfg already validated the CLI values. LeRobot's resume validator expects a
+    # config_path CLI argument; this script constructs the config directly instead.
+    cfg.validate = lambda: None
+    print(f"[Resume] Reanudando desde el paso {resume_step}: {checkpoint}", flush=True)
 
 
 def write_info(args, root: Path, out: Path) -> None:
@@ -608,6 +653,12 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=50000)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--lr", type=float, default=1e-5)
+    ap.add_argument("--lr-schedule", choices=("constant", "cosine"), default="constant",
+                    help="learning-rate schedule; cosine decays to --lr-final-fraction after warmup")
+    ap.add_argument("--lr-final-fraction", type=float, default=0.1,
+                    help="final LR as a fraction of --lr for the cosine schedule")
+    ap.add_argument("--lr-warmup-steps", type=int, default=200,
+                    help="linear warmup steps for the cosine schedule")
     ap.add_argument("--vision-backbone", choices=("resnet18", "resnet34", "resnet50"), default="resnet18")
     ap.add_argument("--temporal-ensemble-coeff", type=float, default=None)
     ap.add_argument("--replace-final-stride", action="store_true")
@@ -639,6 +690,8 @@ def main() -> int:
     ap.add_argument("--log-freq", type=int, default=200)
     ap.add_argument("--validation-freq", type=int, default=None, help="frecuencia de cálculo de métricas de validación")
     ap.add_argument("--init-from", default=None, help="carpeta pretrained_model desde la que continuar (afinado)")
+    ap.add_argument("--resume-from", default=None,
+                    help="checkpoint completo de entrenamiento para continuar con optimizer/scheduler/RNG")
     ap.add_argument("--hub-repo-id", default=None, help="repositorio privado de modelos para guardar checkpoints")
     ap.add_argument("--hub-path-prefix", default="", help="subcarpeta del repo Hub para esta ejecución")
     ap.add_argument("--no-pretrained-backbone", action="store_true", help="no descargar los pesos ImageNet del ResNet (sin red)")
@@ -656,12 +709,16 @@ def main() -> int:
         ap.error("--dropout must be in the range [0, 1)")
     if args.weight_decay < 0 or args.backbone_lr <= 0 or args.lr <= 0:
         ap.error("learning rates must be positive and weight decay cannot be negative")
+    if not 0 < args.lr_final_fraction <= 1 or args.lr_warmup_steps < 0:
+        ap.error("cosine LR final fraction must be in (0, 1] and warmup steps cannot be negative")
     if args.temporal_ensemble_coeff is not None:
         if args.temporal_ensemble_coeff <= 0 or args.action_steps != 1:
             ap.error("temporal ensembling requires a positive coefficient and --action-steps 1")
+    if args.resume_from and args.init_from:
+        ap.error("--resume-from y --init-from son excluyentes")
 
     args.output = args.output or f"outputs/act_{args.obs_mode}_{time.strftime('%Y%m%d_%H%M')}"
-    if args.stage in {"train", "all"} and Path(args.output).exists():
+    if args.stage in {"train", "all"} and Path(args.output).exists() and not args.resume_from:
         print(f"ERROR: {args.output} ya existe (LeRobot no reutiliza carpetas); usa otro --output")
         return 1
 
@@ -682,6 +739,8 @@ def main() -> int:
     cfg = build_cfg(args)
     report_stage_progress("prepare", 1, 2)
     print(f"[Prepare] Dataset: {cfg.dataset.root} · entradas: {sorted(cfg.policy.input_features)} · salida: {args.output}", flush=True)
+    if args.resume_from:
+        configure_resume(cfg, args.resume_from, args.steps)
     report_stage_progress("prepare", 2, 2)
     if args.stage == "prepare":
         print("[Prepare] Preparación completada correctamente; no se inició el entrenamiento.", flush=True)
