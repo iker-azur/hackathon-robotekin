@@ -3,11 +3,15 @@
 One Tk window (same approach as ``17b_record_real_so101_live.py``) over the real SO-101 follower:
 
     - the front and wrist camera, live;
-    - the pin classifier of ``22_train_pin_classifier.py`` on those two frames, about 6 times a second,
-      shown as "PIN / NO PIN" with its probability;
     - SPACE starts the pick policy (``23_run_act_so101.py`` does the same without a window). It runs for
-      ``--pick-seconds`` or until you press S; the arm then keeps its position and the RESULT is the
-      classifier averaged over the last 1.5 s, i.e. while the piece is held up to the cameras.
+      at most ``--pick-seconds``. After at least 5 s, a pose that tracks a stable policy target for
+      2 s finishes early. The app then holds the measured arm pose and last gripper target with torque
+      kept enabled, so the gripper keeps its grip on the piece;
+    - only after that hold command, ``classification_enabled`` enables the pin classifier of
+      ``22_train_pin_classifier.py``. After a brief settling pause, it averages 1.5 s of fresh
+      front/wrist frames and shows the RESULT. No ACT targets are sent during classification.
+
+S holds the current pose and cancels the pick/classification without producing a result.
 
 Keys (the window must have focus):  SPACE start the pick   S stop it   Q / Esc quit.
 
@@ -28,12 +32,16 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import time
+from collections import deque
 from pathlib import Path
 
 DEMO_DIR = Path(__file__).resolve().parent
 PREVIEW_INTERVAL = 1 / 6  # camera view and classifier refresh
-RESULT_WINDOW_S = 1.5  # the result averages the classifier over this long at the end of the pick
-COLORS = {"idle": "#1f7a3a", "running": "#b3261e", "result": "#9a6700"}
+SETTLE_S = 0.5  # let the arm and camera view settle after the hold command
+RESULT_WINDOW_S = 1.5  # classify only stationary frames captured after settling
+MIN_PICK_S = 5.0  # avoid declaring completion at the initial rest pose
+POSE_WINDOW_S = 2.0  # span multiple ACT updates before declaring the final pose settled
+COLORS = {"idle": "#1f7a3a", "running": "#b3261e", "classifying": "#1565c0", "result": "#9a6700"}
 
 
 def load_script(name: str):
@@ -68,6 +76,25 @@ def resolve_classifier(spec: str) -> Path:
 
 def label(p: float) -> str:
     return f"PIN ({p:.0%})" if p >= 0.5 else f"NO PIN ({1 - p:.0%})"
+
+
+def pose_is_settled(samples, elapsed: float) -> bool:
+    """Check raw targets and measured poses; gripper contact need not reach its closing target."""
+    import numpy as np
+
+    while len(samples) > 1 and samples[1][0] <= elapsed - POSE_WINDOW_S:
+        samples.popleft()
+    if elapsed < MIN_PICK_S or len(samples) < 2 or elapsed - samples[0][0] < POSE_WINDOW_S:
+        return False
+    states = np.array([state for _, state, _ in samples])
+    targets = np.array([target for _, _, target in samples])
+    return bool(
+        np.all(np.abs(targets[:, :-1] - states[:, :-1]) <= 3.0)  # arm target error, degrees
+        and np.all(np.ptp(states[:, :-1], axis=0) <= 1.0)  # measured arm drift, degrees
+        and np.all(np.ptp(targets[:, :-1], axis=0) <= 2.0)  # policy target drift, degrees
+        and np.ptp(states[:, -1]) <= 3.0  # measured gripper drift, percentage points
+        and np.ptp(targets[:, -1]) <= 3.0  # gripper target drift, percentage points
+    )
 
 
 class Window:
@@ -131,9 +158,10 @@ def main() -> int:
     parser.add_argument("--camera-width", type=int, default=640)
     parser.add_argument("--camera-height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--pick-seconds", type=float, default=20, help="the pick stops by itself after this long")
-    parser.add_argument("--max-step", type=float, default=3,
-                        help="largest joint move (degrees) the follower accepts per step")
+    parser.add_argument("--pick-seconds", type=float, default=20,
+                        help="maximum pick duration; a settled pose can finish earlier")
+    parser.add_argument("--max-step", type=float, default=8.0,
+                        help="target offset from measured position: joint degrees, gripper percentage points")
     parser.add_argument("--device", default=None, help="default: cuda if available, else cpu")
     args = parser.parse_args()
     if args.fps <= 0 or args.pick_seconds <= 0 or args.max_step <= 0:
@@ -169,6 +197,9 @@ def main() -> int:
     keys = []
     window = Window(keys.append)
     phase, run_start, first, history, result, note = "idle", 0.0, False, [], "", ""
+    classification_enabled, classify_start, stop_requested = False, 0.0, False
+    last_gripper_target = None
+    pose_history = deque()
     next_show = 0.0
     robot.connect()
     try:
@@ -179,16 +210,21 @@ def main() -> int:
                 key = keys.pop(0)
                 if key in ("q", "escape"):
                     window.close()
-                elif key == "space" and phase != "running":
+                elif key == "space" and phase in ("idle", "result"):
                     policy.reset()
                     phase, run_start, first, history, result, note = "running", cycle, True, [], "", ""
-                elif key == "s" and phase == "running":
-                    phase, note, result = "result", "stopped by you", None
+                    classification_enabled = False
+                    last_gripper_target = None
+                    pose_history.clear()
+                elif key == "s" and phase in ("running", "classifying"):
+                    stop_requested = True
             if not window.open:
                 break
 
             obs = robot.get_observation()
-            if phase == "running":
+            timed_out = phase == "running" and cycle - run_start >= args.pick_seconds
+            reached_pose = False
+            if phase == "running" and not stop_requested and not timed_out:
                 state = np.array([obs[f"{j}.pos"] for j in runner.JOINTS], dtype=np.float32)
                 batch = {"observation.state": torch.from_numpy(state).unsqueeze(0).to(device),
                          "task": "", "robot_type": ""}
@@ -202,22 +238,45 @@ def main() -> int:
                     phase, note = "idle", (f"not moving: the first action is {gap:.0f} degrees from the "
                                            "arm (is it at the rest pose, above the tray?)")
                 else:
-                    robot.send_action({f"{j}.pos": float(a) for j, a in zip(runner.JOINTS, action)})
+                    pose_history.append((cycle - run_start, state.copy(), action.copy()))
+                    reached_pose = pose_is_settled(pose_history, cycle - run_start)
+                    if not reached_pose:
+                        sent_action = robot.send_action({f"{j}.pos": float(a) for j, a in zip(runner.JOINTS, action)})
+                        last_gripper_target = sent_action["gripper.pos"]
                 first = False
-                if phase == "running" and cycle - run_start >= args.pick_seconds:
-                    phase, note, result = "result", "pick finished", None
+
+            if stop_requested or (phase == "running" and (timed_out or reached_pose)):
+                hold_action = {f"{j}.pos": float(obs[f"{j}.pos"]) for j in runner.JOINTS}
+                # Preserve the closing target so holding the arm does not release gripper pressure.
+                if last_gripper_target is not None:
+                    hold_action["gripper.pos"] = last_gripper_target
+                robot.send_action(hold_action)
+                history, result = [], ""
+                classification_enabled = not stop_requested
+                phase = "classifying" if classification_enabled else "idle"
+                reason = "position reached" if reached_pose else "time limit reached"
+                note = f"{reason}; holding pose" if classification_enabled else "stopped; holding pose"
+                classify_start = cycle + SETTLE_S
+                stop_requested = False
 
             if cycle >= next_show:
-                p = classifier(obs["front"], obs["wrist"])
-                history.append((cycle, p))
-                if phase == "result" and result is None:
-                    recent = [q for t, q in history if t >= cycle - RESULT_WINDOW_S] or [p]
-                    result = f"RESULT: {label(sum(recent) / len(recent))}"
+                live = {"idle": "Classifier waits until the pick finishes",
+                        "running": "Classifier disabled while picking",
+                        "classifying": "Holding pose; waiting for the camera view to settle",
+                        "result": "Classification finished; motors holding pose"}[phase]
+                if classification_enabled and cycle >= classify_start:
+                    p = classifier(obs["front"], obs["wrist"])
+                    history.append((cycle, p))
+                    live = "classifier now: " + label(p)
+                    if cycle - history[0][0] >= RESULT_WINDOW_S:
+                        result = f"RESULT: {label(sum(q for _, q in history) / len(history))}"
+                        phase, classification_enabled = "result", False
                 status = {"idle": "READY - SPACE starts the pick",
                           "running": f"PICKING {cycle - run_start:4.1f} s / {args.pick_seconds:.0f} s - S stops",
+                          "classifying": "CLASSIFYING - motors holding pose - S cancels",
                           "result": "DONE - SPACE picks again"}[phase]
                 window.show([obs["front"], obs["wrist"]], f"{status}   {note}", COLORS[phase],
-                            "classifier now: " + label(p), result or "")
+                            live, result)
                 next_show = cycle + PREVIEW_INTERVAL
             precise_sleep(max(period - (time.perf_counter() - cycle), 0.0))
     except KeyboardInterrupt:
