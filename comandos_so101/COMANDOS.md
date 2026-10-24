@@ -63,12 +63,27 @@ Sigue las instrucciones de centrado y recorrido completo. Si aparece la pregunta
 Con ambos brazos conectados y calibrados, ejecuta:
 
 ```bash
+shopt -s nullglob
+leader_ports=(/dev/serial/by-id/*5A7A054669*)
+follower_ports=(/dev/serial/by-id/*5B3E090058*)
+if ((${#leader_ports[@]} != 1 || ${#follower_ports[@]} != 1)); then
+  echo "Se requiere exactamente un enlace serie para cada ID (leader 5A7A054669, follower 5B3E090058)." >&2
+  exit 1
+fi
+LEADER_PORT=${leader_ports[0]}
+FOLLOWER_PORT=${follower_ports[0]}
+if [[ ! -e "$LEADER_PORT" || ! -e "$FOLLOWER_PORT" ]]; then
+  echo "Uno de los enlaces serie por ID no apunta a un dispositivo conectado." >&2
+  exit 1
+fi
+printf 'Leader: %s\nFollower: %s\n' "$LEADER_PORT" "$FOLLOWER_PORT"
+
 .venv/bin/python comandos_so101/lerobot_teleoperate_hmi.py \
   --robot.type=so101_follower \
-  --robot.port=/dev/ttyACM1 \
+  --robot.port="$FOLLOWER_PORT" \
   --robot.id=mi_follower \
   --teleop.type=so101_leader \
-  --teleop.port=/dev/ttyACM0 \
+  --teleop.port="$LEADER_PORT" \
   --teleop.id=mi_leader
 ```
 
