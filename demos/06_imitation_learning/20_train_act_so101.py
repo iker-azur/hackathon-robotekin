@@ -65,10 +65,12 @@ def read_sources(root: Path) -> list[dict]:
     return json.loads((root / "meta" / "sources.json").read_text(encoding="utf-8"))
 
 
-def select_episodes(sources: list[dict], regimes: list[str] | None, groups: list[str]) -> list[int]:
+def select_episodes(sources: list[dict], regimes: list[str] | None, groups: list[str],
+                    exclude: list[int] = ()) -> list[int]:
     return [
         s["episode_index"] for s in sources
         if not s["holdout"] and s["group"] in groups and (regimes is None or s["regime"] in regimes)
+        and s["episode_index"] not in exclude
     ]
 
 
@@ -152,6 +154,8 @@ def main() -> int:
                         help="train only on these, e.g. 30fps-480p (default: every regime in the dataset)")
     parser.add_argument("--groups", nargs="+", default=None,
                         help="train only on these groups of the dataset (default: every group in it)")
+    parser.add_argument("--exclude", nargs="+", type=int, default=[], metavar="EPISODE",
+                        help="dataset episode indices to leave out of training (held-out ones are unaffected)")
     parser.add_argument("--steps", type=int, default=DEFAULT_STEPS)
     parser.add_argument("--batch", type=int, default=DEFAULT_BATCH)
     parser.add_argument("--chunk", type=int, default=DEFAULT_CHUNK)
@@ -189,7 +193,7 @@ def main() -> int:
 
     sources = read_sources(root)
     args.groups = args.groups or sorted({s["group"] for s in sources})
-    episodes = select_episodes(sources, args.regimes, args.groups)
+    episodes = select_episodes(sources, args.regimes, args.groups, args.exclude)
     if not episodes:
         print(f"ERROR: no episodes match --regimes {args.regimes} --groups {args.groups}; "
               f"the dataset has {sorted({s['regime'] for s in sources})}")
@@ -230,7 +234,8 @@ def main() -> int:
 
     last = output_dir / "checkpoints" / "last" / "pretrained_model"
     (output_dir / "run.json").write_text(json.dumps({
-        "regimes": args.regimes, "groups": args.groups, "episodes": len(episodes), "steps": args.steps,
+        "regimes": args.regimes, "groups": args.groups, "exclude": args.exclude,
+        "episodes": len(episodes), "steps": args.steps,
         "batch": args.batch, "chunk": args.chunk, "augment": not args.no_augment,
     }, indent=2) + "\n", encoding="utf-8")
     torch.cuda.empty_cache() if args.device == "cuda" else None

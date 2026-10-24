@@ -6,10 +6,13 @@ One run builds the training dataset of ONE policy, chosen with ``--kind``:
     good   ``up-down_*``            (17b key w: carry it from the camera to the good box)
     bad    ``up-down-bad_*``        (17b key a: carry it from the camera to the bad box)
 
-Only sessions recorded with ``17b_record_real_so101_live.py`` are used (they carry
-``meta/recording_notes.json``): the earlier ``up-down`` sessions are return trips, not
-carries to a box, and the earlier ``pick-cube`` sessions end at the bin, not at the camera
-(``--include-legacy`` adds those, for ``--kind pick`` only).
+By default only sessions recorded with ``17b_record_real_so101_live.py`` are used (they
+carry ``meta/recording_notes.json``). The earlier ``pick-cube`` sessions are the same task
+(pick a piece from the tray and present it to the camera: their end poses and last frames
+match the 17b ones), only with many pieces in the tray instead of one, and
+``--include-legacy`` adds them (``--kind pick`` only). The earlier ``up-down`` sessions
+look like the same carry to the good box, but that has not been confirmed, so they are not
+offered.
 
 The recordings were made in incompatible configurations, so LeRobot cannot merge
 them as they are:
