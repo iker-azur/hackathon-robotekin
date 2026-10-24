@@ -6,13 +6,13 @@ import json
 import logging
 import threading
 import time
-from math import pi
+from pathlib import Path
 from urllib.request import Request, urlopen
 
 from lerobot.scripts import lerobot_teleoperate
 
 
-HMI_TELEMETRY_URL = "http://10.186.203.205:8790/api/telemetry"
+HMI_TELEMETRY_URL = "http://127.0.0.1:8790/api/telemetry"
 JOINTS = (
     "shoulder_pan",
     "shoulder_lift",
@@ -21,14 +21,15 @@ JOINTS = (
     "wrist_roll",
     "gripper",
 )
-USD_LIMITS_DEG = {
-    "shoulder_pan": (-110.0, 110.0),
-    "shoulder_lift": (-100.0, 100.0),
-    "elbow_flex": (-100.0, 90.0),
-    "wrist_flex": (-95.0, 95.0),
-    "wrist_roll": (-160.0, 160.0),
-    "gripper": (-10.0, 100.0),
-}
+KINEMATICS_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "demos/08_recovery_kit/assets/so101/kinematics.json"
+)
+with KINEMATICS_PATH.open(encoding="utf-8") as kinematics_file:
+    USD_LIMITS_RAD = {
+        joint["name"]: (joint["lower"], joint["upper"])
+        for joint in json.load(kinematics_file)["joints"]
+    }
 MOTOR_RESOLUTION = 4095
 PUBLISH_PERIOD_S = 1 / 20
 
@@ -42,7 +43,7 @@ def observation_to_usd_radians(observation, calibration, use_degrees):
         value = float(observation[f"{name}.pos"])
         range_min = calibration[name].range_min
         range_max = calibration[name].range_max
-        usd_min_deg, usd_max_deg = USD_LIMITS_DEG[name]
+        usd_min_rad, usd_max_rad = USD_LIMITS_RAD[name]
 
         if name == "gripper":
             # SOFollower always uses RANGE_0_100 for the gripper.
@@ -55,8 +56,7 @@ def observation_to_usd_radians(observation, calibration, use_degrees):
             # RANGE_M100_100 maps calibrated minimum/maximum to -100/+100.
             fraction = (value + 100.0) / 200.0
 
-        usd_degrees = usd_min_deg + fraction * (usd_max_deg - usd_min_deg)
-        joints[name] = usd_degrees * pi / 180
+        joints[name] = usd_min_rad + fraction * (usd_max_rad - usd_min_rad)
 
     return {"joints": joints}
 
