@@ -200,6 +200,7 @@ When the user corrects your approach, append a one-line rule here before ending 
 - Build 04e ZIPs locally with byte progress and single-pass source hashing; export-only helper updates must remain compatible with saved inference settings.
 - When asked for only a replacement export cell, provide a standalone pasteable cell with its own imports/defaults (no bare EXPORT_LOCAL_DIR dependency); leave notebook configuration and inference cells unchanged.
 - For Drive export listing, use scandir metadata and bounded parallel folders, not per-file resolve/is_file/stat calls; checkpoint frozen-output inventories and require refresh after in-place mask edits.
+- Read an existing recording script (demos/06 17_record_real_so101.py: r=discard, q=save) before proposing features it may already have; lerobot ships opencv-python-headless, so use Tk, not cv2.imshow, for live camera windows.
 
 ---
 
