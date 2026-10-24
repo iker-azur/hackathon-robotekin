@@ -1,0 +1,145 @@
+# Hand-written test sentences. NOT produced by the grammars and never used for training or calibration.
+# lang | sentence | intent | feature | quality | box | count        (written by the assistant, not by operators)
+es | Mueve las piezas con perno a la caja grande | move | bolt | any | big | all
+es | Clasifica las piezas malas en la caja blanca | sort | any | bad | white | all
+es | Pon las piezas sin perno en la caja blanca | move | no bolt | any | white | all
+es | Las piezas buenas van a la caja grande | move | any | good | big | all
+es | Lleva todas las defectuosas a la caja blanca | move | any | bad | white | all
+es | Quiero que metas las piezas buenas en la caja grande | move | any | good | big | all
+es | Coge una pieza con perno | pick | bolt | any | none | one
+es | Agarra la pieza mala | pick | any | bad | none | one
+es | Pon las piezas malas con perno en la caja pequeña | move | bolt | bad | other | all
+es | Mete las dos piezas sin perno en la caja blanca | move | no bolt | any | white | two
+es | Las malas a la blanca | move | any | bad | white | all
+es | Las que tienen perno a la grande y las demás a la blanca | both | any | any | none | none
+es | Cuando puedas, manda las piezas defectuosas al contenedor blanco | move | any | bad | white | all
+es | Para | stop | any | any | none | none
+es | Cancela eso, por favor | cancel | any | any | none | none
+es | Repítelo | repeat | any | any | none | none
+es | Sí, esa | yes | any | any | none | none
+es | No, la otra | no | any | any | none | none
+es | Buenos días | hello | any | any | none | none
+es | ¿Cuántas piezas malas quedan? | ask | any | any | none | none
+es | ¿Qué hora es? | chat | any | any | none | none
+es | No muevas las piezas | refuse | any | any | none | none
+es | Tira las piezas malas a la basura | refuse | any | any | none | none
+es | La caja grande | reply | any | any | big | none
+es | Las que llevan perno | reply | bolt | any | none | all
+es | Todas | reply | any | any | none | all
+es | Pon las piezas en la caja roja | move | any | any | other | all
+es | Clasifica las piezas buenas | sort | any | good | none | all
+es | Mueve la pieza buena a la caja grande, no, a la blanca | move | any | good | white | one
+es | Organiza las piezas defectuosas dentro del contenedor blanco | sort | any | bad | white | all
+es | Oye robot, guarda las piezas con perno en la caja de mayor tamaño | move | bolt | any | big | all
+es | Necesito que separes las piezas rotas en la caja blanca | sort | any | bad | white | all
+es | ¿Puedes llevar las piezas buenas a la caja grande? | move | any | good | big | all
+es | Hola robot | hello | any | any | none | none
+es | Gracias | hello | any | any | none | none
+es | Pon música | chat | any | any | none | none
+es | Deja de moverte | stop | any | any | none | none
+es | Olvídalo | cancel | any | any | none | none
+es | Otra vez | repeat | any | any | none | none
+es | Vale | yes | any | any | none | none
+es | La blanca | reply | any | any | white | none
+es | Dos | reply | any | any | none | two
+es | Mueve tres piezas sin perno a la caja grande | move | no bolt | any | big | three
+es | Coloca las buenas en la blanca | move | any | good | white | all
+es | ¿Dónde está la caja blanca? | ask | any | any | none | none
+es | Estas piezas no tienen perno | refuse | any | any | none | none
+es | Separa las piezas con perno en la caja grande | sort | bolt | any | big | all
+es | Ahora lleva las piezas malas a la caja blanca | move | any | bad | white | all
+es | Mete las piezas defectuosas con perno en la caja grande | move | bolt | bad | big | all
+en | Move the pieces with a bolt to the big box | move | bolt | any | big | all
+en | Sort the bad pieces into the white box | sort | any | bad | white | all
+en | Put the pieces without a bolt in the white box | move | no bolt | any | white | all
+en | The good pieces go in the big box | move | any | good | big | all
+en | Take all the defective ones to the white box | move | any | bad | white | all
+en | I want you to put the good pieces in the large box | move | any | good | big | all
+en | Grab a piece with a bolt | pick | bolt | any | none | one
+en | Pick up the bad piece | pick | any | bad | none | one
+en | Put the bad pieces that have a bolt in the small box | move | bolt | bad | other | all
+en | Place the two pieces without a bolt in the white box | move | no bolt | any | white | two
+en | The bad ones to the white one | move | any | bad | white | all
+en | The ones with bolts to the big box and the rest to the white box | both | any | any | none | none
+en | When you can, send the faulty pieces to the white container | move | any | bad | white | all
+en | Stop | stop | any | any | none | none
+en | Cancel that, please | cancel | any | any | none | none
+en | Do it again | repeat | any | any | none | none
+en | Yes, that one | yes | any | any | none | none
+en | No, the other one | no | any | any | none | none
+en | Good morning | hello | any | any | none | none
+en | How many bad pieces are left? | ask | any | any | none | none
+en | What time is it? | chat | any | any | none | none
+en | Don't move the pieces | refuse | any | any | none | none
+en | Throw the bad pieces in the trash | refuse | any | any | none | none
+en | The big box | reply | any | any | big | none
+en | The ones that have a bolt | reply | bolt | any | none | all
+en | All of them | reply | any | any | none | all
+en | Put the pieces in the red box | move | any | any | other | all
+en | Classify the good pieces | sort | any | good | none | all
+en | Move the good piece to the big box, no, the white one | move | any | good | white | one
+en | Organize the defective pieces in the white container | sort | any | bad | white | all
+en | Hey robot, store the bolted pieces in the larger box | move | bolt | any | big | all
+en | I need you to separate the broken pieces into the white box | sort | any | bad | white | all
+en | Can you take the good pieces to the big box? | move | any | good | big | all
+en | Hello robot | hello | any | any | none | none
+en | Thanks | hello | any | any | none | none
+en | Play some music | chat | any | any | none | none
+en | Quit moving | stop | any | any | none | none
+en | Forget it | cancel | any | any | none | none
+en | One more time | repeat | any | any | none | none
+en | Okay | yes | any | any | none | none
+en | The white one | reply | any | any | white | none
+en | Two | reply | any | any | none | two
+en | Move three pieces without a bolt to the big box | move | no bolt | any | big | three
+en | Put the good ones in the white one | move | any | good | white | all
+en | Where is the white box? | ask | any | any | none | none
+en | These pieces have no bolt | refuse | any | any | none | none
+en | Separate the pieces with a bolt into the big box | sort | bolt | any | big | all
+en | Now take the bad pieces to the white box | move | any | bad | white | all
+en | Put the bad pieces with a bolt in the big box | move | bolt | bad | big | all
+eu | Mugitu perno duten piezak kutxa handira | move | bolt | any | big | all
+eu | Sailkatu pieza txarrak kutxa zurian | sort | any | bad | white | all
+eu | Perno gabeko piezak kutxa zurira eraman | move | no bolt | any | white | all
+eu | Pieza onak kutxa handian jarri | move | any | good | big | all
+eu | Pieza akastun guztiak kutxa zurira eraman | move | any | bad | white | all
+eu | Hartu pernodun pieza bat | pick | bolt | any | none | one
+eu | Hartu pieza txarra | pick | any | bad | none | one
+eu | Pieza txarrak kutxa txikira eraman | move | any | bad | other | all
+eu | Perno gabeko bi pieza kutxa zurira sartu | move | no bolt | any | white | two
+eu | Txarrak zurira | move | any | bad | white | all
+eu | Pernoa dutenak kutxa handira eta besteak zurira | both | any | any | none | none
+eu | Gelditu | stop | any | any | none | none
+eu | Ahaztu hori | cancel | any | any | none | none
+eu | Errepikatu | repeat | any | any | none | none
+eu | Bai | yes | any | any | none | none
+eu | Ez, bestea | no | any | any | none | none
+eu | Egun on | hello | any | any | none | none
+eu | Zenbat pieza txar geratzen dira? | ask | any | any | none | none
+eu | Zer ordu da? | chat | any | any | none | none
+eu | Ez mugitu piezak | refuse | any | any | none | none
+eu | Bota pieza txarrak zaborrontzira | refuse | any | any | none | none
+eu | Kutxa handia | reply | any | any | big | none
+eu | Perno dutenak | reply | bolt | any | none | all
+eu | Guztiak | reply | any | any | none | all
+eu | Piezak kutxa gorrira eraman | move | any | any | other | all
+eu | Sailkatu pieza onak | sort | any | good | none | all
+eu | Mesedez, antolatu pieza hondatuak kutxa zurian | sort | any | bad | white | all
+eu | Pernodun piezak kutxa handian gorde | move | bolt | any | big | all
+eu | Pieza zuzenak kutxa handira eraman ahal dituzu? | move | any | good | big | all
+eu | Kaixo robot | hello | any | any | none | none
+eu | Eskerrik asko | hello | any | any | none | none
+eu | Jarri musika | chat | any | any | none | none
+eu | Utzi mugitzen | stop | any | any | none | none
+eu | Ahaztu | cancel | any | any | none | none
+eu | Berriro | repeat | any | any | none | none
+eu | Ados | yes | any | any | none | none
+eu | Zuria | reply | any | any | white | none
+eu | Bi | reply | any | any | none | two
+eu | Perno gabeko hiru pieza kutxa handira eraman | move | no bolt | any | big | three
+eu | Non dago kutxa zuria? | ask | any | any | none | none
+eu | Kutxa handira pieza onak sartu | move | any | good | big | all
+eu | Pieza txarrak kutxa zurira, ez, handira eraman | move | any | bad | big | all
+eu | Eraman pieza txar bat kutxa zurira | move | any | bad | white | one
+eu | Pernodun pieza txarrak kutxa handira eraman | move | bolt | bad | big | all
+eu | Orain eraman pieza txarrak kutxa zurira | move | any | bad | white | all
