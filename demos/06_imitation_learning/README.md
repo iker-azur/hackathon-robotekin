@@ -308,6 +308,85 @@ garantizan un mejor resultado. La nueva recogida v2 usa el mismo contrato de
 entradas y salidas; su ficha del Hub documenta una evaluación offline, todavía
 sin validación de agarre en el robot real.
 
+### Demo completa: voz → pieza → clasificación → caja (`30_full_demo_app.py`)
+
+Una sola ventana con las dos cámaras en directo que encadena todo el proceso sobre el SO-101 real. Reutiliza
+de `24_pick_and_classify_app.py` los cargadores de modelos, el clasificador, la parada automática y la corrección
+de altura, y añade la voz, las órdenes, el detector de pieza y el bucle:
+
+```bash
+.venv/bin/python demos/06_imitation_learning/30_full_demo_app.py            # brazo en reposo sobre la bandeja
+```
+
+1. **Orden por voz** (`V` o el botón; también se puede escribir). faster-whisper detecta si hablas español,
+   inglés o euskera (`small` para es/en, `xezpeleta/whisper-small-eu-ct2` para eu, como en `02_voice`) y
+   `IkerAzurmendi/bin-intent-gliner2` lee la frase: la ventana muestra la probabilidad de cada opción de
+   `intent`, `feature`, `quality`, `box` y `count`. Ejemplos que se entienden en los tres idiomas: «mueve las
+   piezas buenas a la caja blanca y las malas a la verde», «mueve todas las piezas a la caja verde», «mueve dos
+   piezas buenas a la caja verde», «para». El modelo solo conoce la caja *grande* y la *blanca* y lee «verde» y
+   «pequeña» como «una caja que no está en esta célula»; `demo_orders.cell_vocabulary` traduce verde → grande y
+   pequeña → blanca antes de leer la frase. Pieza **con perno = buena**, sin perno = mala (`--bad-has-pin` lo
+   invierte). Teclas `1` / `2` / `3` fijan las órdenes habituales sin voz (por si el local es ruidoso).
+2. **Espera.** Con una orden activa se vigila la bandeja en la cámara frontal (`tray_detect.py`: una mancha gris
+   de metal sobre el suelo naranja). El robot **no se mueve** hasta que la pieza lleva 1 s a la vista y el brazo
+   está en reposo; con la bandeja vacía espera indefinidamente. `F` fuerza la recogida.
+3. **Recogida** con `IkerAzurmendi/act-pick-v2-30000` (el último checkpoint, el de menor error offline en la
+   sesión apartada; sigue sin validación de agarre en el robot, cámbialo en el selector si no te convence),
+   **clasificación** con `IkerAzurmendi/pin-classifier` (dos cámaras, media de 1,5 s) y **caja**: verde →
+   `up-down-good`, blanca → `up-down-bad` (checkpoint elegible).
+4. **Repite** hasta que la orden se cumple («dos piezas…») o dices «para». Una pieza sin regla (p. ej. la orden
+   solo cubre las malas y sale una buena) se queda sujeta y la ventana pide una orden que la cubra.
+   `S` para y mantiene la pose; `R` devuelve el brazo a reposo despacio (retira antes la pieza de la pinza).
+5. **Órdenes por Telegram** (opcional, `demo_telegram.py`). Un texto o una nota de voz enviados al bot se leen como
+   una orden hablada: la nota se decodifica (OGG/Opus), se transcribe con la misma detección de idioma y pasa por
+   el modelo de intención; el bot contesta en el chat con la frase entendida, el veredicto y la orden activa. La
+   caja *Orden escrita* de la ventana usa el mismo camino (funciona en cuanto termina de cargar la voz; con
+   `--no-voice` no hay modelo de intención y no sirve).
+
+   ```bash
+   export TELEGRAM_BOT_TOKEN=...        # el de @BotFather; solo en el entorno, la app no lo guarda
+   .venv/bin/python demos/06_imitation_learning/30_full_demo_app.py --telegram --telegram-chats 123456789
+   ```
+
+   Solo se obedece a los chats de `--telegram-chats` (o `TELEGRAM_CHAT_IDS`): cualquier otro recibe su id y se
+   ignora. Sin la opción, escribe al bot y copia el id de la respuesta. Se descartan los mensajes anteriores al
+   arranque y los de más de un minuto. Notas de voz de hasta 30 s.
+
+El detector se validó con las grabaciones de `MikelRubi` hechas con el encuadre final (`…_20261024_22*`): la
+mancha mayor mide ≥ 347 px con pieza y ≤ 58 px sin ella (67 primeros fotogramas de recogida frente a 54 últimos
+de `up-down`). Con otro encuadre (las sesiones de la mañana) da falsas alarmas: si mueves la cámara, pasa
+`--tray-roi x0,y0,x1,y1` y comprueba el rectángulo dibujado en la vista frontal.
+
+**Por qué los movimientos salían lentos y sin par.** Las apps usaban un tope de 3–8° entre la consigna y la
+posición medida (`max_relative_target`). En las demostraciones el follower va por detrás del leader (diferencia
+`|acción − estado|`, medida en 41.432 fotogramas de recogida y 37.291 de `up-down`/`up-down-bad`):
+
+| | mediana | p95 | p99 |
+|---|---|---|---|
+| brazo (5 articulaciones) | 0,6–2,8° | 5–16° | 8–29° |
+| pinza | 0,8–2,1 % | 17,7–19,3 % | 24,5–35,3 % |
+
+El par de un STS3215 en modo posición es proporcional a esa diferencia (LeRobot fija `P_Coefficient` = 16), así que un
+tope de 5° le daba al motor, en los movimientos rápidos (p95), la mitad o menos del error con el que se grabó:
+articulaciones lentas y una pinza que no aprieta (su p95 de ~18 puntos encaja con el apretón sobre la pieza; no se
+midió aparte). La app 30
+usa por defecto `--arm-step 30` y `--gripper-step 45` (por articulación, la pinza puede ir más lejos), con una
+rampa de 8° a 30° en los primeros 0,7 s de cada tramo para que la primera consigna no dé un tirón. Se ve en
+`Ajustes`. Además, `--p-gain 24` escribe otro `P_Coefficient` en las articulaciones del brazo (opcional; el
+valor por defecto del STS3215 es 32 y LeRobot usa 16, con el que se grabó). **Para conseguirlo en la app 24
+sin tocarla:** en *Ajustes*, pestaña *Recogida* sube *Paso máximo* a 30 y haz lo mismo en *Caja verde* y *Caja
+blanca* (hoy «Modelo» = 5°, el valor de `policy_routes.json`).
+
+Limitaciones: la app no sabe si la pinza ha agarrado algo (si falla, la pieza sigue en la bandeja y el bucle
+vuelve a intentarlo); el euskera con `small` es peor que el español, así que el modelo de intención pide repetir
+cuando no está seguro (≥ 85 % en las partes que deciden); y no hay hardware en este repositorio: lo comprobado
+sin brazo son 105 pruebas (`tests/test_tray_detect.py`, `test_demo_orders.py`, `test_demo_voice.py`,
+`test_demo_telegram.py`, `test_full_demo_app.py`, esta última incluye `main()` de principio a fin con robot y voz
+simulados; Telegram se probó contra un servidor local y la decodificación contra un OGG/Opus generado, no contra
+Telegram), la carga real
+de las políticas de recogida y verde, la inferencia real de la verde, del clasificador y del modelo de intención con
+las frases de arriba, y la ventana Tk.
+
 ### Comprobar antes de gastar tiempo en el simulador
 
 `tools/22_validate_offline.py` reproduce, **sin simulador**, la orden que daría la política
