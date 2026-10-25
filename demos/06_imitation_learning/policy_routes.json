@@ -82,29 +82,310 @@
   },
   "pick_checkpoint_author": "IkerAzurmendi",
   "pick_checkpoints": {
-    "IkerAzurmendi/act-pick-6000": {
-      "revision": "39de505a8459e8c538e89b1c6fe070b0cbced57c",
-      "uploaded_at": "2026-10-24T13:06:57+00:00"
-    },
     "IkerAzurmendi/act-pick-12000": {
       "revision": "05382c45f31fad27c12b86582061e02d189f2140",
-      "uploaded_at": "2026-10-24T13:30:57+00:00"
+      "uploaded_at": "2026-10-24T13:30:57+00:00",
+      "chunk": 90
     },
     "IkerAzurmendi/act-pick-18000": {
       "revision": "e58e950f204359c774261ac0bda0ee2117b52adf",
-      "uploaded_at": "2026-10-24T14:00:23+00:00"
+      "uploaded_at": "2026-10-24T14:00:23+00:00",
+      "chunk": 90
     },
     "IkerAzurmendi/act-pick-24000": {
       "revision": "582ff1b3055d6e9bbd6816d1edff885c75a23dd4",
-      "uploaded_at": "2026-10-24T14:13:11+00:00"
+      "uploaded_at": "2026-10-24T14:13:11+00:00",
+      "chunk": 90
     },
     "IkerAzurmendi/act-pick-30000": {
       "revision": "8c20c05bf3435cea01ea0f157a7812b5f7bd715d",
-      "uploaded_at": "2026-10-24T14:31:14+00:00"
+      "uploaded_at": "2026-10-24T14:31:14+00:00",
+      "chunk": 90
+    },
+    "IkerAzurmendi/act-pick-6000": {
+      "revision": "39de505a8459e8c538e89b1c6fe070b0cbced57c",
+      "uploaded_at": "2026-10-24T13:06:57+00:00",
+      "chunk": 90
     },
     "IkerAzurmendi/act-pick-v2-12000": {
       "revision": "46ae88a2c249eb27e9194f2ec7cc78817488856e",
-      "uploaded_at": "2026-10-24T19:58:48+00:00"
+      "uploaded_at": "2026-10-24T19:58:48+00:00",
+      "chunk": 90,
+      "episodes": 278,
+      "error": 15.57,
+      "below": 26
+    },
+    "IkerAzurmendi/act-pick-v2-18000": {
+      "revision": "b547ae35cbaad05f43a2fa6748de062746674453",
+      "uploaded_at": "2026-10-24T20:22:33+00:00",
+      "chunk": 90,
+      "episodes": 278,
+      "error": 15.57,
+      "below": 26
+    },
+    "IkerAzurmendi/act-pick-v2-24000": {
+      "revision": "18859ada44c6759926460b6ec3d9534138a67a80",
+      "uploaded_at": "2026-10-24T21:05:26+00:00",
+      "chunk": 90,
+      "episodes": 278,
+      "error": 15.34,
+      "below": 27
+    },
+    "IkerAzurmendi/act-pick-v2-30000": {
+      "revision": "4616e8cf5919fd550efc850fb4f4078a10b5124f",
+      "uploaded_at": "2026-10-24T21:05:37+00:00",
+      "chunk": 90,
+      "episodes": 278,
+      "error": 15.24,
+      "below": 28
+    },
+    "IkerAzurmendi/act-pick-v2-6000": {
+      "revision": "017e7c4d3f127baffef8aa3c6d804b806fb1354c",
+      "uploaded_at": "2026-10-24T20:21:40+00:00",
+      "chunk": 90,
+      "episodes": 278,
+      "error": 15.36,
+      "below": 27
+    },
+    "IkerAzurmendi/act-pick-v3-1-2-pieces-12000": {
+      "revision": "967434e4b7ff107a5959a62445b2f3949e76a726",
+      "uploaded_at": "2026-10-25T07:38:57+00:00",
+      "chunk": 90,
+      "episodes": 331,
+      "error": 15.89,
+      "below": 23
+    },
+    "IkerAzurmendi/act-pick-v3-1-2-pieces-18000": {
+      "revision": "b807dc452d2404ef8a57163dece15ee662fa8e07",
+      "uploaded_at": "2026-10-25T06:18:36+00:00",
+      "chunk": 90,
+      "episodes": 331,
+      "error": 15.35,
+      "below": 26
+    },
+    "IkerAzurmendi/act-pick-v3-1-2-pieces-24000": {
+      "revision": "95842abfdf10cf13bb50c85c70309a72523cad9a",
+      "uploaded_at": "2026-10-25T07:39:04+00:00",
+      "chunk": 90,
+      "episodes": 331,
+      "error": 15.73,
+      "below": 24
+    },
+    "IkerAzurmendi/act-pick-v3-1-2-pieces-30000": {
+      "revision": "e36804625998470f4a072573d8bec14c0203c7e4",
+      "uploaded_at": "2026-10-25T07:39:10+00:00",
+      "chunk": 90,
+      "episodes": 331,
+      "error": 16.38,
+      "below": 21
+    },
+    "IkerAzurmendi/act-pick-v3-1-2-pieces-6000": {
+      "revision": "61b8072783cda93708e47390dc052629cb8461b8",
+      "uploaded_at": "2026-10-25T07:38:51+00:00",
+      "chunk": 90,
+      "episodes": 331,
+      "error": 15.86,
+      "below": 23
+    },
+    "IkerAzurmendi/act-pick-v3-1piece-12000": {
+      "revision": "75009e8732f61cabe83b8a0ccf6943fab2245859",
+      "uploaded_at": "2026-10-25T07:41:06+00:00",
+      "chunk": 90,
+      "episodes": 292,
+      "error": 15.86,
+      "below": 23
+    },
+    "IkerAzurmendi/act-pick-v3-1piece-2400": {
+      "revision": "955506b3b0770c5d981cf0a154b9dd5b2bd7cb46",
+      "uploaded_at": "2026-10-25T07:40:47+00:00",
+      "chunk": 90,
+      "episodes": 292,
+      "error": 16.0,
+      "below": 23
+    },
+    "IkerAzurmendi/act-pick-v3-1piece-4800": {
+      "revision": "f90daca83adf8489c6c6b3b426ca9b5e7e7c782a",
+      "uploaded_at": "2026-10-25T07:40:53+00:00",
+      "chunk": 90,
+      "episodes": 292,
+      "error": 15.82,
+      "below": 24
+    },
+    "IkerAzurmendi/act-pick-v3-1piece-7200": {
+      "revision": "281885e067396fc2933b64ac23d0ca0fb1b8b867",
+      "uploaded_at": "2026-10-25T07:41:00+00:00",
+      "chunk": 90,
+      "episodes": 292,
+      "error": 15.7,
+      "below": 24
+    },
+    "IkerAzurmendi/act-pick-v3-1piece-9600": {
+      "revision": "882d8be058e2c797faf4464489ae88072f2ac9e7",
+      "uploaded_at": "2026-10-25T07:35:44+00:00",
+      "chunk": 90,
+      "episodes": 292,
+      "error": 15.47,
+      "below": 25
+    },
+    "IkerAzurmendi/act-pick-v3-6000": {
+      "revision": "191cc15477e9c7abd34bffe2fb7e953878075a8c",
+      "uploaded_at": "2026-10-25T05:36:45+00:00",
+      "chunk": 90,
+      "episodes": 398,
+      "error": 15.16,
+      "below": 27
+    },
+    "IkerAzurmendi/act-pick-v3-chunk60-12000": {
+      "revision": "9e390edcb9edb920464e87867766e5aa66d89d24",
+      "uploaded_at": "2026-10-25T07:40:40+00:00",
+      "chunk": 60,
+      "episodes": 331,
+      "error": 13.04,
+      "below": 20
+    },
+    "IkerAzurmendi/act-pick-v3-chunk60-2400": {
+      "revision": "6c199949439f1017600128e1081d8c13b208da80",
+      "uploaded_at": "2026-10-25T07:40:19+00:00",
+      "chunk": 60,
+      "episodes": 331,
+      "error": 13.13,
+      "below": 19
+    },
+    "IkerAzurmendi/act-pick-v3-chunk60-4800": {
+      "revision": "724b4055e773f7dbbc10f34ca040000ed07d8b89",
+      "uploaded_at": "2026-10-25T06:18:43+00:00",
+      "chunk": 60,
+      "episodes": 331,
+      "error": 11.94,
+      "below": 26
+    },
+    "IkerAzurmendi/act-pick-v3-chunk60-7200": {
+      "revision": "ba66428ec35d460d0330f3156cb7285929dbd9b5",
+      "uploaded_at": "2026-10-25T07:40:27+00:00",
+      "chunk": 60,
+      "episodes": 331,
+      "error": 12.16,
+      "below": 25
+    },
+    "IkerAzurmendi/act-pick-v3-chunk60-9600": {
+      "revision": "d5eca8ee994cae2b2cdb789e4ae9908bb1285974",
+      "uploaded_at": "2026-10-25T07:40:34+00:00",
+      "chunk": 60,
+      "episodes": 331,
+      "error": 12.43,
+      "below": 23
+    },
+    "IkerAzurmendi/act-pick-v3-recent-12000": {
+      "revision": "16a98e4350949136624b9cb4ee251c705217b3e1",
+      "uploaded_at": "2026-10-25T07:40:13+00:00",
+      "chunk": 90,
+      "episodes": 100,
+      "error": 16.87,
+      "below": 19
+    },
+    "IkerAzurmendi/act-pick-v3-recent-2400": {
+      "revision": "781057bd65640997c5cd490f8eadf23d0a2ee300",
+      "uploaded_at": "2026-10-25T07:39:46+00:00",
+      "chunk": 90,
+      "episodes": 100,
+      "error": 17.19,
+      "below": 17
+    },
+    "IkerAzurmendi/act-pick-v3-recent-4800": {
+      "revision": "84ee72cd6b6930619c7297c6a282b059eabc96d3",
+      "uploaded_at": "2026-10-25T07:39:52+00:00",
+      "chunk": 90,
+      "episodes": 100,
+      "error": 17.1,
+      "below": 17
+    },
+    "IkerAzurmendi/act-pick-v3-recent-7200": {
+      "revision": "8a1831834d5fc98027a426b3398ba8b757820688",
+      "uploaded_at": "2026-10-25T07:40:00+00:00",
+      "chunk": 90,
+      "episodes": 100,
+      "error": 17.0,
+      "below": 18
+    },
+    "IkerAzurmendi/act-pick-v3-recent-9600": {
+      "revision": "abe6d24e8273bf6e4fad6f0e97fd9beadee7fb42",
+      "uploaded_at": "2026-10-25T07:40:06+00:00",
+      "chunk": 90,
+      "episodes": 100,
+      "error": 17.1,
+      "below": 17
+    },
+    "IkerAzurmendi/act-pick-v3-strict-12000": {
+      "revision": "d85f5baf5311f08ae9072669fc7fe7971d48827e",
+      "uploaded_at": "2026-10-25T07:39:39+00:00",
+      "chunk": 90,
+      "episodes": 205,
+      "error": 15.96,
+      "below": 23
+    },
+    "IkerAzurmendi/act-pick-v3-strict-2400": {
+      "revision": "75fdf10512386160bc56ff3ccbf54faf2c1bda6e",
+      "uploaded_at": "2026-10-25T06:18:29+00:00",
+      "chunk": 90,
+      "episodes": 205,
+      "error": 15.14,
+      "below": 27
+    },
+    "IkerAzurmendi/act-pick-v3-strict-4800": {
+      "revision": "9c9102b3410a0ad003465734459ccdff77b61227",
+      "uploaded_at": "2026-10-25T07:39:17+00:00",
+      "chunk": 90,
+      "episodes": 205,
+      "error": 15.44,
+      "below": 25
+    },
+    "IkerAzurmendi/act-pick-v3-strict-7200": {
+      "revision": "2911e3444f6ccd192e52a6fa8c7da2560c97724c",
+      "uploaded_at": "2026-10-25T07:39:23+00:00",
+      "chunk": 90,
+      "episodes": 205,
+      "error": 15.52,
+      "below": 25
+    },
+    "IkerAzurmendi/act-pick-v3-strict-9600": {
+      "revision": "cd35ee7734e4512e8dabe869c7b3aac5cde0236a",
+      "uploaded_at": "2026-10-25T07:39:32+00:00",
+      "chunk": 90,
+      "episodes": 205,
+      "error": 15.53,
+      "below": 25
+    },
+    "IkerAzurmendi/act-pick-v3-super-12000": {
+      "revision": "ce83f769f3f57e69069e9c88e58aed0f5464083c",
+      "uploaded_at": "2026-10-25T07:38:24+00:00",
+      "chunk": 90,
+      "episodes": 398,
+      "error": 16.08,
+      "below": 22
+    },
+    "IkerAzurmendi/act-pick-v3-super-18000": {
+      "revision": "83477900ebaf04715cbc6b9f6831337f1d01dd65",
+      "uploaded_at": "2026-10-25T07:38:31+00:00",
+      "chunk": 90,
+      "episodes": 398,
+      "error": 16.04,
+      "below": 23
+    },
+    "IkerAzurmendi/act-pick-v3-super-24000": {
+      "revision": "f5b1a804ccf676bef503fc609d14e43078218ecd",
+      "uploaded_at": "2026-10-25T07:38:38+00:00",
+      "chunk": 90,
+      "episodes": 398,
+      "error": 16.36,
+      "below": 21
+    },
+    "IkerAzurmendi/act-pick-v3-super-30000": {
+      "revision": "4dc384151ca7e85242cd9450920a73e1fd76a35a",
+      "uploaded_at": "2026-10-25T07:38:44+00:00",
+      "chunk": 90,
+      "episodes": 398,
+      "error": 16.27,
+      "below": 21
     }
   }
 }

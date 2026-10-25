@@ -26,8 +26,9 @@ which releases its torque: hold the arm. Starting a pick from a position other t
 
     python 24_pick_and_classify_app.py
 
-With no arguments it selects the newest uploaded ``IkerAzurmendi/act-pick-*`` checkpoint and the
-classifier ``IkerAzurmendi/pin-classifier``. Both checkpoint selectors show upload times in Madrid.
+With no arguments it selects the first ``IkerAzurmendi/act-pick-*`` checkpoint of the list (v3 super, 6,000
+steps) and the classifier ``IkerAzurmendi/pin-classifier``. The pick selector lists all 40 checkpoints by run
+and step with their offline error (``analyze_pick_policies.py``); both selectors show upload times in Madrid.
 ``--policy`` / ``--classifier`` also take a local folder / ``model.pt``.
 """
 
@@ -419,7 +420,7 @@ class Window:
             pick_row.pack(fill="x", padx=8, pady=6)
             tk.Label(pick_row, text="Recogida · checkpoint:").pack(side="left")
             selector = ttk.Combobox(pick_row, textvariable=self.pick_checkpoint, values=pick_choices,
-                                   state="readonly", width=70, height=12)
+                                   state="readonly", width=95, height=16)
             selector.pack(side="left", padx=4)
             self._selectors.append(selector)
         destinations = tk.Frame(self.root)
@@ -551,7 +552,7 @@ def main() -> int:
     runner = load_script("23_run_act_so101.py")  # JOINTS, DEFAULT_FOLLOWER_PORT, find_camera, MAX_FIRST_GAP
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--policy", default=None,
-                        help="initial pick pretrained_model folder or Hugging Face repo id; default: newest upload")
+                        help="initial pick pretrained_model folder or Hugging Face repo id; default: the first of the list (v3 super, 6,000 steps)")
     parser.add_argument("--classifier", default="IkerAzurmendi/pin-classifier",
                         help="classifier model.pt, or the Hugging Face repo id that holds it")
     parser.add_argument("--policy-routes", type=Path, default=DEMO_DIR / "policy_routes.json",

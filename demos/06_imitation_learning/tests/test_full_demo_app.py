@@ -33,6 +33,8 @@ class World:
         self.sent = []  # (time, action, per-joint caps)
         self.classified = []
         self.sag = np.zeros(6, dtype=np.float32)  # how far past its command the loaded arm ends up
+        self.read_failures = 0  # the next this many reads of the robot raise, like a motor bus that does not answer
+        self.disconnect_error = False
 
 
 class FakeRobot:
@@ -41,6 +43,9 @@ class FakeRobot:
         self.config = SimpleNamespace(max_relative_target=None)
 
     def get_observation(self):
+        if self.world.read_failures > 0:
+            self.world.read_failures -= 1
+            raise ConnectionError("Failed to sync read 'Present_Position' after 6 tries")
         front = np.empty((120, 160, 3), dtype=np.uint8)
         front[:] = (205, 95, 55)  # the orange tray floor
         if self.world.piece:
@@ -422,10 +427,11 @@ class FakeWorker:
 class MainWiringTests(unittest.TestCase):
     """``main()`` end to end: arguments, registry, rest pose, window events, voice events, robot connect/disconnect."""
 
-    def run_main(self, argv=(), spoken=None, presets=None, keys=()):
+    def run_main(self, argv=(), spoken=None, presets=None, keys=(), read_failures=0, disconnect_error=False):
         from unittest.mock import patch
 
         world, models, worker = World(), None, FakeWorker()
+        world.disconnect_error = disconnect_error  # read_failures start once the window is up and the cycle runs
         models = FakeModels(world)
         models.start = lambda: None
         shown, robots = [], []
@@ -452,6 +458,8 @@ class MainWiringTests(unittest.TestCase):
 
             def disconnect(self):
                 self.events.append("disconnect")
+                if world.disconnect_error:
+                    raise ConnectionError("Failed to write 'Torque_Enable' on id_=1 with '0' after 6 tries")
 
         class Registry:
             def refresh_checkpoints(self):
@@ -495,6 +503,7 @@ class MainWiringTests(unittest.TestCase):
                     for key in keys:
                         self.post(("key", key))
                     world.piece = True
+                    world.read_failures = read_failures
                 if "entregadas" in status:
                     self.post(("key", "q"))
                 if world.now > 40:  # never hang the suite
@@ -589,6 +598,39 @@ class MainWiringTests(unittest.TestCase):
         self.assertEqual(robots[0].bus.writes, [("P_Coefficient", joint, 24) for joint in app.JOINTS[:-1]])
         _, _, _, _, _, robots, _ = self.run_main(["--no-voice"], presets="all_green")
         self.assertEqual(robots[0].bus.writes, [])
+
+    def test_a_motor_bus_that_stops_answering_pauses_the_cycle_instead_of_crashing(self):
+        code, world, models, worker, shown, robots, windows = self.run_main(
+            ["--no-voice"], presets="all_green", read_failures=5)
+        self.assertEqual(code, 0)
+        self.assertEqual(robots[0].events, ["connect", "disconnect"])
+        self.assertTrue(any("el bus de motores no responde" in s.status for s in shown))  # paused, with the reason
+        self.assertEqual(models.picked, [])  # nothing was commanded after the bus failed; R resumes
+
+    def test_a_short_bus_glitch_is_ridden_out_without_pausing(self):
+        code, world, models, worker, shown, robots, windows = self.run_main(
+            ["--no-voice"], presets="all_green", read_failures=2)
+        self.assertEqual(code, 0)
+        self.assertFalse(any("el bus de motores" in s.status for s in shown))
+        self.assertEqual(models.routed, [("green", None)])  # the delivery still went through
+
+    def test_a_motor_bus_that_cannot_release_the_torque_does_not_hide_why_we_stopped(self):
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code, *_ = self.run_main(["--no-voice"], presets="all_green", disconnect_error=True)
+        self.assertEqual(code, 0)
+        self.assertIn("No se pudo soltar el torque de los motores (ConnectionError", out.getvalue())
+
+    def test_smoothing_is_on_by_default_and_the_flags_switch_it_off(self):
+        args = app.build_parser().parse_args([])
+        self.assertFalse(args.no_smooth)
+        self.assertEqual((args.blend_stride, args.blend_coeff, args.filter_hz), (3, -0.2, 4.0))
+        self.assertEqual((args.whisper_device, args.intent_device), ("auto", "auto"))
+        code, world, *_ = self.run_main(["--no-voice", "--no-smooth"], presets="all_green")
+        self.assertEqual(code, 0)
 
     def test_bad_roi_is_rejected_before_anything_connects(self):
         with self.assertRaises(ValueError):

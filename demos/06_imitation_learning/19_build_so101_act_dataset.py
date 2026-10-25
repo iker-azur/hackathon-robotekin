@@ -202,6 +202,10 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--max-seconds", type=float, default=20.0)
+    parser.add_argument("--only", type=Path, default=None,
+                        help="JSON list of \"<dataset>:<episode>\" to build; every other episode is left out")
+    parser.add_argument("--min-seconds", type=float, default=5.0,
+                        help="drop shorter episodes (a 1-frame take cannot be encoded as video)")
     parser.add_argument("--holdout", nargs="*", default=None,
                         help="source datasets kept out of training, for validation "
                              "(default: the last session of the kind; no names: keep none out)")
@@ -227,6 +231,9 @@ def main() -> int:
         print(f"ERROR: no '{args.kind}' recordings found; they must come from 17b_record_real_so101_live.py "
               "(pass --include-legacy for older pick-cube sessions)")
         return 1
+    only = set(json.loads(args.only.read_text(encoding="utf-8"))) if args.only else None
+    if only is not None:
+        names = [n for n in names if any(key.rsplit(":", 1)[0] == n for key in only)]
     if args.holdout is None:
         args.holdout = names[-1:] if len(names) > 1 else []
         if not args.holdout:
@@ -273,8 +280,10 @@ def main() -> int:
             return 1
 
         for row in read_episodes(root):
+            if only is not None and f"{name}:{row['episode_index']}" not in only:
+                continue
             seconds = row["length"] / src_fps
-            if seconds > args.max_seconds:
+            if not args.min_seconds <= seconds <= args.max_seconds:
                 skipped.append(f"{name} ep {row['episode_index']} ({seconds:.0f} s)")
                 continue
             t0 = time.time()
@@ -314,7 +323,8 @@ def main() -> int:
     print("")
     print(f"dataset: {final}  ({len(sources)} episodes, {sum(s['frames'] for s in sources)} frames at {args.fps} fps, "
           f"{args.width}x{args.height})")
-    print(f"dropped: {len(skipped)} episode(s) over {args.max_seconds:g} s: {', '.join(skipped) or 'none'}")
+    print(f"dropped: {len(skipped)} episode(s) outside {args.min_seconds:g}-{args.max_seconds:g} s: "
+          f"{', '.join(skipped) or 'none'}")
     print("                              train episodes / held-out")
     for regime in sorted({s["regime"] for s in sources}):
         pick = [s for s in sources if s["regime"] == regime]

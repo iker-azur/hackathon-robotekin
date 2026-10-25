@@ -1,0 +1,130 @@
+{
+  "policy": "IkerAzurmendi/act-pick-v2-30000",
+  "episodes": [
+    321,
+    322,
+    323,
+    324,
+    379,
+    380,
+    381,
+    382
+  ],
+  "frames": 2218,
+  "inference_ms_median": 52.92949998693075,
+  "inference_ms_p95": 161.08226999203907,
+  "leader": {
+    "speed_deg_s": 17.035932540893555,
+    "accel_rms_deg_s2": 257.8823547363281,
+    "accel_p99_deg_s2": 949.4505004882812,
+    "jerk_rms_deg_s3": 8603.3583984375,
+    "error_to_leader_deg": 0.0
+  },
+  "strategies": {
+    "open 30": {
+      "speed_deg_s": 32.60006332397461,
+      "accel_rms_deg_s2": 4877.3837890625,
+      "accel_p99_deg_s2": 22881.110429687404,
+      "jerk_rms_deg_s3": 254475.09375,
+      "error_to_leader_deg": 10.900123596191406
+    },
+    "open 10": {
+      "speed_deg_s": 31.670562744140625,
+      "accel_rms_deg_s2": 3750.28466796875,
+      "accel_p99_deg_s2": 17857.875859374995,
+      "jerk_rms_deg_s3": 194456.015625,
+      "error_to_leader_deg": 7.475063323974609
+    },
+    "open 30 + filter 6 Hz": {
+      "speed_deg_s": 27.052460425076923,
+      "accel_rms_deg_s2": 1430.8796236909607,
+      "accel_p99_deg_s2": 6060.816187416388,
+      "jerk_rms_deg_s3": 56531.02746419418,
+      "error_to_leader_deg": 11.017732158098427
+    },
+    "blend 30 w+0.01": {
+      "speed_deg_s": 24.43793296813965,
+      "accel_rms_deg_s2": 2833.332275390625,
+      "accel_p99_deg_s2": 13856.215263671871,
+      "jerk_rms_deg_s3": 147524.046875,
+      "error_to_leader_deg": 15.799938201904297
+    },
+    "blend 5 w+0.01": {
+      "speed_deg_s": 19.422447204589844,
+      "accel_rms_deg_s2": 1231.52099609375,
+      "accel_p99_deg_s2": 5745.164213867187,
+      "jerk_rms_deg_s3": 64634.47265625,
+      "error_to_leader_deg": 15.724445343017578
+    },
+    "blend 1 w+0.01": {
+      "speed_deg_s": 14.317099571228027,
+      "accel_rms_deg_s2": 93.65869140625,
+      "accel_p99_deg_s2": 364.080164489746,
+      "jerk_rms_deg_s3": 3801.21142578125,
+      "error_to_leader_deg": 16.867250442504883
+    },
+    "blend 5 w+0.01 + filter 4 Hz": {
+      "speed_deg_s": 14.250634241452714,
+      "accel_rms_deg_s2": 196.43934153881096,
+      "accel_p99_deg_s2": 719.8150375089375,
+      "jerk_rms_deg_s3": 7523.105809146752,
+      "error_to_leader_deg": 15.88723878054862
+    },
+    "blend 3 w+0.01 + filter 4 Hz": {
+      "speed_deg_s": 13.969808216706166,
+      "accel_rms_deg_s2": 112.7824930081449,
+      "accel_p99_deg_s2": 445.26879271718155,
+      "jerk_rms_deg_s3": 5371.404269010243,
+      "error_to_leader_deg": 16.049938335883496
+    },
+    "blend 5": {
+      "speed_deg_s": 21.686813354492188,
+      "accel_rms_deg_s2": 1570.199951171875,
+      "accel_p99_deg_s2": 7035.853901367172,
+      "jerk_rms_deg_s3": 81721.53125,
+      "error_to_leader_deg": 10.567106246948242
+    },
+    "blend 3": {
+      "speed_deg_s": 21.411211013793945,
+      "accel_rms_deg_s2": 1445.689208984375,
+      "accel_p99_deg_s2": 6150.666591796874,
+      "jerk_rms_deg_s3": 75203.34375,
+      "error_to_leader_deg": 9.023032188415527
+    },
+    "blend 2": {
+      "speed_deg_s": 20.049785614013672,
+      "accel_rms_deg_s2": 1273.1337890625,
+      "accel_p99_deg_s2": 4380.159941406248,
+      "jerk_rms_deg_s3": 75977.1328125,
+      "error_to_leader_deg": 8.117395401000977
+    },
+    "blend 5 + filter 4 Hz": {
+      "speed_deg_s": 14.850934803903975,
+      "accel_rms_deg_s2": 259.4854144490626,
+      "accel_p99_deg_s2": 1011.3566308245415,
+      "jerk_rms_deg_s3": 9894.103581756095,
+      "error_to_leader_deg": 10.93085185453596
+    },
+    "blend 3 + filter 4 Hz": {
+      "speed_deg_s": 15.05965715682973,
+      "accel_rms_deg_s2": 170.77658730962355,
+      "accel_p99_deg_s2": 675.1555549529917,
+      "jerk_rms_deg_s3": 8277.187022111,
+      "error_to_leader_deg": 9.464384674056726
+    },
+    "blend 3 + filter 6 Hz": {
+      "speed_deg_s": 15.524964830688374,
+      "accel_rms_deg_s2": 336.04918967715713,
+      "accel_p99_deg_s2": 1372.628399406783,
+      "jerk_rms_deg_s3": 17087.6305788737,
+      "error_to_leader_deg": 9.270774194674246
+    },
+    "blend 2 + filter 4 Hz": {
+      "speed_deg_s": 15.52632287385608,
+      "accel_rms_deg_s2": 94.89278453221554,
+      "accel_p99_deg_s2": 339.9650725772595,
+      "jerk_rms_deg_s3": 3583.874353626645,
+      "error_to_leader_deg": 8.60079296361606
+    }
+  }
+}

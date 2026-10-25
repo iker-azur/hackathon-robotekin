@@ -54,18 +54,34 @@ class Transcriber:
                 self._models[name] = self._factory(name)
             return self._models[name]
 
+    def _run(self, name: str, call):
+        """``call(model)``; a GPU whose libraries are missing only fails here, at the first use: fall back to the CPU."""
+        try:
+            return call(self.model(name))
+        except RuntimeError as exc:
+            if self.device != "cuda":
+                raise
+            print(f"Whisper cannot use the GPU ({exc}); using the CPU", flush=True)
+            with self._lock:
+                self.device = "cpu"
+                self._models.clear()
+            return call(self.model(name))
+
     def detect_language(self, audio: np.ndarray) -> str:
         """The most probable of es / en / eu: Whisper's other languages are not options in this demo."""
-        _, _, probabilities = self.model(STT_MODELS["es"]).detect_language(audio)
+        _, _, probabilities = self._run(STT_MODELS["es"], lambda model: model.detect_language(audio))
         scores = {code: p for code, p in probabilities if code in LANGUAGES}
         return max(scores, key=scores.get) if scores else "es"
 
     def transcribe(self, audio: np.ndarray) -> tuple[str, str]:
         """(text, language) of 16 kHz mono float32 audio; the text is empty when nothing intelligible was said."""
         language = self.detect_language(audio)
-        segments, _ = self.model(STT_MODELS[language]).transcribe(
-            audio, language=language, beam_size=3, vad_filter=False, condition_on_previous_text=False,
-            initial_prompt=PROMPTS[language])
+        def decode(model):  # the segments are produced lazily: consume them here, where a GPU failure is handled
+            segments, _ = model.transcribe(audio, language=language, beam_size=3, vad_filter=False,
+                                           condition_on_previous_text=False, initial_prompt=PROMPTS[language])
+            return list(segments)
+
+        segments = self._run(STT_MODELS[language], decode)
         return " ".join(segment.text.strip() for segment in segments).strip(), language
 
 

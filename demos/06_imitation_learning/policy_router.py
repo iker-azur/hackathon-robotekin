@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -22,6 +23,36 @@ def upload_label(metadata: dict) -> str:
     if not metadata.get("uploaded_at"):
         return "fecha de subida no disponible"
     return upload_time(metadata).astimezone(ZoneInfo("Europe/Madrid")).strftime("%d/%m/%Y %H:%M:%S %Z")
+
+
+# Training runs of the pick policies, in the order the selector lists them; the repo name tells which one it is.
+PICK_RUNS = {"v3 super": "v3 super", "v3 strict": "v3 strict", "v3 1-2-pieces": "v3 1-2 piezas",
+             "v3 1piece": "v3 1 pieza", "v3 chunk60": "v3 chunk 60", "v3 recent": "v3 recent",
+             "v2": "v2", "v1": "v1"}
+PICK_INFO = ("episodes", "chunk", "error", "below")  # per-checkpoint facts from the model cards, see analyze_pick_policies.py
+PICK_NAME = re.compile(r"act-pick-(?:(v\d+)-)?(?:(super|strict|recent|chunk60|1piece|1-2-pieces)-)?(\d+)")
+
+
+def pick_run_and_step(repo: str) -> tuple[str, int | None]:
+    """``IkerAzurmendi/act-pick-v3-strict-2400`` -> ("v3 strict", 2400); ``act-pick-v3-6000`` is the best of "v3 super"."""
+    match = PICK_NAME.fullmatch(repo.split("/")[-1])
+    if not match:
+        return repo.split("/")[-1], None
+    version, variant, step = match.groups()
+    return (f"{version} {variant or 'super'}" if version == "v3" else version or "v1"), int(step)
+
+
+def pick_label(repo: str, metadata: dict) -> str:
+    run, step = pick_run_and_step(repo)
+    parts = [PICK_RUNS.get(run, run)]
+    if step is not None:
+        parts.append(f"{step:,}".replace(",", ".") + " pasos")
+    if metadata.get("episodes"):
+        parts.append(f"{metadata['episodes']} ep")
+    if metadata.get("below") is not None:
+        parts.append(f"−{metadata['below']} % bajo reposo (error {metadata['error']:.2f})".replace(".", ","))
+    parts.append(upload_label(metadata))
+    return " · ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -117,14 +148,19 @@ class PolicyRouteRegistry:
                     checkpoints[model.id] = {"revision": model.sha,
                                              "uploaded_at": file.last_commit.date.isoformat()}
         if checkpoints:
-            self._pick_checkpoints = checkpoints
+            # keep what the catalog knows about each run (episodes, offline error): the Hub listing has only dates
+            self._pick_checkpoints = {repo: {**{k: v for k, v in self._pick_checkpoints.get(repo, {}).items()
+                                               if k in PICK_INFO}, **metadata}
+                                      for repo, metadata in checkpoints.items()}
 
     def pick_checkpoint_options(self, current_policy: str | None = None) -> dict[str, str]:
-        choices = {
-            f"{repo.split('/')[-1]} · {upload_label(metadata)}": repo
-            for repo, metadata in sorted(self._pick_checkpoints.items(),
-                                         key=lambda item: upload_time(item[1]), reverse=True)
-        }
+        runs = list(PICK_RUNS)
+
+        def order(item):
+            run, step = pick_run_and_step(item[0])
+            return (runs.index(run) if run in runs else len(runs), step or 0, -upload_time(item[1]).timestamp())
+
+        choices = {pick_label(repo, metadata): repo for repo, metadata in sorted(self._pick_checkpoints.items(), key=order)}
         if current_policy and current_policy not in choices.values():
             choices[f"{current_policy} · fecha de subida no disponible"] = current_policy
         return choices

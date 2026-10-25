@@ -48,14 +48,37 @@ class CheckpointCatalogTests(unittest.TestCase):
         self.assertEqual(route.hub_path, "act_bad_v1/checkpoints/025000/pretrained_model")
         self.assertEqual(registry.resolve_destination("green", choices[0]).name, "up-down-good")
 
-    def test_pick_catalog_includes_v2_and_all_previous_uploads_by_date(self):
+    def test_pick_catalog_lists_every_run_and_checkpoint_grouped_by_run_and_step(self):
         registry = router.PolicyRouteRegistry()
         choices = registry.pick_checkpoint_options()
-        self.assertEqual(len(choices), 6)
-        self.assertEqual(next(iter(choices.values())), "IkerAzurmendi/act-pick-v2-12000")
-        self.assertIn("24/10/2026 21:58:48 CEST", next(iter(choices)))
-        self.assertEqual(list(choices.values())[1], "IkerAzurmendi/act-pick-30000")
-        self.assertEqual(list(choices.values())[-1], "IkerAzurmendi/act-pick-6000")
+        repos = list(choices.values())
+        self.assertEqual(len(choices), 40)
+        self.assertEqual(len(set(repos)), 40)
+        self.assertEqual(repos[0], "IkerAzurmendi/act-pick-v3-6000")
+        self.assertEqual(repos[-1], "IkerAzurmendi/act-pick-30000")
+        runs = [router.pick_run_and_step(repo)[0] for repo in repos]
+        self.assertEqual([run for i, run in enumerate(runs) if i == 0 or run != runs[i - 1]],
+                         ["v3 super", "v3 strict", "v3 1-2-pieces", "v3 1piece", "v3 chunk60", "v3 recent", "v2", "v1"])
+        for run in set(runs):
+            steps = [router.pick_run_and_step(r)[1] for r in repos if router.pick_run_and_step(r)[0] == run]
+            self.assertEqual(steps, sorted(steps), run)
+
+    def test_pick_labels_say_run_steps_episodes_offline_error_and_madrid_upload_time(self):
+        choices = router.PolicyRouteRegistry().pick_checkpoint_options()
+        by_repo = {repo: label for label, repo in choices.items()}
+        self.assertTrue(by_repo["IkerAzurmendi/act-pick-v3-6000"].startswith(
+            "v3 super · 6.000 pasos · 398 ep · −27 % bajo reposo (error 15,16) · "))
+        self.assertIn("24/10/2026 21:58:48 CEST", by_repo["IkerAzurmendi/act-pick-v2-12000"])
+        # the first round has no model card: nothing is invented for it
+        self.assertEqual(by_repo["IkerAzurmendi/act-pick-6000"],
+                         "v1 · 6.000 pasos · 24/10/2026 15:06:57 CEST")
+
+    def test_unknown_pick_repo_name_is_listed_with_its_own_name_after_the_known_runs(self):
+        registry = router.PolicyRouteRegistry()
+        registry._pick_checkpoints["IkerAzurmendi/act-pick-v4-new-100"] = {"uploaded_at": "2026-10-26T10:00:00+00:00"}
+        choices = registry.pick_checkpoint_options()
+        self.assertEqual(list(choices.values())[-1], "IkerAzurmendi/act-pick-v4-new-100")
+        self.assertTrue(list(choices)[-1].startswith("act-pick-v4-new-100 · 26/10/2026 11:00:00 CET"))
 
     def test_pick_catalog_retains_a_cli_local_model_without_fabricating_a_date(self):
         registry = router.PolicyRouteRegistry()
@@ -78,6 +101,8 @@ class CheckpointCatalogTests(unittest.TestCase):
         choices = registry.pick_checkpoint_options()
         self.assertEqual(len(choices), 1)
         self.assertIn("24/10/2026 20:00:00 CEST", next(iter(choices)))
+        # the Hub listing gives dates only: what the catalog knew about the run is kept
+        self.assertIn("v2 · 18.000 pasos · 278 ep · −26 % bajo reposo", next(iter(choices)))
         self.assertEqual(registry.pick_revision("IkerAzurmendi/act-pick-v2-18000"), "revision-v2")
 
     def test_upload_date_orders_catalog_even_when_the_lower_step_is_newer(self):

@@ -254,12 +254,20 @@ Pulsa **Espacio** en la ventana. La app ejecuta el pick, mantiene la pieza, clas
 van a la caja **Verde** o **Blanca**; ambas opciones empiezan en Blanca para
 conservar el comportamiento anterior. Verde selecciona `up-down-good` y Blanca
 `up-down-bad`. Hay dos selectores de checkpoint, ordenados por fecha real de
-subida de los pesos, del más reciente al más antiguo, con hora de Madrid:
+subida de los pesos, con hora de Madrid:
 
-- **Recogida**: todos los `IkerAzurmendi/act-pick-*`, incluida la nueva versión
-  `act-pick-v2-12000`. Sin `--policy`, empieza en la subida más reciente;
-  `--policy` conserva tu elección inicial. Cambiar el selector se aplica al
-  siguiente ciclo que inicies con **Espacio**.
+- **Recogida**: los 40 checkpoints `IkerAzurmendi/act-pick-*`, agrupados por
+  entrenamiento (v3 super, v3 strict, v3 1-2 piezas, v3 1 pieza, v3 chunk 60,
+  v3 recent, v2, v1) y por pasos, cada uno con sus episodios de entrenamiento y
+  su error offline (porcentaje por debajo de «quedarse quieto»). Esos datos salen
+  de las fichas de los modelos y los guarda `analyze_pick_policies.py` en
+  `policy_routes.json`; es un error sobre 15–16 episodios retenidos con una
+  semilla y no dice si el brazo agarra la pieza (los errores de chunk 60 no son
+  comparables con los demás, el porcentaje sí). La primera ronda (v1) no tiene
+  ficha. Sin `--policy`, empieza en la primera de la lista (v3 super, 6.000
+  pasos); `--policy` conserva tu elección inicial. Cambiar el selector se aplica
+  al siguiente ciclo que inicies con **Espacio**. La app 30 sigue arrancando en
+  `act-pick-v2-30000` y usa el mismo selector.
 - **Caja blanca · Up-down BAD**: los checkpoints de `MikelRubi/act-up-down-bad`,
   actualmente 25.000, 20.000, 15.000 y 10.000 pasos. Empieza en el más reciente.
 
@@ -386,6 +394,37 @@ de altura, y añade la voz, las órdenes, el detector de pieza y el bucle:
    **Fotos para clasificar.** Con la pose alcanzada: pausa de 0,3 s y 1,5 s de fotogramas del clasificador (uno
    cada 1/6 s, unos 9-10) cuya probabilidad se promedia: la decisión llega unos 1,8 s después de que el brazo se
    pare, en lugar de esperar al límite de la recogida.
+
+   **Movimiento suave** (`smooth_motion.py`, medido con `analyze_motion_smoothness.py`, resultado en
+   `results/motion_smoothness.json`). Un checkpoint ACT predice un chunk de 90 consignas y las apps ejecutaban 30 a
+   ciegas antes de volver a predecir: cada segundo la consigna da un salto hasta donde la nueva predicción empieza y
+   el motor se lanza hacia él. Medido sobre 2.218 fotogramas de 8 episodios apartados (30 fps, articulaciones del
+   brazo), con la teleoperación humana como referencia de «suave»:
+
+   | consignas enviadas | aceleración RMS (°/s²) | p99 | jerk RMS (°/s³) | distancia a la acción del líder (°) |
+   |---|---|---|---|---|
+   | líder (humano) | 258 | 949 | 8.603 | – |
+   | antes: 30 acciones a ciegas | 4.877 | 22.881 | 254.475 | 10,9 |
+   | ensamblado temporal de ACT (pesos +0,01, cada paso) | 94 | 364 | 3.801 | 16,9 |
+   | **ahora: mezcla cada 3 pasos, pesos −0,2, filtro 4 Hz** | **171** | **675** | **8.277** | **9,5** |
+
+   El ensamblado de ACT (papel y `temporal_ensemble_coeff` de LeRobot) también suaviza, pero promedia predicciones
+   hechas con imágenes viejas y el brazo se aleja del camino demostrado (16,9° frente a 10,9°); dar más peso a la
+   predicción más reciente (coeficiente negativo) conserva la suavidad y mejora el seguimiento. Por eso `BlendedPolicy`
+   predice cada 3 pasos (un tercio del coste del ensamblado de cada paso), promedia los chunks solapados y un filtro
+   crítico de segundo orden (4 Hz, retardo ≈ 80 ms, sin sobreoscilación) suaviza lo que se envía. La inferencia va en
+   un hilo aparte (tarda 20–160 ms según la GPU, el bucle es de 33 ms) y cada chunk se usa desde el fotograma de su
+   imagen, así el retardo no desplaza el movimiento. Vale para la recogida y para las dos rutas de caja; la vuelta a
+   reposo y la sujeción no pasan por el filtro. `--no-smooth` lo desactiva; `--blend-stride`, `--blend-coeff` y
+   `--filter-hz` lo ajustan (el ajuste *Acciones por predicción* sustituye al paso de la mezcla). Es una medición
+   sobre observaciones grabadas: compara flujos de consignas, no prueba que el agarre mejore; no se ha probado en el brazo.
+
+   **GPU y errores del bus de motores.** Voz (Whisper) e intención usan ahora la GPU si existe (`--whisper-device` e
+   `--intent-device` en `auto`; si faltan las librerías de CUDA de Whisper, vuelve a la CPU y lo dice). Si el bus de
+   motores deja de contestar (`Failed to … after 6 tries`: cable USB, o la alimentación que se hunde cuando el brazo
+   carga la pieza), el ciclo ya no se cae: tras 3 ciclos fallidos seguidos pasa a *pausa* con el motivo, imprime
+   `[bus] …` con el error original y sale tras 100; y al cerrar, si soltar el torque también falla
+   (`Failed to write 'Torque_Enable'`, que es la consecuencia, no la causa) lo cuenta sin tapar el primer error.
 4. **Repite** hasta que la orden se cumple («dos piezas…») o dices «para». Una pieza sin regla (p. ej. la orden
    solo cubre las malas y sale una buena) se queda sujeta y la ventana pide una orden que la cubra.
    `S` para y mantiene la pose; `R` devuelve el brazo a reposo despacio (retira antes la pieza de la pinza).
@@ -461,8 +500,8 @@ blanca* (hoy «Modelo» = 5°, el valor de `policy_routes.json`).
 Limitaciones: la app no sabe si la pinza ha agarrado algo (si falla, la pieza sigue en la bandeja y el bucle
 vuelve a intentarlo); el euskera con `small` es peor que el español, así que el modelo de intención pide repetir
 cuando no está seguro (≥ 85 % en las partes que deciden); y no hay hardware en este repositorio: lo comprobado
-sin brazo son 196 pruebas (`tests/test_tray_detect.py`, `test_demo_orders.py`, `test_demo_voice.py`,
-`test_demo_telegram.py`, `test_party_dance.py`, `test_reach_detect.py`, `test_full_demo_app.py`, esta última incluye `main()` de principio a fin con robot y voz
+sin brazo son 213 pruebas (`tests/test_tray_detect.py`, `test_demo_orders.py`, `test_demo_voice.py`,
+`test_demo_telegram.py`, `test_party_dance.py`, `test_reach_detect.py`, `test_smooth_motion.py`, `test_full_demo_app.py`, esta última incluye `main()` de principio a fin con robot y voz
 simulados; Telegram se probó contra un servidor local y la decodificación contra un OGG/Opus generado, no contra
 Telegram), la carga real
 de las políticas de recogida y verde, la inferencia real de la verde, del clasificador y del modelo de intención con

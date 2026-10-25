@@ -171,8 +171,10 @@ def augment_strong(x: torch.Tensor, generator: torch.Generator) -> torch.Tensor:
 
 def train_model(front, wrist, labels, epochs: int, batch: int, lr: float, device, seed: int,
                 backbone: str = "small", augmentation: str = "basic", freeze: bool = False,
-                cameras: str = "both", label_smoothing: float = 0.0, rows: np.ndarray | None = None) -> nn.Module:
-    """Train on all of ``front`` / ``wrist`` / ``labels``, or only on the sample indices ``rows`` (no copy)."""
+                cameras: str = "both", label_smoothing: float = 0.0, rows: np.ndarray | None = None,
+                amp: bool = False) -> nn.Module:
+    """Train on all of ``front`` / ``wrist`` / ``labels``, or only on the sample indices ``rows`` (no copy).
+    A camera the model does not look at is neither moved to the GPU nor augmented; ``amp``: bfloat16 autocast."""
     torch.manual_seed(seed)
     generator = torch.Generator().manual_seed(seed)
     model = build_model(backbone, True, cameras).to(device)
@@ -204,9 +206,11 @@ def train_model(front, wrist, labels, epochs: int, batch: int, lr: float, device
             idx = order[start:start + batch]
             if len(idx) < 2:  # batch norm needs more than one sample
                 continue
-            f = model.prepare(augment_fn(to_tensor(front[idx], device), generator))
-            w = model.prepare(augment_fn(to_tensor(wrist[idx], device), generator))
-            loss = F.cross_entropy(model(f, w), targets[idx], weight=weight, label_smoothing=label_smoothing)
+            f = model.prepare(augment_fn(to_tensor(front[idx], device), generator)) if cameras != "wrist" else None
+            w = model.prepare(augment_fn(to_tensor(wrist[idx], device), generator)) if cameras != "front" else None
+            with torch.autocast(device.type, torch.bfloat16, enabled=amp):
+                logits = model(f if f is not None else w, w if w is not None else f)
+            loss = F.cross_entropy(logits.float(), targets[idx], weight=weight, label_smoothing=label_smoothing)
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
@@ -223,8 +227,10 @@ def predict_proba(model: PinNet, front, wrist, device, tta: bool = False, rows: 
     out = []
     for start in range(0, len(rows), 64):
         chunk = rows[start:start + 64]
-        f = model.prepare(to_tensor(front[chunk], device))
-        w = model.prepare(to_tensor(wrist[chunk], device))
+        cameras = getattr(model, "cameras", "both")
+        f = model.prepare(to_tensor(front[chunk], device)) if cameras != "wrist" else None
+        w = model.prepare(to_tensor(wrist[chunk], device)) if cameras != "front" else None
+        f, w = (f if f is not None else w), (w if w is not None else f)
         p = torch.softmax(model(f, w), 1)[:, 1]
         if tta:
             p = (p + torch.softmax(model(f.flip(3), w.flip(3)), 1)[:, 1]) / 2
@@ -290,6 +296,7 @@ def main() -> int:
     parser.add_argument("--test-sources", choices=("episode", "snapshot", "both"), default="both",
                         help="cross-validation: test on the episode last frames, the snapshots, or both")
     parser.add_argument("--no-final", action="store_true", help="only cross-validate: skip the final model (experiments)")
+    parser.add_argument("--amp", action="store_true", help="bfloat16 autocast while training (faster, less memory)")
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--output", default="pin_classifier",
@@ -310,6 +317,7 @@ def main() -> int:
         print("CUDA is not available, using the CPU (this model is small enough).")
         args.device = "cpu"
     device = torch.device(args.device)
+    torch.backends.cudnn.benchmark = True  # fixed input size: let cuDNN pick the fastest kernels once
 
     data = np.load(root / "pin_cls.npz")
     samples = json.loads((root / "samples.json").read_text(encoding="utf-8"))
@@ -332,7 +340,8 @@ def main() -> int:
                     "train_sources": args.train_sources, "test_sources": args.test_sources, "epochs": args.epochs}
     fit_args = (args.epochs, args.batch, args.lr, device)
     train_kwargs = {"backbone": args.backbone, "augmentation": args.augment, "freeze": args.freeze,
-                    "cameras": args.cameras, "label_smoothing": args.label_smoothing}
+                    "cameras": args.cameras, "label_smoothing": args.label_smoothing,
+                    "amp": args.amp and device.type == "cuda"}
     sessions = sorted({s["session"] for s in samples})
     sources = np.array([s.get("source", "episode") for s in samples])
     train_ok = np.isin(sources, ("episode", "snapshot") if args.train_sources == "both" else (args.train_sources,))

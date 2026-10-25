@@ -106,6 +106,8 @@ demo_voice = load_script("demo_voice.py")
 demo_telegram = load_script("demo_telegram.py")
 party_dance = load_script("party_dance.py")
 reach_detect = load_script("reach_detect.py")
+smooth_motion = load_script("smooth_motion.py")
+BUS_ERRORS_BEFORE_PAUSE, BUS_ERRORS_BEFORE_EXIT = 3, 100  # failed control cycles in a row (the loop waits 0.1 s each)
 JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 
 
@@ -137,6 +139,13 @@ class Models:
         self.classifier = None
         self._pick, self._routes = {}, {}
         self.lock = threading.Lock()
+        self.smooth = None if getattr(args, "no_smooth", True) else {"stride": args.blend_stride, "coeff": args.blend_coeff}
+
+    def _blend(self, policy):
+        """ACT policies send the average of their overlapping chunks, predicted off the control thread."""
+        if self.smooth and hasattr(policy, "predict_action_chunk"):
+            return smooth_motion.BlendedPolicy(policy, self.smooth["stride"], self.smooth["coeff"], threaded=True)
+        return policy
 
     def start(self):
         threading.Thread(target=self._load, daemon=True).start()
@@ -160,6 +169,7 @@ class Models:
         with self.lock:
             if source not in self._pick:
                 policy, pre, post = app24.load_pick_components(source, self.device, self.registry.pick_revision(source))
+                policy = self._blend(policy)
                 self._pick[source] = (policy, pre, post, policy.config.n_action_steps)
             return self._pick[source]
 
@@ -169,7 +179,8 @@ class Models:
             if key not in self._routes:
                 route = self.registry.resolve_destination(destination, label)
                 runner, policy, pre, post, features = app24.load_route_components(route, self.device)
-                self._routes[key] = {"route": route, "runner": runner, "policy": policy, "pre": pre, "post": post,
+                policy = self._blend(policy)
+                self._routes[key] ={"route": route, "runner": runner, "policy": policy, "pre": pre, "post": post,
                                      "features": features, "default_actions": policy.config.n_action_steps}
             return self._routes[key]
 
@@ -182,8 +193,9 @@ class Demo:
 
     def __init__(self, robot, models, orders, settings, choices, detect, rest_pose, rest_tolerance, device,
                  gripper_step=45.0, clock=None, log=print, party_profile=None, pick_attempts=PICK_ATTEMPTS,
-                 retry_wait=RETRY_WAIT_S, reach_profile=None):
+                 retry_wait=RETRY_WAIT_S, reach_profile=None, target_filter=None):
         self.robot, self.models, self.orders = robot, models, orders
+        self.target_filter, self._state = target_filter, None
         self.reach_profile, self.reach = reach_profile or reach_detect.load_profile(), None
         self.pick_attempts, self.retry_wait, self.attempts = pick_attempts, retry_wait, 0
         self.dance = party_dance.Choreography(party_profile or party_dance.load_profile())
@@ -226,6 +238,11 @@ class Demo:
             self.force = True
             self.note = "recogida forzada"
 
+    def bus_error(self, note):
+        """The motor bus stopped answering: stop commanding; the cycle resumes with R once the arm answers again."""
+        if self.phase not in ("paused", "loading"):
+            self._go("paused", note)
+
     # -- helpers ----------------------------------------------------------------------------------------------
 
     def status_text(self) -> str:
@@ -251,7 +268,13 @@ class Demo:
             action["gripper.pos"] = self.last_gripper
         return action
 
-    def _send(self, action, step):
+    def _send(self, action, step, smooth=False):
+        """``smooth``: a policy's command, low-passed before it is sent (starting from the measured pose)."""
+        if smooth and self.target_filter is not None:
+            if self.target_filter.x is None:
+                self.target_filter.reset(self._state)
+            vector = self.target_filter([action[f"{j}.pos"] for j in JOINTS], self.period)
+            action = {f"{j}.pos": float(v) for j, v in zip(JOINTS, vector)}
         self.robot.config.max_relative_target = step_limits(step, self.gripper_step)
         sent = self.robot.send_action(action)
         self.last_gripper = sent["gripper.pos"]
@@ -269,7 +292,7 @@ class Demo:
 
     def tick(self, obs):
         now = self.clock()
-        state = np.array([obs[f"{j}.pos"] for j in JOINTS], dtype=np.float32)
+        state = self._state = np.array([obs[f"{j}.pos"] for j in JOINTS], dtype=np.float32)
         if self.phase == "loading":
             if self.models.error:
                 self.note = f"no se pudo cargar: {self.models.error}"
@@ -328,6 +351,10 @@ class Demo:
         self._go("picking", f"intento {self.attempts + 1}/{self.pick_attempts}" if self.attempts else "")
         policy, pre, post, default_actions = self.models.pick(source)
         actions = app24.set_action_steps(policy, settings["pick_actions"], default_actions)
+        if isinstance(policy, smooth_motion.BlendedPolicy) and settings["pick_actions"]:
+            policy.stride = int(settings["pick_actions"])  # blended: a new prediction every this many steps
+        if self.target_filter is not None:
+            self.target_filter.reset()
         self.run, self.pick_models = settings, (policy, pre, post)
         self.period = 1 / settings["control_hz"]
         self.start, self.first = self.clock(), True
@@ -370,7 +397,8 @@ class Demo:
             else:
                 self.live = "Parada automática desactivada: la recogida dura el tiempo máximo"
             if not reached:
-                self._send({f"{j}.pos": float(a) for j, a in zip(JOINTS, action)}, ramped(s["pick_step"], elapsed))
+                self._send({f"{j}.pos": float(a) for j, a in zip(JOINTS, action)}, ramped(s["pick_step"], elapsed),
+                           smooth=True)
                 return
         lifted = bool(s["auto_stop"] and self.reach.lifted)
         if s["auto_stop"] and not (reached or lifted):  # time ran out and the arm never lifted anything: still down
@@ -460,6 +488,10 @@ class Demo:
         route, policy = runtime["route"], runtime["policy"]
         app24.set_action_steps(policy, s[f"{destination}_actions"] or runtime["default_actions"],
                                runtime["default_actions"])
+        if isinstance(policy, smooth_motion.BlendedPolicy) and s[f"{destination}_actions"]:
+            policy.stride = int(s[f"{destination}_actions"])
+        if self.target_filter is not None:
+            self.target_filter.reset()
         self.rt = {**runtime, "destination": destination, "start": self.clock(), "released": False,
                    "seconds": s[f"{destination}_seconds"] or route.max_seconds,
                    "step": s[f"{destination}_step"] or route.max_relative_target}
@@ -477,7 +509,7 @@ class Demo:
             return
         action = rt["runner"].step(rt["policy"], rt["pre"], rt["post"], rt["features"], obs, self.device)
         action = app24.add_route_clearance(action, rt["released"], state, s, destination)
-        self._send(action, ramped(rt["step"], elapsed))
+        self._send(action, ramped(rt["step"], elapsed), smooth=True)
 
     def _route_done(self, obs, state, finished):
         rt = self.rt
@@ -751,10 +783,12 @@ def build_parser():
                         help="initial pick checkpoint (Hugging Face repo id or pretrained_model folder)")
     parser.add_argument("--classifier", default=DEFAULT_CLASSIFIER, help="pin classifier model.pt or repo id")
     parser.add_argument("--intent-model", default=DEFAULT_INTENT, help="intent model repo id or local folder")
-    parser.add_argument("--intent-device", default="cpu", help="cpu keeps the GPU free for the policies (125 ms)")
+    parser.add_argument("--intent-device", default="auto", help="auto: the GPU when there is one (else cpu), cpu, cuda")
     parser.add_argument("--min-confidence", type=float, default=0.85,
                         help="every deciding part of an order must be at least this probable")
-    parser.add_argument("--whisper-device", default="cpu", help="cpu (int8) or cuda (float16)")
+    parser.add_argument("--whisper-device", default="auto",
+                        help="auto: the GPU when there is one (float16, falls back to the cpu if its libraries are "
+                             "missing), cpu (int8) or cuda")
     parser.add_argument("--no-voice", action="store_true", help="orders only from the buttons and keys 1 / 2 / 3")
     parser.add_argument("--telegram", action="store_true",
                         help="also take orders (text or voice notes) from a Telegram bot; token in TELEGRAM_BOT_TOKEN")
@@ -784,15 +818,33 @@ def build_parser():
                         help="optional: write this P_Coefficient to the arm motors (LeRobot sets 16; the STS3215 "
                              "default is 32). Torque is released for a moment: hold the arm")
     parser.add_argument("--device", default=None, help="default: cuda if available, else cpu")
+    parser.add_argument("--no-smooth", action="store_true",
+                        help="send the policies' commands as they come (open loop chunks, no filter)")
+    parser.add_argument("--blend-stride", type=int, default=smooth_motion.DEFAULT_STRIDE,
+                        help="a new prediction every this many control steps; the overlapping chunks are averaged "
+                             "(1 = ACT's temporal ensembling, every step; the Acciones por predicción setting overrides)")
+    parser.add_argument("--blend-coeff", type=float, default=smooth_motion.DEFAULT_COEFF,
+                        help="chunk weight exp(-coeff * rank), rank 0 = oldest: negative favours the newest prediction")
+    parser.add_argument("--filter-hz", type=float, default=smooth_motion.DEFAULT_FILTER_HZ,
+                        help="cut-off of the filter on the sent targets, arm joints (0 = no filter); lag ~ 1/(pi*hz)")
     return parser
+
+
+def resolve_device(spec: str) -> str:
+    """``auto`` is the GPU when torch sees one."""
+    if spec != "auto":
+        return spec
+    import torch
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def start_voice(args, holder):
     """Load Whisper and the intent model off the main thread; the window shows the result when it is there."""
     def load():
         try:
-            intent = demo_voice.load_intent(args.intent_model, args.intent_device)
-            transcriber = demo_voice.Transcriber(args.whisper_device)
+            intent = demo_voice.load_intent(args.intent_model, resolve_device(args.intent_device))
+            transcriber = demo_voice.Transcriber(resolve_device(args.whisper_device))
             worker = demo_voice.VoiceWorker(transcriber, intent, demo_orders.cell_vocabulary,
                                             party=demo_orders.is_party)
             holder["telegram_status"] = start_telegram(args, worker, holder)
@@ -836,6 +888,8 @@ def main(argv=None) -> int:
         raise SystemExit("--fps, --pick-seconds, --arm-step and --gripper-step must be positive")
     if args.pick_attempts < 1 or args.retry_wait < 0:
         raise SystemExit("--pick-attempts must be at least 1 and --retry-wait cannot be negative")
+    if args.blend_stride < 1 or args.filter_hz < 0:
+        raise SystemExit("--blend-stride must be at least 1 and --filter-hz cannot be negative")
     runner = load_script("23_run_act_so101.py")  # DEFAULT_FOLLOWER_PORT, find_camera
 
     import torch
@@ -890,8 +944,10 @@ def main(argv=None) -> int:
                 lambda: (pick_choices[window.pick_checkpoint.get()], window.white_checkpoint.get() or None),
                 lambda frame: tray_detect.detect_piece(frame, roi), rest.REST_POSE, rest.REST_TOLERANCE, device,
                 gripper_step=args.gripper_step, pick_attempts=args.pick_attempts, retry_wait=args.retry_wait,
-                reach_profile=reach_profile)
-    next_show, announced = 0.0, False
+                reach_profile=reach_profile,
+                target_filter=(None if args.no_smooth or not args.filter_hz
+                               else smooth_motion.TargetFilter(args.filter_hz)))
+    next_show, announced, bus_errors = 0.0, False, 0
     robot.connect()
     try:
         if args.p_gain:
@@ -924,8 +980,20 @@ def main(argv=None) -> int:
             if not window.open:
                 break
 
-            obs = robot.get_observation()
-            demo.tick(obs)
+            try:
+                obs = robot.get_observation()
+                demo.tick(obs)
+                bus_errors = 0
+            except OSError as exc:  # the motors did not answer: USB, or the supply sagging while the arm carries a piece
+                bus_errors += 1
+                note = f"el bus de motores no responde ({type(exc).__name__}: {exc})"
+                print(f"[bus] {note} ({bus_errors} seguidos)", flush=True)
+                if bus_errors >= BUS_ERRORS_BEFORE_PAUSE:
+                    demo.bus_error(note)
+                if bus_errors >= BUS_ERRORS_BEFORE_EXIT:
+                    raise
+                precise_sleep(0.1)
+                continue
             if cycle >= next_show:
                 front = obs["front"]
                 if demo.phase in ("wait_order", "wait_piece") and demo.tray is not None:
@@ -944,7 +1012,11 @@ def main(argv=None) -> int:
             voice["telegram"].close()
         if worker:
             worker.close()
-        robot.disconnect()
+        try:
+            robot.disconnect()
+        except Exception as exc:  # releasing the torque needs the same bus: do not hide the error that got us here
+            print(f"No se pudo soltar el torque de los motores ({type(exc).__name__}: {exc}); "
+                  "el brazo puede seguir rígido: revisa la alimentación y el USB.", flush=True)
         window.close()
     return 0
 
