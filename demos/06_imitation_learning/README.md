@@ -334,6 +334,58 @@ de altura, y añade la voz, las órdenes, el detector de pieza y el bucle:
    sesión apartada; sigue sin validación de agarre en el robot, cámbialo en el selector si no te convence),
    **clasificación** con `IkerAzurmendi/pin-classifier` (dos cámaras, media de 1,5 s) y **caja**: verde →
    `up-down-good`, blanca → `up-down-bad` (checkpoint elegible).
+   **Reintentos de la recogida.** La política de recogida tiene `--pick-seconds` (15 s por defecto: en las
+   grabaciones una recogida completa, de reposo a la pieza levantada hacia la cámara, dura 8,6 s de mediana, 12,5
+   el percentil 90 y 14,0 el 95; solo el 3,3 % pasa de 15 s) para que el brazo se estabilice en la pose elevada
+   (la «parada automática», ver abajo). Si se agota y el brazo no llegó a levantar nada tras agarrar, el intento
+   falló: el brazo vuelve despacio al reposo
+   (6 s), espera `--retry-wait` (3 s) y lo intenta de nuevo, hasta `--pick-attempts` (3) veces. Si en esa espera
+   la pieza ya no se ve en la bandeja, vuelve a esperar pieza con los intentos a cero. Tras el último fallo borra
+   la orden (si no, volvería a la misma pieza para siempre) y pide revisar la bandeja. `S` durante la vuelta
+   pausa; `C` o «stop» durante la espera cancelan. Solo con la parada automática activada (lo está por defecto):
+   sin ella el tiempo límite es el final normal de una recogida y no se reintenta.
+   La señal de fallo es el patrón de la recogida, no la imagen: en las grabaciones con el encuadre final la pieza
+   levantada hacia la cámara sigue dentro de la zona vigilada (área mediana de 17.000 px al final de la
+   recogida), así que «la pieza sigue en la bandeja» no distingue un éxito de un fallo; tampoco la pinza (termina
+   casi cerrada, 1–8, con la pieza agarrada) ni la pose (cada episodio termina en un sitio distinto). Una
+   recogida que se agota *con* la pieza ya agarrada y levantada (ver abajo) no se reintenta: pasa a clasificar
+   con «tiempo máximo con la pieza levantada». Solo se reintenta el brazo que se queda abajo intentándolo.
+
+   **Cuándo se da por alcanzada la pose elevada (sin esperar al límite).** `reach_detect.py` sustituye a la parada
+   automática de la app 24 (`pose_stop_status`: quieto 1,5 s, no antes de 5 s, cerca del objetivo), que repetida
+   sobre las 394 recogidas grabadas (30 fps, ≥ 3 s) solo se activa en 60 (15 %); las demás esperarían al límite de
+   tiempo. Pregunta por lo que es una recogida (`analyze_pick_reach.py`, resultado en `pick_reach_profile.json`):
+   1. la pinza se abrió al menos 15 puntos y luego bajó ≥ 10 (apertura mediana 40,6; 99 % de las recogidas
+      bajan ≥ 10, también con una pieza gruesa que impide cerrar del todo; si se vuelve a abrir, empieza de nuevo);
+   2. el brazo subió ≥ 30° respecto a donde agarró (el 95 % de las recogidas sube 43° o más);
+   3. el brazo lleva 0,75 s quieto (rango p10–p90 ≤ 2°, pinza ≤ 5 %) y a ≤ 6° de donde la política lo quiere.
+
+   La quietud sola no vale: el brazo también se detiene sobre la bandeja antes de tener la pieza. Con ventanas
+   de 0,5 s la regla se activaba demasiado pronto en el 14 % de los casos (lejos de la pose final, porque el
+   operador se paraba a mitad de subida); a 0,75 s baja al 5 % y con el resto de condiciones al 2,4 %.
+
+   | sobre las 394 recogidas | se activa | demasiado pronto (> 8° de la pose final) | tras llegar el brazo (mediana / p90) |
+   |---|---|---|---|
+   | regla anterior | 60 (15 %) | 5 % | 1,4 s / 1,5 s |
+   | `reach_detect.py` | 250 (64 %) | 2,4 % | 0,77 s / 0,94 s |
+
+   El 36 % restante son grabaciones que acaban antes de completar los 0,75 s (el operador paraba la grabación
+   ~1 s después de llegar: mediana 1,0 s), no recogidas en las que la regla fallara; una ejecución real puede
+   mantener la pose todo lo que quiera, así que «se activa» es un suelo. La llegada del brazo a la pose final
+   cae a los 7,5 s de mediana (p95 12,9 s): a esa hora, no al límite, empieza la clasificación. Los límites
+   quedan editables en *Ajustes → Parada automática* (por defecto 0,75 s, 2°, 6°, 5 %, mínimo 0 s).
+
+   **Sujeción firme arriba.** El par de un motor en modo posición es proporcional a la diferencia entre la
+   consigna y la posición medida. Mientras sujetaban la pieza en alto, las demostraciones llevaban la consigna
+   por debajo de la posición medida (mediana: lift −1,1°, codo −2,3°, muñeca −1,4°; pinza −2,8 y hasta −22,8 en el
+   p5), con un máximo del p99 de 2,9 / 5,9 / 6,1 / 4,0 / 9,3° por articulación. La app ordenaba, al alcanzar la
+   pose, la posición medida (diferencia cero: sin par). Ahora ordena la consigna mediana de la política en la
+   ventana quieta, recortada a ese máximo (3 / 6 / 6,5 / 4,5 / 9,5°), y la pinza conserva su objetivo de cierre.
+   No lo he podido medir en el brazo.
+
+   **Fotos para clasificar.** Con la pose alcanzada: pausa de 0,3 s y 1,5 s de fotogramas del clasificador (uno
+   cada 1/6 s, unos 9-10) cuya probabilidad se promedia: la decisión llega unos 1,8 s después de que el brazo se
+   pare, en lugar de esperar al límite de la recogida.
 4. **Repite** hasta que la orden se cumple («dos piezas…») o dices «para». Una pieza sin regla (p. ej. la orden
    solo cubre las malas y sale una buena) se queda sujeta y la ventana pide una orden que la cubra.
    `S` para y mantiene la pose; `R` devuelve el brazo a reposo despacio (retira antes la pieza de la pinza).
@@ -351,6 +403,35 @@ de altura, y añade la voz, las órdenes, el detector de pieza y el bucle:
    Solo se obedece a los chats de `--telegram-chats` (o `TELEGRAM_CHAT_IDS`): cualquier otro recibe su id y se
    ignora. Sin la opción, escribe al bot y copia el id de la respuesta. Se descartan los mensajes anteriores al
    arranque y los de más de un minuto. Notas de voz de hasta 30 s.
+
+6. **Modo fiesta** (`P`, el botón 🎉, o cualquier frase con *fiesta*, *party*, *festa*, *jai(a)*, *parranda* o *farra*,
+   con sus declinaciones en euskera: «festara», «jaietan»…). Se decide por las palabras, **antes** del modelo de
+   intención, que ni llega a leer la frase; funciona igual por voz, por la caja escrita y por Telegram. El brazo
+   sube **despacio** (velocidad máxima 25°/s, ≥ 5 s: unos 6 s desde reposo) a una pose estándar y baila hasta que
+   dices «stop» o pulsas `S`; entonces vuelve a reposo caminando (no se queda congelado) y retoma la orden que
+   hubiera. Solo arranca con el brazo libre (esperando orden o pieza); durante una recogida, un transporte o una
+   pausa con pieza en la pinza responde que no puede. Si una articulación va más de 20° por detrás de su consigna
+   durante 1 s (algo la bloquea), cancela y mantiene la pose.
+
+   El baile sale de los datos, no de números a ojo (`analyze_party_ranges.py` sobre las 573 grabaciones a 30 fps
+   de `data/real_so101/raw`, resultado en `party_profile.json`, que sí está en git):
+   - **Pose estándar** = la pose en que terminan las recogidas (la pieza levantada hacia la cámara): la mediana de
+     los 1.750 fotogramas cercanos a la grabación más representativa. Resulta `pan −31, lift −6,5, codo −34,4,
+     muñeca 16,2`, a 5° de una pose realmente grabada; el giro de muñeca va neutro (−1,5) y la pinza a media
+     abertura (15,9).
+   - **Margen de baile**: el percentil 2–98 que el brazo ya recorrió en esa configuración (pan −45…35, lift
+     −17…4,5, codo −51…−22, muñeca 0…28, pinza 1,4…30,5; giro de muñeca −77…166 sobre todos los datos). Cada
+     articulación oscila como mucho `pan ±12, lift ±8, codo ±10, muñeca ±9, giro ±35, pinza ±12`, a 2° como mínimo
+     del borde, y las consignas se recortan a ese margen.
+   - **Velocidad**: ninguna articulación pasa de 60°/s al bailar (comprobado numéricamente, incluida la entrada
+     progresiva de 4 s); en las demostraciones el p95 es 62–97°/s y la mediana 2–4°/s. A 96 pulsaciones la pinza
+     llegaba a 60,3, así que el tempo es 90 pulsaciones por minuto. Comandos con tope de 12° por consigna.
+   - **Coreografía**: seno por articulación sincronizado con el compás (balanceo del pan cada 8 tiempos, lift y codo
+     a contrapié, cabeceo de muñeca cada 2 tiempos, giro de muñeca y pulso de pinza).
+   - **Límite que conviene saber**: la subida es una interpolación recta en el espacio de articulaciones entre
+     reposo y la pose estándar; en su punto peor pasa a 15,7° (distancia sobre las 5 articulaciones) de la pose
+     grabada más cercana, frente a 6,8° del p99 entre grabaciones. No hay una demostración de ese trayecto exacto,
+     por eso va lenta y con la protección de bloqueo. **No se ha probado en el brazo real.**
 
 El detector se validó con las grabaciones de `MikelRubi` hechas con el encuadre final (`…_20261024_22*`): la
 mancha mayor mide ≥ 347 px con pieza y ≤ 58 px sin ella (67 primeros fotogramas de recogida frente a 54 últimos
@@ -380,8 +461,8 @@ blanca* (hoy «Modelo» = 5°, el valor de `policy_routes.json`).
 Limitaciones: la app no sabe si la pinza ha agarrado algo (si falla, la pieza sigue en la bandeja y el bucle
 vuelve a intentarlo); el euskera con `small` es peor que el español, así que el modelo de intención pide repetir
 cuando no está seguro (≥ 85 % en las partes que deciden); y no hay hardware en este repositorio: lo comprobado
-sin brazo son 105 pruebas (`tests/test_tray_detect.py`, `test_demo_orders.py`, `test_demo_voice.py`,
-`test_demo_telegram.py`, `test_full_demo_app.py`, esta última incluye `main()` de principio a fin con robot y voz
+sin brazo son 196 pruebas (`tests/test_tray_detect.py`, `test_demo_orders.py`, `test_demo_voice.py`,
+`test_demo_telegram.py`, `test_party_dance.py`, `test_reach_detect.py`, `test_full_demo_app.py`, esta última incluye `main()` de principio a fin con robot y voz
 simulados; Telegram se probó contra un servidor local y la decodificación contra un OGG/Opus generado, no contra
 Telegram), la carga real
 de las políticas de recogida y verde, la inferencia real de la verde, del clasificador y del modelo de intención con

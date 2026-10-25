@@ -1,0 +1,69 @@
+{
+  "source": {
+    "pick_episodes": 394,
+    "fps": 30,
+    "frames": 110323
+  },
+  "thresholds": {
+    "open_min": 15.0,
+    "drop": 10.0,
+    "lift": 30.0,
+    "window": 0.75,
+    "motion": 2.0,
+    "error": 6.0,
+    "gripper_motion": 5.0,
+    "hold_gap": [
+      3.0,
+      6.0,
+      6.5,
+      4.5,
+      9.5
+    ]
+  },
+  "evaluation": {
+    "today": {
+      "episodes": 394,
+      "fired": 60,
+      "fired_share": 0.152,
+      "premature": 3,
+      "premature_share_of_fired": 0.05,
+      "delay_p50_s": 1.4,
+      "delay_p90_s": 1.54
+    },
+    "new": {
+      "episodes": 394,
+      "fired": 250,
+      "fired_share": 0.635,
+      "premature": 6,
+      "premature_share_of_fired": 0.024,
+      "delay_p50_s": 0.77,
+      "delay_p90_s": 0.94
+    }
+  },
+  "hold_gap_stats": {
+    "signed_p50": [
+      -0.11,
+      -1.1,
+      -2.32,
+      -1.36,
+      0.32,
+      -2.79
+    ],
+    "signed_p5": [
+      -0.92,
+      -4.06,
+      -4.76,
+      -2.52,
+      -0.7,
+      -22.75
+    ],
+    "abs_p99": [
+      2.91,
+      5.89,
+      6.07,
+      4.02,
+      9.32,
+      25.7
+    ]
+  }
+}

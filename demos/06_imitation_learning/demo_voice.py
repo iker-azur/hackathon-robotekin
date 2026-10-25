@@ -145,11 +145,14 @@ class VoiceWorker:
 
     ``("listening", None)``, ``("loading", text)``, ``("heard", (text, language))`` and ``("error", text)``;
     ``("reading", (text, mapped_text, language, reading_dict))`` for each sentence the intent model read.
-    A request that came with a ``reply`` callable is preceded by ``("source", reply)``.
+    A request that came with a ``reply`` callable is preceded by ``("source", reply)``. A sentence the ``party``
+    check accepts ends in ``("party", (text, language))`` instead of ``"reading"``: the intent model never sees it.
     """
 
-    def __init__(self, transcriber: Transcriber, intent, vocabulary=lambda text: text, recorder=record_utterance) -> None:
+    def __init__(self, transcriber: Transcriber, intent, vocabulary=lambda text: text, recorder=record_utterance,
+                 party=lambda text: False) -> None:
         self.transcriber, self.intent, self.vocabulary, self.recorder = transcriber, intent, vocabulary, recorder
+        self.party = party
         self.events: queue.Queue = queue.Queue()
         self.requests: queue.Queue = queue.Queue()
         self.abort = threading.Event()
@@ -200,6 +203,9 @@ class VoiceWorker:
                     self.events.put(("error", "No se ha entendido ninguna palabra."))
                     continue
                 self.events.put(("heard", (text, language)))
+                if self.party(text):  # decided on the words alone, before the intent model reads anything
+                    self.events.put(("party", (text, language)))
+                    continue
                 mapped = self.vocabulary(text)
                 self.events.put(("reading", (text, mapped, language, self.intent.predict(mapped))))
             except Exception as exc:

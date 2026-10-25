@@ -12,7 +12,15 @@ classifier wrapper, auto-stop and route clearance) and adding the rest of the pi
     2. WAIT     with an order active, the front camera is watched; the robot does not move until a piece has lain
                 in the tray for a second (``tray_detect.py``). An empty tray means waiting, indefinitely.
     3. PICK     the pick ACT policy (default ``IkerAzurmendi/act-pick-v2-30000``) lifts the piece to the camera;
-                the arm holds the pose and the gripper keeps its grip.
+                the arm holds the pose and the gripper keeps its grip. The pick is over when ``reach_detect.py`` sees
+                the grasp (gripper opened, then closed), a lift of 30 degrees and 0.75 s of stillness: about a
+                second after the arm stops, not at the time limit; the hold then pushes with the policy's own target
+                (the torque the demonstrations used) and about 1.8 s of classifier frames are averaged. If the time
+                limit is reached with nothing lifted (the arm stays down, trying), the attempt failed: the arm
+                walks back to rest, waits
+                ``--retry-wait`` (3 s) and tries again, ``--pick-attempts`` (3) times in all; after the last one the
+                order is cleared and the app asks you to check the tray. Needs the "Parada automática" setting on
+                (it is by default): without it the time limit is the normal end of a pick and nothing is retried.
     4. CLASSIFY the two-camera pin classifier averages 1.5 s of frames: PIN or NO PIN.
     5. ROUTE    the order decides the box: green (big) -> ``up-down-good``, white (small) -> ``up-down-bad``. A piece
                 with no rule is held until an order that covers it arrives.
@@ -21,6 +29,9 @@ classifier wrapper, auto-stop and route clearance) and adding the rest of the pi
 Keys (the window must have focus, not the typed-order box):
     V listen   S stop and hold   R resume (the arm returns to rest; take the piece out of the gripper first)
     F pick now without waiting for the tray detector   C clear the order   1 / 2 / 3 preset orders   Q / Esc quit
+    P party mode (also any sentence with party / fiesta / festa / jai..., which skips the intent model): the arm rises
+      slowly to a standard pose taken from the demonstrations and dances inside their envelope (``party_dance.py``,
+      ``party_profile.json``) until S or "stop"; it then walks back to rest. Only when no piece is being handled.
 
 Motion: the apps used to cap every command at 3-8 degrees from the measured pose. In the demonstrations the follower
 trails the leader by 10-29 degrees (95th-99th percentile) and the motor torque is proportional to that gap, so the cap
@@ -40,7 +51,6 @@ import sys
 import threading
 import time
 import traceback
-from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -56,8 +66,18 @@ FAILURES_BEFORE_PAUSE = 2
 DEFAULT_PICK = "IkerAzurmendi/act-pick-v2-30000"
 DEFAULT_CLASSIFIER = "IkerAzurmendi/pin-classifier"
 DEFAULT_INTENT = "IkerAzurmendi/bin-intent-gliner2"
-MOVING = ("picking", "classifying", "holding", "routing", "returning")
+SETTLE_S, CLASSIFY_S = 0.3, 1.5  # after the reach: a short pause, then 1.5 s of classifier frames, averaged
+DEFAULT_PICK_SECONDS = 15.0  # 97% of the recorded picks (rest to piece raised to the camera) take less
+PICK_ATTEMPTS, RETRY_WAIT_S = 3, 3.0  # a pick that times out goes back to rest, waits, and tries again
+PARTY = ("party_up", "party")
+PARTY_STEP = 12.0  # largest command offset while rising and dancing: the targets are smooth, so it never bites
+PARTY_LAG_DEG, PARTY_LAG_S = 20.0, 1.0  # an arm joint this far behind its target this long is blocked: stop
+PARTY_SETTLE_S = 1.0  # after the rise time, how long to wait before the dance starts fading in
+MOVING = ("picking", "classifying", "holding", "routing", "returning", *PARTY)
 PHASES = {
+    "retry_wait": ("REINTENTO: en reposo, esperando para volver a intentarlo", "#ef6c00"),
+    "party_up": ("FIESTA: subiendo despacio a la posición de baile", "#d81b60"),
+    "party": ("FIESTA: bailando · S o «stop» para terminar", "#8e24aa"),
     "loading": ("CARGANDO MODELOS", "#555555"),
     "wait_order": ("ESPERANDO ORDEN - pulsa V y di qué hacer con las piezas", "#1f7a3a"),
     "wait_piece": ("ESPERANDO PIEZA EN LA BANDEJA", "#8a6d00"),
@@ -84,6 +104,8 @@ tray_detect = load_script("tray_detect.py")
 demo_orders = load_script("demo_orders.py")
 demo_voice = load_script("demo_voice.py")
 demo_telegram = load_script("demo_telegram.py")
+party_dance = load_script("party_dance.py")
+reach_detect = load_script("reach_detect.py")
 JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 
 
@@ -159,8 +181,13 @@ class Demo:
     """The cycle, advanced by ``tick``; it owns no window, microphone or hardware setup, so a test can drive it."""
 
     def __init__(self, robot, models, orders, settings, choices, detect, rest_pose, rest_tolerance, device,
-                 gripper_step=45.0, clock=None, log=print):
+                 gripper_step=45.0, clock=None, log=print, party_profile=None, pick_attempts=PICK_ATTEMPTS,
+                 retry_wait=RETRY_WAIT_S, reach_profile=None):
         self.robot, self.models, self.orders = robot, models, orders
+        self.reach_profile, self.reach = reach_profile or reach_detect.load_profile(), None
+        self.pick_attempts, self.retry_wait, self.attempts = pick_attempts, retry_wait, 0
+        self.dance = party_dance.Choreography(party_profile or party_dance.load_profile())
+        self.party_requested = self.party_end = False
         self.settings, self.choices, self.detect = settings, choices, detect
         self.rest_pose, self.rest_tolerance = np.asarray(rest_pose, dtype=np.float32), np.asarray(rest_tolerance)
         self.device, self.gripper_step, self.clock, self.log = device, gripper_step, clock or time.perf_counter, log
@@ -174,13 +201,21 @@ class Demo:
         self.delivered = {"green": 0, "white": 0}
         self.piece_class = None
         self.last_gripper = None
-        self.pose_history = deque()
 
     # -- requests from the window and the voice thread -------------------------------------------------------
 
     def request_stop(self):
-        if self.phase in MOVING:
+        if self.phase in PARTY:  # nothing is held: finish the dance and walk back to rest instead of freezing
+            self.party_end = True
+        elif self.phase in MOVING:
             self.stop_requested = True
+
+    def request_party(self) -> bool:
+        """Party mode starts only when the arm holds nothing and no cycle is running; False says it was refused."""
+        if self.phase not in ("wait_order", "wait_piece"):
+            return False
+        self.party_requested = True
+        return True
 
     def request_resume(self):
         if self.phase == "paused":
@@ -206,8 +241,12 @@ class Demo:
     def near_rest(self, state, slack=REST_SLACK) -> bool:
         return bool(np.all(np.abs(state - self.rest_pose) <= self.rest_tolerance * slack))
 
-    def _hold_action(self, obs) -> dict:
+    def _hold_action(self, obs, arm_target=None) -> dict:
+        """Hold where the arm is. With ``arm_target`` (the firm hold) the arm joints are commanded a little past the
+        measured pose, which is what makes the motors push: a target equal to the pose commands no torque at all."""
         action = {f"{j}.pos": float(obs[f"{j}.pos"]) for j in JOINTS}
+        if arm_target is not None:
+            action.update({f"{j}.pos": float(v) for j, v in zip(JOINTS, arm_target)})
         if self.last_gripper is not None:  # keep the closing target so holding does not release the grip
             action["gripper.pos"] = self.last_gripper
         return action
@@ -238,8 +277,17 @@ class Demo:
             if not self.models.ready:
                 return
             self._go("wait_order")
+        if self.party_end and self.phase in PARTY:
+            self.party_end = False
+            self._begin_return(state, "fin de la fiesta; vuelvo a reposo")
+            return
+        if self.party_requested and self.phase in ("wait_order", "wait_piece"):
+            self.party_requested = False
+            self._start_party(state)
+            return
         if self.stop_requested:
             self.stop_requested = False
+            self.attempts = 0
             self.robot.config.max_relative_target = step_limits(RETURN_STEP, self.gripper_step)
             self.robot.send_action(self._hold_action(obs))
             self._go("paused", "parado; manteniendo la pose")
@@ -277,13 +325,15 @@ class Demo:
             self.log(self.note, flush=True)
             return
         source = self.choices()[0]
-        self._go("picking")
+        self._go("picking", f"intento {self.attempts + 1}/{self.pick_attempts}" if self.attempts else "")
         policy, pre, post, default_actions = self.models.pick(source)
         actions = app24.set_action_steps(policy, settings["pick_actions"], default_actions)
         self.run, self.pick_models = settings, (policy, pre, post)
         self.period = 1 / settings["control_hz"]
         self.start, self.first = self.clock(), True
-        self.pose_history.clear()
+        self.reach = reach_detect.ReachDetector(
+            self.reach_profile, window=settings["pose_window"], motion=settings["arm_motion"],
+            error=settings["arm_error"], gripper_motion=settings["gripper_motion"], min_time=settings["min_pick"])
         self.last_gripper, self.result, self.piece_class = None, "", None
         self._rewatch()
         self.live = "esperando movimiento"
@@ -315,16 +365,55 @@ class Demo:
                 self._go("paused" if self.failures >= FAILURES_BEFORE_PAUSE else "wait_piece", note)
                 return
             self.first = False
-            self.pose_history.append((elapsed, state.copy(), action.copy()))
-            reached, self.live = app24.pose_stop_status(self.pose_history, elapsed, s)
+            if s["auto_stop"]:
+                reached, self.live = self.reach.update(elapsed, state, action)
+            else:
+                self.live = "Parada automática desactivada: la recogida dura el tiempo máximo"
             if not reached:
                 self._send({f"{j}.pos": float(a) for j, a in zip(JOINTS, action)}, ramped(s["pick_step"], elapsed))
                 return
+        lifted = bool(s["auto_stop"] and self.reach.lifted)
+        if s["auto_stop"] and not (reached or lifted):  # time ran out and the arm never lifted anything: still down
+            self._pick_failed(state)
+            return
         self.robot.config.max_relative_target = step_limits(s["pick_step"], self.gripper_step)
-        self.robot.send_action(self._hold_action(obs))
+        # at the top the arm holds the piece firmly: the policy's own target, not the pose it happens to be in
+        self.robot.send_action(self._hold_action(obs, self.reach.hold_target(state) if s["auto_stop"] else None))
         self.cls_history, self.cls_start, self.next_classify = [], now + s["settle_seconds"], 0.0
-        self.failures = 0
-        self._go("classifying", "posición alcanzada" if reached else "tiempo máximo")
+        self.failures = self.attempts = 0
+        self._go("classifying", f"posición alcanzada a los {elapsed:.1f} s" if reached else
+                 "tiempo máximo con la pieza levantada" if lifted else "tiempo máximo")
+
+    def _pick_failed(self, state):
+        """The pick policy used its whole time without finishing: back to rest, then try again, ``pick_attempts`` in all."""
+        self.attempts += 1
+        seconds = f"{self.run['pick_seconds']:g} s"
+        if self.attempts >= self.pick_attempts:
+            self.attempts = 0
+            self._begin_return(state, f"{self.pick_attempts} intentos de {seconds} sin coger la pieza; vuelvo al inicio",
+                               then="give_up")
+        else:
+            self._begin_return(state, f"intento {self.attempts}/{self.pick_attempts} sin éxito tras {seconds}; "
+                                      "vuelvo al inicio", then="retry")
+
+    def _tick_retry_wait(self, obs, state, now):
+        if not self.orders.active:
+            self.attempts = 0
+            self._go("wait_order")
+            return
+        if now >= self.next_detect:
+            self.tray = self.detect(obs["front"])
+            self.next_detect = now + DETECT_INTERVAL
+        waited = now - self.retry_start
+        self.live = f"Reintento {self.attempts + 1}/{self.pick_attempts} en {max(self.retry_wait - waited, 0.0):.0f} s"
+        if waited < self.retry_wait:
+            return
+        if self.tray is not None and self.tray.present:
+            self._start_pick()
+        else:  # the piece is gone (fell out of view, or somebody took it): it is a new situation
+            self.attempts = 0
+            self._rewatch()
+            self._go("wait_piece", "la pieza ya no se ve en la bandeja")
 
     def _tick_classifying(self, obs, state, now):
         s = self.run
@@ -405,8 +494,8 @@ class Demo:
             self.robot.send_action(self._hold_action(obs))
             self._go("paused", "la pieza no se soltó: retírala de la pinza y pulsa R")
 
-    def _begin_return(self, state, note):
-        self.ret = {"from": state.copy(), "start": self.clock(), "seconds": RETURN_SECONDS}
+    def _begin_return(self, state, note, then=None):
+        self.ret = {"from": state.copy(), "start": self.clock(), "seconds": RETURN_SECONDS, "then": then}
         self._go("returning", note)
 
     def _tick_returning(self, obs, state, now):
@@ -418,12 +507,61 @@ class Demo:
         self.live = f"Volviendo a reposo: {alpha:.0%}"
         if alpha >= 1.0 and (self.near_rest(state, 1.0) or now - ret["start"] > ret["seconds"] + 3.0):
             self._rewatch()
-            self._go("wait_piece" if self.orders.active else "wait_order")
+            if ret["then"] == "retry":
+                self.retry_start, self.tray, self.next_detect = now, None, 0.0
+                self._go("retry_wait", f"intento {self.attempts + 1}/{self.pick_attempts} en {self.retry_wait:g} s")
+            elif ret["then"] == "give_up":
+                self.orders.clear()  # the piece is still there: without this the order would pick it forever
+                self._go("wait_order", "no he podido coger la pieza: revisa la bandeja y repite la orden")
+            else:
+                self._go("wait_piece" if self.orders.active else "wait_order")
+
+    # -- party mode: rise slowly to the standard pose, dance, and walk back to rest on stop ------------------------
+
+    def _start_party(self, state):
+        home = self.dance.home
+        self.pt = {"from": state.copy(), "start": self.clock(), "seconds": party_dance.rise_seconds(state, home),
+                   "lag_since": None}
+        self.last_gripper, self.result, self.period = None, "", 1 / 30
+        self._go("party_up", f"{self.pt['seconds']:.0f} s hasta la posición de baile")
+
+    def _party_send(self, obs, state, target, now) -> bool:
+        """Send a party target unless the arm is not following it (blocked): then hold the pose and pause."""
+        lag = float(np.abs(target[:5] - state[:5]).max())
+        if lag > PARTY_LAG_DEG:
+            if self.pt["lag_since"] is None:
+                self.pt["lag_since"] = now
+            if now - self.pt["lag_since"] > PARTY_LAG_S:
+                self.robot.config.max_relative_target = step_limits(RETURN_STEP, self.gripper_step)
+                self.robot.send_action(self._hold_action(obs))
+                self._go("paused", f"fiesta cancelada: el brazo va {lag:.0f}° por detrás de la consigna (¿choca?)")
+                return False
+        else:
+            self.pt["lag_since"] = None
+        self._send({f"{j}.pos": float(v) for j, v in zip(JOINTS, target)}, PARTY_STEP)
+        return True
+
+    def _tick_party_up(self, obs, state, now):
+        pt = self.pt
+        elapsed = now - pt["start"]
+        target = party_dance.rise_target(pt["from"], self.dance.home, elapsed, pt["seconds"])
+        if not self._party_send(obs, state, target, now):
+            return
+        self.live = f"Subiendo: {min(elapsed / pt['seconds'], 1.0):.0%}"
+        if elapsed >= pt["seconds"] + PARTY_SETTLE_S:
+            pt["dance_start"] = now
+            self._go("party", "¡a bailar!")
+
+    def _tick_party(self, obs, state, now):
+        seconds = now - self.pt["dance_start"]
+        if not self._party_send(obs, state, self.dance.target(seconds), now):
+            return
+        self.live = f"Bailando · compás {int(self.dance.beat(seconds)) + 1}"
 
     def _tick_paused(self, obs, state, now):
         self.live = "Parado: los motores mantienen la pose"
         if self.resume_requested:
-            self.resume_requested, self.failures = False, 0
+            self.resume_requested, self.failures, self.attempts = False, 0, 0
             self.last_gripper = None
             self._begin_return(state, "reanudando: vuelvo a reposo")
 
@@ -459,6 +597,7 @@ class Window:
         buttons.pack(fill="x", padx=8, pady=4)
         for text, event in (("🎤 Hablar (V)", ("listen",)), ("Parar (S)", ("key", "s")), ("Reanudar (R)", ("key", "r")),
                             ("Forzar recogida (F)", ("key", "f")), ("Borrar orden (C)", ("key", "c")),
+                            ("🎉 Fiesta (P)", ("key", "p")),
                             ("1 Buenas→blanca, malas→verde", ("preset", "sort")),
                             ("2 Todas→verde", ("preset", "all_green")), ("3 Todas→blanca", ("preset", "all_white"))):
             tk.Button(buttons, text=text, command=lambda event=event: post(event)).pack(side="left", padx=2)
@@ -521,7 +660,7 @@ class Window:
             self.post(("listen",))
         elif key in ("1", "2", "3"):
             self.post(("preset", {"1": "sort", "2": "all_green", "3": "all_white"}[key]))
-        elif key in ("s", "r", "f", "c"):
+        elif key in ("s", "r", "f", "c", "p"):
             self.post(("key", key))
 
     def motion_settings(self) -> dict:
@@ -576,9 +715,17 @@ class Feedback:
             except Exception:  # the order is already applied; a lost reply must not stop the loop
                 traceback.print_exc()
 
+    def party(self, demo, text=None, language=None):
+        """Party mode asked for by the button, the key or a sentence: start it, or say why it cannot start now."""
+        verdict = demo_orders.message("party" if demo.request_party() else "party_busy", language)
+        self.voice = f"({language or 'texto'}) «{text}»  →  {verdict}" if text else verdict
+        self._answer(f"«{text}» ({language or 'texto'})\n{verdict}" if text else verdict)
+
     def handle(self, kind, payload, orders, demo, min_confidence):
         if kind == "source":
             self.reply = payload
+        elif kind == "party":
+            self.party(demo, *payload)
         elif kind == "listening":
             self.voice = "🎤 Escuchando…"
         elif kind in ("loading", "error"):
@@ -623,7 +770,12 @@ def build_parser():
     parser.add_argument("--camera-width", type=int, default=640)
     parser.add_argument("--camera-height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--pick-seconds", type=float, default=20)
+    parser.add_argument("--pick-seconds", type=float, default=DEFAULT_PICK_SECONDS,
+                        help="time the pick policy gets per attempt (97%% of the recorded picks need less)")
+    parser.add_argument("--pick-attempts", type=int, default=PICK_ATTEMPTS,
+                        help="tries per piece: a pick that times out returns to rest and starts again")
+    parser.add_argument("--retry-wait", type=float, default=RETRY_WAIT_S,
+                        help="seconds at rest between a failed attempt and the next one")
     parser.add_argument("--arm-step", type=float, default=30.0,
                         help="largest target offset from the measured pose, arm joints, degrees (apps used 3-8)")
     parser.add_argument("--gripper-step", type=float, default=45.0,
@@ -641,7 +793,8 @@ def start_voice(args, holder):
         try:
             intent = demo_voice.load_intent(args.intent_model, args.intent_device)
             transcriber = demo_voice.Transcriber(args.whisper_device)
-            worker = demo_voice.VoiceWorker(transcriber, intent, demo_orders.cell_vocabulary)
+            worker = demo_voice.VoiceWorker(transcriber, intent, demo_orders.cell_vocabulary,
+                                            party=demo_orders.is_party)
             holder["telegram_status"] = start_telegram(args, worker, holder)
             holder["worker"] = worker
         except Exception as exc:
@@ -681,6 +834,8 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.fps <= 0 or args.pick_seconds <= 0 or args.arm_step <= 0 or args.gripper_step <= 0:
         raise SystemExit("--fps, --pick-seconds, --arm-step and --gripper-step must be positive")
+    if args.pick_attempts < 1 or args.retry_wait < 0:
+        raise SystemExit("--pick-attempts must be at least 1 and --retry-wait cannot be negative")
     runner = load_script("23_run_act_so101.py")  # DEFAULT_FOLLOWER_PORT, find_camera
 
     import torch
@@ -703,9 +858,14 @@ def main(argv=None) -> int:
     roi = tray_detect.parse_roi(args.tray_roi) if args.tray_roi else tray_detect.DEFAULT_ROI
 
     keys = queue.Queue()
-    settings = motion_controls.default_settings(pick_seconds=args.pick_seconds, pick_step=args.arm_step,
-                                                green_step=args.arm_step, white_step=args.arm_step,
-                                                control_hz=args.fps)
+    reach_profile = reach_detect.load_profile()
+    settings = motion_controls.default_settings(
+        pick_seconds=args.pick_seconds, pick_step=args.arm_step, green_step=args.arm_step, white_step=args.arm_step,
+        control_hz=args.fps,
+        # the reach detector's limits (measured on the recorded picks) and a short, averaged look at the piece:
+        # about 1.8 s of frames after the arm has been still, instead of waiting for the time limit
+        pose_window=reach_profile["window"], arm_motion=reach_profile["motion"], arm_error=reach_profile["error"],
+        gripper_motion=reach_profile["gripper_motion"], min_pick=0, settle_seconds=SETTLE_S, classify_seconds=CLASSIFY_S)
     window = Window(keys.put, pick_choices, initial_pick, white_choices, settings)
     orders = demo_orders.OrderBook(good_has_pin=not args.bad_has_pin)
     models = Models(args, device, registry, pick_choices[initial_pick], white_choices[0] if white_choices else None)
@@ -729,7 +889,8 @@ def main(argv=None) -> int:
     demo = Demo(robot, models, orders, window.motion_settings,
                 lambda: (pick_choices[window.pick_checkpoint.get()], window.white_checkpoint.get() or None),
                 lambda frame: tray_detect.detect_piece(frame, roi), rest.REST_POSE, rest.REST_TOLERANCE, device,
-                gripper_step=args.gripper_step)
+                gripper_step=args.gripper_step, pick_attempts=args.pick_attempts, retry_wait=args.retry_wait,
+                reach_profile=reach_profile)
     next_show, announced = 0.0, False
     robot.connect()
     try:
@@ -746,7 +907,7 @@ def main(argv=None) -> int:
                 event = keys.get()
                 if event[0] == "key":
                     {"q": window.close, "s": demo.request_stop, "r": demo.request_resume,
-                     "f": demo.request_force, "c": orders.clear}[event[1]]()
+                     "f": demo.request_force, "c": orders.clear, "p": lambda: feedback.party(demo)}[event[1]]()
                 elif event[0] == "preset":
                     orders.preset(event[1])
                     feedback.voice = "Orden fijada con el botón"

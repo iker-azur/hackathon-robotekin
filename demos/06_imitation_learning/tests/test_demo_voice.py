@@ -184,6 +184,31 @@ class VoiceWorkerTests(unittest.TestCase):
         worker.submit_audio(AUDIO, lambda text: None)
         self.assertEqual([kind for kind, _ in collect(worker, 4)], ["source", "loading", "heard", "error"])
 
+    def test_a_party_sentence_skips_the_intent_model(self):
+        worker = self.worker(transcriber=FakeTranscriber(text="vamos de fiesta"))
+        worker.party = lambda text: "fiesta" in text
+        worker.listen_once()
+        events = collect(worker, 4)
+        self.assertEqual([kind for kind, _ in events], ["listening", "loading", "heard", "party"])
+        self.assertEqual(events[3][1], ("vamos de fiesta", "es"))
+        self.assertEqual(self.intent.texts, [])  # decided on the words, before any classification
+
+    def test_a_typed_party_with_a_reply_target_announces_its_source_then_the_party(self):
+        worker = self.worker()
+        worker.party = lambda text: "festa" in text
+        reply = lambda text: None
+        worker.submit_text("festa egin dezagun", reply)
+        events = collect(worker, 3)
+        self.assertEqual([kind for kind, _ in events], ["source", "heard", "party"])
+        self.assertEqual(self.intent.texts, [])
+
+    def test_other_sentences_still_reach_the_intent_model_when_a_party_check_is_set(self):
+        worker = self.worker()
+        worker.party = lambda text: "fiesta" in text
+        worker.submit_text("pon todo en la caja verde")
+        self.assertEqual([kind for kind, _ in collect(worker, 2)], ["heard", "reading"])
+        self.assertEqual(self.intent.texts, ["pon todo en la caja grande"])
+
     def test_close_stops_the_intent_model(self):
         worker = self.worker()
         worker.close()

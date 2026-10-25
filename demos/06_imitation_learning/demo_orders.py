@@ -13,6 +13,7 @@ In this cell a piece with a pin is a good piece and a piece without one is a bad
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 PIN, NO_PIN = "PIN", "NO PIN"  # the labels of ``24_pick_and_classify_app.label``
@@ -47,6 +48,18 @@ def cell_vocabulary(text: str) -> str:
     return _WORDS.sub(word, text)
 
 
+# Party mode: the words that start it, whatever else the sentence says. Spanish and English say fiesta / party; Basque
+# says festa (fiesta, party and parranda are also used), jai (a celebration) and farra, which take case endings
+# (festan, festara, jaia, jaietan), so those are matched by stem. Whole words only: "festival" is not a party order.
+_PARTY = re.compile(r"\b(?:party|parties|partys|fiestas?|festa\w*|jai|jaia\w*|jaiet\w*|parranda\w*|farra(?:k|n|ra|z|rekin)?)\b")
+
+
+def is_party(text: str) -> bool:
+    """Does the sentence ask for the party mode? Case and accents do not matter."""
+    plain = unicodedata.normalize("NFKD", text.lower())
+    return bool(_PARTY.search("".join(c for c in plain if not unicodedata.combining(c))))
+
+
 MESSAGES = {
     "set": {"es": "Orden entendida.", "en": "Order understood.", "eu": "Agindua ulertu dut."},
     "stop": {"es": "Parado: no hay ninguna orden activa.", "en": "Stopped: no order is active.",
@@ -62,6 +75,12 @@ MESSAGES = {
     "not_a_cell_box": {"es": "Esa caja no está en esta célula: solo hay la grande (verde) y la blanca.",
                        "en": "That box is not in this cell: there is only the big (green) and the white one.",
                        "eu": "Kutxa hori ez dago zelula honetan: handia (berdea) eta zuria bakarrik daude."},
+    "party": {"es": "¡Fiesta! Subo despacio a la posición de baile. Di «para» (o pulsa S) para terminar.",
+              "en": "Party time! I am rising slowly to the dance pose. Say \"stop\" (or press S) to finish.",
+              "eu": "Festa! Mantso igoko naiz dantza-posiziora. Esan «gelditu» (edo sakatu S) amaitzeko."},
+    "party_busy": {"es": "Ahora no puedo bailar: termina la pieza en curso (S para parar, R para reanudar) y pídelo otra vez.",
+                   "en": "I cannot dance right now: finish the current piece (S to stop, R to resume) and ask again.",
+                   "eu": "Orain ezin dut dantzan egin: amaitu uneko pieza (S gelditzeko, R jarraitzeko) eta eskatu berriro."},
     "contradiction": {"es": "La orden se contradice (por ejemplo, buenas y sin perno); repítela.",
                       "en": "The order contradicts itself (for example good and without a pin); say it again.",
                       "eu": "Aginduak kontraesana dauka; errepikatu, mesedez."},

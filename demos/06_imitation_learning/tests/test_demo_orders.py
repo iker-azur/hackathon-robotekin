@@ -180,5 +180,33 @@ class OrderBookTests(unittest.TestCase):
         self.assertIn("VERDE", book.describe())
 
 
+class PartyWordTests(unittest.TestCase):
+    def test_party_and_fiesta_in_any_sentence_start_the_party(self):
+        for text in ("Fiesta", "¡Hagamos una fiesta!", "modo fiesta", "Quiero una FIESTA con el robot", "party",
+                     "Party mode", "Let's have a party", "move the pieces and then party time", "las fiestas"):
+            self.assertTrue(orders.is_party(text), text)
+
+    def test_basque_words_for_a_party_with_their_case_endings(self):
+        for text in ("festa", "Festa egin dezagun", "festara joango gara", "festan gaude", "jai", "Jaia dugu",
+                     "jaietan", "parranda bat", "farra", "farrarekin"):
+            self.assertTrue(orders.is_party(text), text)
+
+    def test_accents_and_case_do_not_matter(self):
+        self.assertTrue(orders.is_party("Fiésta"))
+        self.assertTrue(orders.is_party("FIESTA"))
+
+    def test_ordinary_orders_and_look_alike_words_are_not_a_party(self):
+        for text in ("Mueve las piezas buenas a la caja blanca", "move all the pieces to the green box",
+                     "Eraman pieza onak kutxa zurira", "festival", "festejar", "partial", "participar",
+                     "departamento", "stop", "para", "gelditu", "", "jainkoa"):
+            self.assertFalse(orders.is_party(text), text)
+
+    def test_party_messages_exist_in_three_languages(self):
+        for kind in ("party", "party_busy"):
+            for language in ("es", "en", "eu"):
+                self.assertTrue(orders.message(kind, language))
+        self.assertNotEqual(orders.message("party", "eu"), orders.message("party", "es"))
+
+
 if __name__ == "__main__":
     unittest.main()

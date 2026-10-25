@@ -25,7 +25,7 @@ MAX_AGE_S = 60  # an order older than this is stale: the scene has changed
 MAX_VOICE_S = 30
 SAMPLE_RATE = 16000
 HELP = ("Envíame una orden escrita o una nota de voz (es / en / eu), por ejemplo: «mueve las piezas buenas a la caja "
-        "blanca y las malas a la verde», «todas a la caja verde» o «stop».")
+        "blanca y las malas a la verde», «todas a la caja verde», «stop» o «fiesta» para que baile.")
 
 
 class TelegramError(RuntimeError):
