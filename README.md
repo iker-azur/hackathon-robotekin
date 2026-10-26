@@ -151,3 +151,10 @@ y posteriormente sustituirlo por:
 RealSO101
 
 sin modificar el resto del sistema.
+
+#### Inspección de piezas con perno y sin perno
+
+La [sección de inspección de piezas](demos/10_pin_inspection/README.md) prepara los
+datos para un futuro modelo de dos cabezas. El primer paso busca etiquetas
+explícitas en los datasets de `MikelRubi` en Hugging Face y descarga las imágenes
+y anotaciones originales, con un inventario de clases y procedencia.

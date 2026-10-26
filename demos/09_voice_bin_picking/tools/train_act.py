@@ -25,8 +25,12 @@ recorte, segmentador, unidades) que ``binpick/policy.py`` comprueba al cargar. N
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import inspect
 import json
+import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -48,26 +52,341 @@ def parse_episodes(text: str | None) -> list[int] | None:
     return out
 
 
+def resolve_image_inputs(feature_keys: set[str], obs_mode: str) -> list[str]:
+    """Resolve visual inputs for custom bin-pick data and regular LeRobot camera keys."""
+    available = sorted(key for key in feature_keys if key.startswith("observation.images."))
+    if obs_mode == "rgb_mask":
+        required = [IMAGE_KEYS["overhead"], IMAGE_KEYS["target"]]
+        missing = [key for key in required if key not in feature_keys]
+        if missing:
+            raise SystemExit(
+                f"RGB + target mask requires {required}; this dataset has {available or 'no camera features'}. "
+                "Choose RGB only for ordinary camera recordings, or record masks with tools/collect_demos.py."
+            )
+        return required
+    if obs_mode == "mask_only":
+        key = IMAGE_KEYS["target"]
+        if key not in feature_keys:
+            raise SystemExit(f"Mask-only mode requires {key}; available camera features: {available or 'none'}.")
+        return [key]
+    if IMAGE_KEYS["overhead"] in feature_keys:
+        return [IMAGE_KEYS["overhead"]]
+    for suffix in ("front", "camera", "main"):
+        key = f"observation.images.{suffix}"
+        if key in feature_keys:
+            return [key]
+    ordinary_cameras = [key for key in available if key != IMAGE_KEYS["target"]]
+    if ordinary_cameras:
+        return [ordinary_cameras[0]]
+    raise SystemExit("The dataset does not contain an RGB camera feature for ACT.")
+
+
+def report_stage_progress(stage: str, current: int, total: int) -> None:
+    print(f"[Progress] stage={stage} current={current} total={total}", flush=True)
+
+
 def patch_last_checkpoint_windows() -> None:
-    """LeRobot enlaza ``checkpoints/last`` con un symlink; en Windows sin permisos falla. Se sustituye por una copia."""
+    """Apply Windows checkpoint fixes and allow warm-starting an incomplete saved checkpoint."""
     import shutil
 
     import lerobot.scripts.lerobot_train as lerobot_train
     import lerobot.utils.train_utils as train_utils
+    from lerobot.policies.factory import make_pre_post_processors
     from lerobot.utils.constants import LAST_CHECKPOINT_LINK
 
     def update_last_checkpoint(checkpoint_dir):
         checkpoint_dir = Path(checkpoint_dir)
         link = checkpoint_dir.parent / LAST_CHECKPOINT_LINK
-        if link.is_symlink() or link.is_file():
-            link.unlink()
-        elif link.is_dir():
-            shutil.rmtree(link)
-        shutil.copytree(checkpoint_dir, link)
+        step = checkpoint_dir.name
+        staged = checkpoint_dir.parent / f"t{step}"
+        backup = checkpoint_dir.parent / f"b{step}"
+
+        try:
+            shutil.copytree(checkpoint_dir, staged)
+            if link.exists() or link.is_symlink():
+                os.replace(link, backup)
+            os.replace(staged, link)
+        except (OSError, shutil.Error) as exc:
+            if backup.exists() and not link.exists():
+                try:
+                    os.replace(backup, link)
+                except OSError:
+                    pass
+            shutil.rmtree(staged, ignore_errors=True)
+            print(
+                f"[Checkpoint] Could not refresh 'last' because Windows/OneDrive could not copy or replace it: {exc}. "
+                f"The numbered checkpoint at {checkpoint_dir} is saved; training will continue.",
+                flush=True,
+            )
+            return link
+
+        if backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
         return link
 
     train_utils.update_last_checkpoint = update_last_checkpoint
     lerobot_train.update_last_checkpoint = update_last_checkpoint
+
+    def make_pre_post_processors_with_partial_checkpoint(policy_cfg, pretrained_path=None, **kwargs):
+        checkpoint = Path(pretrained_path) if pretrained_path else None
+        required_configs = ("policy_preprocessor.json", "policy_postprocessor.json")
+        if checkpoint and (checkpoint / "config.json").is_file():
+            missing = [name for name in required_configs if not (checkpoint / name).is_file()]
+            if missing:
+                print(
+                    "[Prepare] Checkpoint has model weights but no complete processor files; "
+                    "rebuilding processors from the selected dataset statistics. Optimizer state will start fresh.",
+                    flush=True,
+                )
+                return make_pre_post_processors(policy_cfg=policy_cfg, pretrained_path=None, **kwargs)
+        return make_pre_post_processors(policy_cfg=policy_cfg, pretrained_path=pretrained_path, **kwargs)
+
+    lerobot_train.make_pre_post_processors = make_pre_post_processors_with_partial_checkpoint
+
+
+def validate_checkpoint_hub(args) -> None:
+    """Require a private, writable Hub model repository when checkpoint backup is enabled."""
+    if not args.hub_repo_id or args.stage not in {"train", "all"}:
+        return
+
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    try:
+        api.whoami()
+        api.create_repo(repo_id=args.hub_repo_id, repo_type="model", private=True, exist_ok=True)
+        repo = api.repo_info(repo_id=args.hub_repo_id, repo_type="model")
+    except Exception as error:
+        raise SystemExit(
+            f"[Validate] No se puede escribir en Hugging Face ({args.hub_repo_id}): {error}. "
+            "Inicia sesión con `hf auth login` usando una cuenta con permiso de escritura."
+        ) from error
+    if not repo.private:
+        raise SystemExit(
+            f"[Validate] El repositorio {args.hub_repo_id} ya existe y es público. "
+            "Usa un repositorio privado para subir checkpoints."
+        )
+    print(f"[Validate] Checkpoint backup: repositorio privado {args.hub_repo_id} listo.", flush=True)
+
+
+def patch_hf_checkpoint_upload(args) -> None:
+    """Upload each complete checkpoint, then prune older local numbered checkpoints."""
+    if not args.hub_repo_id:
+        return
+
+    import shutil
+
+    from huggingface_hub import HfApi
+    import lerobot.scripts.lerobot_train as lerobot_train
+
+    api = HfApi()
+    original_save_checkpoint = lerobot_train.save_checkpoint
+
+    def save_checkpoint_and_upload(*save_args, **save_kwargs):
+        checkpoint_dir = Path(save_kwargs.get("checkpoint_dir", save_args[0] if save_args else ""))
+        original_save_checkpoint(*save_args, **save_kwargs)
+
+        write_info(args, Path(args.dataset_root).resolve(), Path(args.output).resolve())
+        relative_checkpoint = f"{args.hub_path_prefix.strip('/')}/checkpoints/{checkpoint_dir.name}".strip("/")
+        print(
+            f"[Hub] Uploading complete checkpoint {checkpoint_dir.name} to "
+            f"{args.hub_repo_id}/{relative_checkpoint}...",
+            flush=True,
+        )
+        try:
+            commit = api.upload_folder(
+                folder_path=str(checkpoint_dir),
+                repo_id=args.hub_repo_id,
+                repo_type="model",
+                path_in_repo=relative_checkpoint,
+                commit_message=f"Save ACT checkpoint {checkpoint_dir.name}",
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"Checkpoint {checkpoint_dir} is complete locally, but its Hugging Face upload failed. "
+                "It was kept locally and older checkpoints were not removed. "
+                f"Upload error: {error}"
+            ) from error
+
+        print(
+            f"[Hub] Uploaded checkpoint {checkpoint_dir.name} "
+            f"(commit {getattr(commit, 'oid', 'created')}).",
+            flush=True,
+        )
+        for previous in checkpoint_dir.parent.iterdir():
+            if previous != checkpoint_dir and previous.is_dir() and previous.name.isdigit():
+                try:
+                    shutil.rmtree(previous)
+                except OSError as error:
+                    # OneDrive may hold a reparse-point/junction open. The new checkpoint
+                    # is already verified on the Hub; failure to prune a local copy must
+                    # not abort the remaining training steps.
+                    print(
+                        f"[Checkpoint] Warning: {checkpoint_dir.name} is safely stored on Hugging Face, "
+                        f"but older local checkpoint {previous.name} could not be removed: {error}",
+                        flush=True,
+                    )
+                    continue
+                print(f"[Checkpoint] Removed older local checkpoint {previous.name} after Hub upload.", flush=True)
+
+    lerobot_train.save_checkpoint = save_checkpoint_and_upload
+
+
+def patch_live_validation(args, cfg) -> None:
+    """Log ACT loss on a fixed sample of held-out episodes while training."""
+    import random
+
+    import torch
+    import lerobot.scripts.lerobot_train as lerobot_train
+    from lerobot.datasets.factory import resolve_delta_timestamps
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+    from torch.utils.data import DataLoader, Subset
+
+    validation_episodes = parse_episodes(args.validation_episodes)
+    if not validation_episodes:
+        raise SystemExit("[Validate] Select held-out validation episodes to calculate live validation loss.")
+
+    repo_id = args.repo_id or Path(args.dataset_root).name
+    metadata = LeRobotDatasetMetadata(repo_id, root=Path(args.dataset_root))
+    validation_dataset = LeRobotDataset(
+        repo_id=repo_id,
+        root=Path(args.dataset_root),
+        episodes=validation_episodes,
+        delta_timestamps=resolve_delta_timestamps(cfg.policy, metadata),
+    )
+    if not len(validation_dataset):
+        raise SystemExit("[Validate] The selected validation episodes contain no frames.")
+
+    sample_size = min(64, len(validation_dataset))
+    sample_indices = sorted(random.Random(args.seed).sample(range(len(validation_dataset)), sample_size))
+    validation_loader = DataLoader(
+        Subset(validation_dataset, sample_indices),
+        batch_size=args.batch,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=args.device == "cuda",
+    )
+    print(
+        f"Live validation: {len(validation_episodes)} held-out episodes, {sample_size} fixed frames, "
+        f"every {args.validation_freq} steps.",
+        flush=True,
+    )
+
+    state = {"preprocessor": None, "step": 0, "train_sums": {}, "train_count": 0}
+    original_processor_factory = lerobot_train.make_pre_post_processors
+    original_update_policy = lerobot_train.update_policy
+
+    def capture_preprocessor(*factory_args, **factory_kwargs):
+        preprocessor, postprocessor = original_processor_factory(*factory_args, **factory_kwargs)
+        state["preprocessor"] = preprocessor
+        return preprocessor, postprocessor
+
+    def update_policy_with_validation(
+        train_metrics, policy, batch, optimizer, grad_clip_norm, accelerator,
+        lr_scheduler=None, lock=None, rabc_weights_provider=None,
+    ):
+        train_metrics, output_dict = original_update_policy(
+            train_metrics,
+            policy,
+            batch,
+            optimizer,
+            grad_clip_norm,
+            accelerator,
+            lr_scheduler=lr_scheduler,
+            lock=lock,
+            rabc_weights_provider=rabc_weights_provider,
+        )
+        state["step"] += 1
+        step = state["step"]
+        progress_interval = max(1, args.steps // 100)
+        if step == 1 or step % progress_interval == 0 or step == args.steps:
+            report_stage_progress("train", step, args.steps)
+        for key in ("l1_loss", "kld_loss"):
+            if key in output_dict:
+                state["train_sums"][key] = state["train_sums"].get(key, 0.0) + float(output_dict[key])
+        state["train_count"] += 1
+
+        if step != 1 and step % args.validation_freq and step != args.steps:
+            return train_metrics, output_dict
+
+        train_values = {
+            key: value / state["train_count"]
+            for key, value in state["train_sums"].items()
+        }
+        train_loss = train_values.get("l1_loss", 0.0) + args.kl_weight * train_values.get("kld_loss", 0.0)
+        preprocessor = state["preprocessor"]
+        loss_sum = 0.0
+        component_sums = {}
+        sample_count = 0
+        validation_error = None
+        if preprocessor is None:
+            validation_error = "ACT preprocessor is not ready"
+        else:
+            was_training = policy.training
+            policy.eval()
+            try:
+                policy_module = getattr(policy, "module", policy)
+                if getattr(policy_module.config, "use_vae", False):
+                    # ACT only returns the VAE posterior parameters while its inner model
+                    # is in training mode. Keep dropout and other layers in eval mode,
+                    # but enable the posterior path needed to compute validation KL loss.
+                    act_model = getattr(policy_module, "model", None)
+                    if act_model is None:
+                        raise RuntimeError("Could not access the ACT model for VAE validation.")
+                    act_model.training = True
+                cuda_devices = [torch.cuda.current_device()] if args.device == "cuda" and torch.cuda.is_available() else []
+                with torch.random.fork_rng(devices=cuda_devices):
+                    torch.manual_seed(args.seed)
+                    if cuda_devices:
+                        torch.cuda.manual_seed_all(args.seed)
+                    with torch.no_grad(), accelerator.autocast():
+                        for validation_batch in validation_loader:
+                            validation_batch = preprocessor(validation_batch)
+                            loss, components = policy.forward(validation_batch)
+                            count = int(validation_batch[ACTION_KEY].shape[0])
+                            loss_sum += float(loss.detach().float().item()) * count
+                            sample_count += count
+                            for key in ("l1_loss", "kld_loss"):
+                                if key in components and components[key] is not None:
+                                    component_sums[key] = component_sums.get(key, 0.0) + float(components[key]) * count
+                if sample_count == 0:
+                    validation_error = "the fixed validation sample produced no batches"
+            except Exception as error:
+                validation_error = str(error)
+                print(f"Live validation traceback at step {step}:", flush=True)
+                import traceback
+
+                traceback.print_exc(file=sys.stdout)
+            finally:
+                policy.train(was_training)
+
+        fields = [f"step: {step}", f"loss: {train_loss:.6f}"]
+        if "l1_loss" in train_values:
+            fields.append(f"train_l1_loss: {train_values['l1_loss']:.6f}")
+        if "kld_loss" in train_values:
+            fields.append(f"train_kld_loss: {train_values['kld_loss']:.6f}")
+        if validation_error is None:
+            fields.append(f"eval_loss: {loss_sum / sample_count:.6f}")
+            if "l1_loss" in component_sums:
+                fields.append(f"eval_l1_loss: {component_sums['l1_loss'] / sample_count:.6f}")
+            if "kld_loss" in component_sums:
+                fields.append(f"eval_kld_loss: {component_sums['kld_loss'] / sample_count:.6f}")
+        else:
+            print(f"Live validation unavailable at step {step}: {validation_error}", flush=True)
+        fields.append(f"grad_norm: {train_metrics.grad_norm.val:.6f}")
+        fields.append(f"lr: {train_metrics.lr.val:.8g}")
+        elapsed = train_metrics.update_s.val + train_metrics.dataloading_s.val
+        if elapsed > 0:
+            fields.append(f"samples_per_s: {args.batch / elapsed:.4f}")
+        if args.device == "cuda" and torch.cuda.is_available():
+            fields.append(f"gpu_mem_gb: {torch.cuda.max_memory_allocated() / 1024**3:.3f}")
+        print(" ".join(fields), flush=True)
+        state["train_sums"] = {}
+        state["train_count"] = 0
+        return train_metrics, output_dict
+
+    lerobot_train.make_pre_post_processors = capture_preprocessor
+    lerobot_train.update_policy = update_policy_with_validation
 
 
 def build_cfg(args):
@@ -86,33 +405,147 @@ def build_cfg(args):
     # el estado articular es una entrada más; sin él (``--no-state``) la red no puede copiar la pose de su propio brazo
     # (la «confusión causal» que hundió a las políticas con cámara + estado del demo 06). LeRobot 0.4.4 lee igualmente la
     # clave del lote, que sigue estando en el dataset: sólo se saca de las entradas de la red.
-    keep = {*(IMAGE_KEYS[s] for s in OBS_MODES[args.obs_mode])} | (set() if args.no_state else {STATE_KEY})
+    image_inputs = resolve_image_inputs(set(pf), args.obs_mode)
+    args.resolved_image_inputs = image_inputs
+    keep = set(image_inputs) | (set() if args.no_state else {STATE_KEY})
     missing = keep - set(pf)
     if missing:
         raise SystemExit(f"el dataset no tiene {sorted(missing)}; ¿se grabó con tools/collect_demos.py?")
     output_features = {k: v for k, v in pf.items() if v.type is FeatureType.ACTION}
     input_features = {k: v for k, v in pf.items() if k in keep}
+    optional_policy_values = {
+        "vision_backbone": args.vision_backbone,
+        "temporal_ensemble_coeff": args.temporal_ensemble_coeff,
+        "replace_final_stride_with_dilation": args.replace_final_stride,
+        "feedforward_activation": args.feedforward_activation,
+        "optimizer_weight_decay": args.weight_decay,
+        "optimizer_lr_backbone": args.backbone_lr,
+        "dropout": args.dropout,
+        "dim_model": args.dim_model,
+        "n_heads": args.attention_heads,
+        "dim_feedforward": args.feedforward_dim,
+        "n_encoder_layers": args.encoder_layers,
+        "n_decoder_layers": args.decoder_layers,
+        "latent_dim": args.latent_dim,
+        "n_vae_encoder_layers": args.vae_encoder_layers,
+        "pre_norm": args.pre_norm,
+        "use_amp": args.use_amp,
+    }
+    baseline_policy_values = {
+        "vision_backbone": "resnet18",
+        "temporal_ensemble_coeff": None,
+        "replace_final_stride_with_dilation": False,
+        "feedforward_activation": "relu",
+        "optimizer_weight_decay": 1e-4,
+        "optimizer_lr_backbone": 1e-5,
+        "dropout": 0.1,
+        "dim_model": 512,
+        "n_heads": 8,
+        "dim_feedforward": 3200,
+        "n_encoder_layers": 4,
+        "n_decoder_layers": 1,
+        "latent_dim": 32,
+        "n_vae_encoder_layers": 4,
+        "pre_norm": False,
+        "use_amp": False,
+    }
+    try:
+        supported = {field.name for field in dataclasses.fields(ACTConfig)}
+    except TypeError:
+        supported = set(inspect.signature(ACTConfig).parameters)
+    unsupported = [
+        f"{name} (requested {value!r}, baseline {baseline_policy_values[name]!r})"
+        for name, value in optional_policy_values.items()
+        if name not in supported and value != baseline_policy_values[name]
+    ]
+    if unsupported:
+        raise SystemExit(
+            "La versión instalada de LeRobot no admite estos ajustes ACT: "
+            + ", ".join(unsupported)
+            + ". Instala la versión indicada por el proyecto o restaura esos valores a su base."
+        )
+    policy_values = {name: value for name, value in optional_policy_values.items() if name in supported}
     policy = ACTConfig(
         input_features=input_features, output_features=output_features, device=args.device,
         chunk_size=args.chunk, n_action_steps=min(args.action_steps, args.chunk), use_vae=not args.no_vae,
         kl_weight=args.kl_weight, optimizer_lr=args.lr, push_to_hub=False,
-        pretrained_backbone_weights=None if args.no_pretrained_backbone else "ResNet18_Weights.IMAGENET1K_V1")
+        pretrained_backbone_weights=None if args.no_pretrained_backbone else {
+            "resnet18": "ResNet18_Weights.IMAGENET1K_V1",
+            "resnet34": "ResNet34_Weights.IMAGENET1K_V1",
+            "resnet50": "ResNet50_Weights.IMAGENET1K_V1",
+        }[args.vision_backbone],
+        **policy_values,
+    )
     if args.init_from:
         policy.pretrained_path = Path(args.init_from)
     out = Path(args.output).resolve()
-    return TrainPipelineConfig(
+    cfg = TrainPipelineConfig(
         dataset=DatasetConfig(repo_id=repo_id, root=str(root), episodes=parse_episodes(args.episodes)),
         policy=policy, output_dir=out, job_name=out.name, seed=args.seed, batch_size=args.batch, steps=args.steps,
         num_workers=args.workers, save_freq=args.save_freq or max(1000, args.steps // 5), log_freq=args.log_freq,
         eval_freq=args.steps + 1)       # LeRobot no tiene aquí un entorno de evaluación: se evalúa con tools/eval_sorting.py
+    if args.lr_schedule == "cosine":
+        from lerobot.optim.schedulers import CosineDecayWithWarmupSchedulerConfig
+
+        cfg.use_policy_training_preset = False
+        cfg.optimizer = policy.get_optimizer_preset()
+        cfg.scheduler = CosineDecayWithWarmupSchedulerConfig(
+            num_warmup_steps=min(args.lr_warmup_steps, max(0, args.steps - 1)),
+            num_decay_steps=args.steps,
+            peak_lr=args.lr,
+            decay_lr=args.lr * args.lr_final_fraction,
+        )
+    return cfg
+
+
+def configure_resume(cfg, checkpoint_dir: str | Path, target_steps: int) -> None:
+    """Resume optimizer, scheduler, RNG and policy weights from a complete local checkpoint."""
+    checkpoint = Path(checkpoint_dir).resolve()
+    required = (
+        checkpoint / "pretrained_model" / "config.json",
+        checkpoint / "pretrained_model" / "model.safetensors",
+        checkpoint / "training_state" / "training_step.json",
+        checkpoint / "training_state" / "optimizer_state.safetensors",
+        checkpoint / "training_state" / "scheduler_state.json",
+    )
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise SystemExit("El checkpoint no está completo; faltan: " + ", ".join(missing))
+
+    step_data = json.loads((checkpoint / "training_state" / "training_step.json").read_text(encoding="utf-8"))
+    resume_step = int(step_data.get("step", -1))
+    if resume_step < 0 or resume_step >= target_steps:
+        raise SystemExit(f"El checkpoint está en el paso {resume_step}; el objetivo debe ser mayor que ese valor.")
+
+    cfg.resume = True
+    cfg.checkpoint_path = checkpoint
+    cfg.policy.pretrained_path = checkpoint / "pretrained_model"
+    # build_cfg already validated the CLI values. LeRobot's resume validator expects a
+    # config_path CLI argument; this script constructs the config directly instead.
+    cfg.validate = lambda: None
+    print(f"[Resume] Reanudando desde el paso {resume_step}: {checkpoint}", flush=True)
 
 
 def write_info(args, root: Path, out: Path) -> None:
     src = root / "meta" / "binpick_info.json"
     info = json.loads(src.read_text(encoding="utf-8")) if src.is_file() else {}
-    info.update({"obs_mode": args.obs_mode, "trained_on": root.name, "steps": args.steps, "batch": args.batch, "chunk": args.chunk,
+    info.update({"obs_mode": args.obs_mode, "image_inputs": getattr(args, "resolved_image_inputs", []),
+                 "trained_on": root.name, "steps": args.steps, "batch": args.batch, "chunk": args.chunk,
                  "n_action_steps": min(args.action_steps, args.chunk), "use_vae": not args.no_vae, "use_state": not args.no_state, "lr": args.lr,
-                 "episodes": args.episodes or "todos", "lerobot": _lerobot_version()})
+                 "act_parameters": {"weight_decay": args.weight_decay, "backbone_lr": args.backbone_lr, "dropout": args.dropout,
+                                    "vision_backbone": args.vision_backbone,
+                                    "temporal_ensemble_coeff": args.temporal_ensemble_coeff,
+                                    "replace_final_stride_with_dilation": args.replace_final_stride,
+                                    "feedforward_activation": args.feedforward_activation,
+                                    "dim_model": args.dim_model, "attention_heads": args.attention_heads,
+                                    "feedforward_dim": args.feedforward_dim, "encoder_layers": args.encoder_layers,
+                                    "decoder_layers": args.decoder_layers, "latent_dim": args.latent_dim,
+                                    "vae_encoder_layers": args.vae_encoder_layers, "pre_norm": args.pre_norm,
+                                    "use_amp": args.use_amp, "kl_weight": args.kl_weight},
+                 "episodes": args.episodes or "todos",
+                 "validation_episodes": parse_episodes(args.validation_episodes) or [],
+                 "validation_freq": args.validation_freq,
+                 "lerobot": _lerobot_version()})
     text = json.dumps(info, indent=2, ensure_ascii=False)
     (out / "binpick_info.json").write_text(text, encoding="utf-8")
     for ck in (out / "checkpoints").glob("*/pretrained_model"):
@@ -127,6 +560,91 @@ def _lerobot_version() -> str:
         return "?"
 
 
+def configure_local_hf_cache() -> None:
+    """Use a short, writable local cache path to avoid profile ACL and Windows path-length errors."""
+    default_home = Path(tempfile.gettempdir()) / "rkhf"
+    if "HF_TOKEN_PATH" not in os.environ:
+        original_hf_home = os.environ.get("HF_HOME")
+        if original_hf_home:
+            token_path = Path(original_hf_home).expanduser() / "token"
+        else:
+            cache_home = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))).expanduser()
+            token_path = cache_home / "huggingface" / "token"
+        os.environ["HF_TOKEN_PATH"] = str(token_path)
+    hf_home = Path(os.environ.setdefault("HF_HOME", str(default_home))).expanduser()
+    os.environ.setdefault("HF_HUB_CACHE", str(hf_home / "hub"))
+    os.environ.setdefault("HF_DATASETS_CACHE", str(hf_home / "ds"))
+    os.environ.setdefault("HF_ASSETS_CACHE", str(hf_home / "assets"))
+    for variable in ("HF_HOME", "HF_HUB_CACHE", "HF_DATASETS_CACHE", "HF_ASSETS_CACHE"):
+        Path(os.environ[variable]).expanduser().mkdir(parents=True, exist_ok=True)
+
+
+def validate_runtime(args) -> None:
+    try:
+        import torch
+    except ImportError as error:
+        raise SystemExit(f"Falta PyTorch en este intérprete: {sys.executable}.") from error
+    try:
+        import lerobot
+    except ImportError as error:
+        raise SystemExit(f"Falta LeRobot en este intérprete: {sys.executable}; instala lerobot==0.4.4.") from error
+    version = str(getattr(lerobot, "__version__", ""))
+    if version != "0.4.4":
+        raise SystemExit(f"Este entrenador requiere LeRobot 0.4.4; el entorno tiene {version or 'versión desconocida'}.")
+    print(f"[Validate] Python: {sys.executable}", flush=True)
+    print(f"[Validate] PyTorch {torch.__version__} · CUDA {torch.version.cuda or 'CPU'}", flush=True)
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise SystemExit("[Validate] Se solicitó CUDA pero PyTorch no detecta una GPU disponible.")
+    print(f"[Validate] Dispositivo disponible: {args.device}", flush=True)
+    if os.name == "nt" and args.workers > 1:
+        print(
+            f"[Validate] Aviso: {args.workers} workers de DataLoader en Windows pueden consumir mucha RAM; "
+            "se recomienda --workers 0 si aparece MemoryError.",
+            flush=True,
+        )
+
+
+def validate_dataset(args) -> None:
+    root = Path(args.dataset_root).resolve()
+    info_path = root / "meta" / "info.json"
+    if not info_path.is_file():
+        raise SystemExit(f"No se encuentra el metadato del dataset: {info_path}")
+    try:
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"No se puede leer {info_path}: {error}") from error
+    features = info.get("features") or {}
+    if not isinstance(features, dict):
+        raise SystemExit("El campo 'features' de meta/info.json no tiene el formato esperado.")
+    feature_keys = set(features)
+    for key in (STATE_KEY, ACTION_KEY):
+        if key not in feature_keys:
+            raise SystemExit(f"Falta la característica necesaria {key} en el dataset.")
+    image_inputs = resolve_image_inputs(feature_keys, args.obs_mode)
+    args.resolved_image_inputs = image_inputs
+    total = int(info.get("total_episodes", 0))
+    if total < 1:
+        raise SystemExit("El dataset no contiene episodios.")
+    selected = parse_episodes(args.episodes)
+    if selected is not None and any(index < 0 or index >= total for index in selected):
+        raise SystemExit(f"Los episodios seleccionados deben estar entre 0 y {total - 1}.")
+    validation = parse_episodes(args.validation_episodes)
+    if args.stage in {"train", "all"} and not validation:
+        raise SystemExit("[Validate] Select at least one held-out episode for live validation loss.")
+    if validation is not None:
+        if any(index < 0 or index >= total for index in validation):
+            raise SystemExit(f"Los episodios de validación deben estar entre 0 y {total - 1}.")
+        training_ids = set(selected) if selected is not None else set(range(total))
+        if training_ids & set(validation):
+            raise SystemExit("Los episodios de entrenamiento y validación no pueden solaparse.")
+    print(
+        f"[Validate] Dataset: {root.name} · {total} episodios · "
+        f"train: {len(selected) if selected is not None else total} · "
+        f"validation: {len(validation or [])} · entradas visuales: {image_inputs}",
+        flush=True,
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dataset-root", required=True)
@@ -135,39 +653,109 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=50000)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--lr", type=float, default=1e-5)
+    ap.add_argument("--lr-schedule", choices=("constant", "cosine"), default="constant",
+                    help="learning-rate schedule; cosine decays to --lr-final-fraction after warmup")
+    ap.add_argument("--lr-final-fraction", type=float, default=0.1,
+                    help="final LR as a fraction of --lr for the cosine schedule")
+    ap.add_argument("--lr-warmup-steps", type=int, default=200,
+                    help="linear warmup steps for the cosine schedule")
+    ap.add_argument("--vision-backbone", choices=("resnet18", "resnet34", "resnet50"), default="resnet18")
+    ap.add_argument("--temporal-ensemble-coeff", type=float, default=None)
+    ap.add_argument("--replace-final-stride", action="store_true")
+    ap.add_argument("--feedforward-activation", choices=("relu", "gelu"), default="relu")
+    ap.add_argument("--weight-decay", type=float, default=1e-4)
+    ap.add_argument("--backbone-lr", type=float, default=1e-5)
+    ap.add_argument("--dropout", type=float, default=0.1)
+    ap.add_argument("--dim-model", type=int, default=512)
+    ap.add_argument("--attention-heads", type=int, default=8)
+    ap.add_argument("--feedforward-dim", type=int, default=3200)
+    ap.add_argument("--encoder-layers", type=int, default=4)
+    ap.add_argument("--decoder-layers", type=int, default=1)
+    ap.add_argument("--latent-dim", type=int, default=32)
+    ap.add_argument("--vae-encoder-layers", type=int, default=4)
+    ap.add_argument("--pre-norm", action="store_true")
+    ap.add_argument("--use-amp", action="store_true")
     ap.add_argument("--chunk", type=int, default=50)
     ap.add_argument("--action-steps", type=int, default=25)
     ap.add_argument("--no-vae", action="store_true")
     ap.add_argument("--no-state", action="store_true", help="no dar las articulaciones como entrada (experimento anti copia de pose)")
     ap.add_argument("--kl-weight", type=float, default=10.0)
     ap.add_argument("--episodes", default=None, help="p. ej. 0-449 (deja el resto sin ver para la evaluación offline)")
+    ap.add_argument("--validation-episodes", default=None, help="episodios held-out para la métrica live eval_loss")
     ap.add_argument("--output", default=None, help="carpeta nueva (LeRobot no reutiliza una existente)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=1000)
-    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--workers", type=int, default=0)
     ap.add_argument("--save-freq", type=int, default=None)
     ap.add_argument("--log-freq", type=int, default=200)
+    ap.add_argument("--validation-freq", type=int, default=None, help="frecuencia de cálculo de métricas de validación")
     ap.add_argument("--init-from", default=None, help="carpeta pretrained_model desde la que continuar (afinado)")
+    ap.add_argument("--resume-from", default=None,
+                    help="checkpoint completo de entrenamiento para continuar con optimizer/scheduler/RNG")
+    ap.add_argument("--hub-repo-id", default=None, help="repositorio privado de modelos para guardar checkpoints")
+    ap.add_argument("--hub-path-prefix", default="", help="subcarpeta del repo Hub para esta ejecución")
     ap.add_argument("--no-pretrained-backbone", action="store_true", help="no descargar los pesos ImageNet del ResNet (sin red)")
+    ap.add_argument("--stage", choices=("validate", "prepare", "train", "all"), default="all",
+                    help="validate runtime/data, prepare ACT config, train, or run all stages")
     args = ap.parse_args()
+    args.validation_freq = args.validation_freq or args.log_freq
+    if args.validation_freq < 1:
+        ap.error("--validation-freq must be positive")
+    configure_local_hf_cache()
 
-    import torch
+    if args.dim_model % args.attention_heads:
+        ap.error("--dim-model must be divisible by --attention-heads")
+    if not 0.0 <= args.dropout < 1.0:
+        ap.error("--dropout must be in the range [0, 1)")
+    if args.weight_decay < 0 or args.backbone_lr <= 0 or args.lr <= 0:
+        ap.error("learning rates must be positive and weight decay cannot be negative")
+    if not 0 < args.lr_final_fraction <= 1 or args.lr_warmup_steps < 0:
+        ap.error("cosine LR final fraction must be in (0, 1] and warmup steps cannot be negative")
+    if args.temporal_ensemble_coeff is not None:
+        if args.temporal_ensemble_coeff <= 0 or args.action_steps != 1:
+            ap.error("temporal ensembling requires a positive coefficient and --action-steps 1")
+    if args.resume_from and args.init_from:
+        ap.error("--resume-from y --init-from son excluyentes")
 
-    if args.device == "cuda" and not torch.cuda.is_available():
-        print("CUDA no está disponible: se entrena en CPU (muy lento).")
-        args.device = "cpu"
     args.output = args.output or f"outputs/act_{args.obs_mode}_{time.strftime('%Y%m%d_%H%M')}"
-    if Path(args.output).exists():
+    if args.stage in {"train", "all"} and Path(args.output).exists() and not args.resume_from:
         print(f"ERROR: {args.output} ya existe (LeRobot no reutiliza carpetas); usa otro --output")
         return 1
+
+    if args.stage == "all":
+        print("[Validate] Comprobando entorno y dataset...", flush=True)
+    report_stage_progress("validate", 0, 2)
+    validate_runtime(args)
+    report_stage_progress("validate", 1, 2)
+    validate_dataset(args)
+    validate_checkpoint_hub(args)
+    report_stage_progress("validate", 2, 2)
+    if args.stage == "validate":
+        print("[Validate] Validación completada correctamente.", flush=True)
+        return 0
+
+    print("[Prepare] Construyendo la configuración ACT...", flush=True)
+    report_stage_progress("prepare", 0, 2)
     cfg = build_cfg(args)
-    print(f"dataset {cfg.dataset.root} · entradas: {sorted(cfg.policy.input_features)} · bloque {args.chunk}/{args.action_steps} · "
-          f"VAE {'no' if args.no_vae else 'sí'} · {args.steps} pasos × lote {args.batch} · {args.device}", flush=True)
+    report_stage_progress("prepare", 1, 2)
+    print(f"[Prepare] Dataset: {cfg.dataset.root} · entradas: {sorted(cfg.policy.input_features)} · salida: {args.output}", flush=True)
+    if args.resume_from:
+        configure_resume(cfg, args.resume_from, args.steps)
+    report_stage_progress("prepare", 2, 2)
+    if args.stage == "prepare":
+        print("[Prepare] Preparación completada correctamente; no se inició el entrenamiento.", flush=True)
+        return 0
+
+    print(f"[Train] Bloque {args.chunk}/{args.action_steps} · VAE {'no' if args.no_vae else 'sí'} · "
+          f"{args.steps} pasos × lote {args.batch} · {args.device}", flush=True)
     if sys.platform == "win32":
         patch_last_checkpoint_windows()
+    patch_hf_checkpoint_upload(args)
+    patch_live_validation(args, cfg)
     from lerobot.scripts.lerobot_train import train
 
     t0 = time.time()
+    report_stage_progress("train", 0, args.steps)
     train(cfg)
     write_info(args, Path(args.dataset_root).resolve(), Path(args.output).resolve())
     print(f"entrenado en {(time.time() - t0) / 60:.1f} min · modelo: {Path(args.output) / 'checkpoints' / 'last' / 'pretrained_model'}")

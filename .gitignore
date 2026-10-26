@@ -28,3 +28,143 @@ models/
 *.pt
 *.pth
 *.onnx
+
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Trained models: 0.6-1.1 GB each, recreated by the training scripts
+demos/**/models/
+
+demos/03_command_model/data/*.pt
+
+# Captured camera frames and per-frame scene JSON, written by
+# demos/04_perception/09_camera_to_scene.py. Kept in git: the
+# results/*_report.md summaries and out/calibration/calibration.json.
+demos/04_perception/out/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+demos/05_planner_and_executor/out11/
+
+# Demo 12 measurement artifacts and the Vite install. The measurements are *regenerated* by
+# demos/07_multi_robot_orchestration/demo12/tools/ (probe_grasp_pose.py, probe_grasp.py),
+# which is why they are ignored rather than committed: a JSON in the tree is a claim, and a
+# probe you can re-run is evidence. Their measured conclusions are written up by hand in
+# demos/07_multi_robot_orchestration/demo12/docs/PHYSICS.md, which *is* committed.
+demos/07_multi_robot_orchestration/out12/
+demos/07_multi_robot_orchestration/demo12/web/node_modules/
+demos/07_multi_robot_orchestration/demo12/web/dist/
+
+# Demo 17 (demos/08_recovery_kit): generated .kit experience files (machine-specific
+# absolute paths) and raw perception frames (15 MB, re-captured by tools/capture_perception.py).
+demos/08_recovery_kit/out/
+demos/08_recovery_kit/results/perception_frames/
+
+# Demo 11 sweep runs: transient stdout (*.out), "finished" markers (*.done) and throwaway
+# launcher scripts (run_*.sh); the JSON reports are what matter
+demos/05_planner_and_executor/results/*.out
+demos/05_planner_and_executor/results/*.done
+
+# Local credentials (never embed these values in source or notebook outputs)
+.env
+.env.*
+*.env
+!.env.example
+!*.env.example
+HF_TOKEN
+HF_TOKEN.*
+hf_token
+hf_token.*
+credentials.json
+credentials*.json
+secrets.json
+secrets.toml
+*.pem
+*.key
+.aws/
+.ssh/
+.huggingface/
+.hf/
+
+# Additional environments, caches, build artifacts and local tools
+.venv*/
+venv-*/
+env/
+ENV/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+.vs/
+.agents/
+.codex/
+Desktop.ini
+*.tmp
+*.bak
+*~
+
+# Workspace-private files; preserve the original ignore backup locally
+/.gitignore.local-backup
+/local/
+/train_*/
+/val_*/
+
+# RoboQC datasets, proposal banks, review projects and generated runs
+/demos/roboqc/**/data/
+/demos/roboqc/**/datasets/
+/demos/roboqc/**/inputs/
+/demos/roboqc/**/review_bundle_*/
+/demos/roboqc/**/reviewed_dataset_*/
+/demos/roboqc/**/reviewed_masks/
+/demos/roboqc/**/revisions/
+/demos/roboqc/**/project.json
+/demos/roboqc/**/checkpoints/
+/demos/roboqc/**/model_cache/
+/demos/roboqc/**/runs/
+/demos/roboqc/**/outputs/
+/demos/roboqc/**/exports/
+/demos/roboqc/**/train_*/
+/demos/roboqc/**/val_*/
+/demos/roboqc/**/wandb/
+/demos/roboqc/**/mlruns/
+/demos/roboqc/**/lightning_logs/
+/demos/roboqc/**/build/
+/demos/roboqc/**/dist/
+/demos/roboqc/**/*.zip
+/demos/roboqc/**/*.tar
+/demos/roboqc/**/*.tar.gz
+/demos/roboqc/**/*.tgz
+/demos/roboqc/**/*.7z
+/demos/roboqc/**/*.rar
+/demos/roboqc/**/*.partial_*
+/demos/roboqc/**/*.export.json
+/demos/roboqc/**/*.inventory.jsonl
+/demos/roboqc/**/*.job.json
+/demos/roboqc/**/augmented_dataset_*/
+
+/reviewed_dataset_*/
+/augmented_dataset_*/
+
+*.ckpt
+*.tflite
+*.engine
+*.joblib
+*.pkl
+*.pickle
+
+# Reference-photo redistribution rights have not been established.
+# These exclusions do NOT remove photos embedded inside notebooks.
+/demos/roboqc/colab/assets/stamped_parts/part_*.png
+
+# Custom environments
+lerobot-env/

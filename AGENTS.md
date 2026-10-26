@@ -210,6 +210,9 @@ When the user corrects your approach, append a one-line rule here before ending 
 - Check a Hugging Face model's task before adding it to the app: act-pick checkpoints belong in the pickup selector, and Up-down checkpoints belong in the box-transfer selector.
 - With LeRobot 0.6.1, finalize an unsaved episode before clear_episode_buffer so pending image writes finish; LeRobotDataset has no stop_image_writer method.
 
+- Read SO-101 photo labels from pin_snapshots/index.json (pin/nopin, front/wrist, location); download that folder instead of robot videos when preparing the pin classifier.
+- Use mouse-editable QSpinBox controls for pin-classifier parameters; verify editor width and mouse/keyboard input with Qt 6.12 on Windows, not only offscreen Fusion or setValue().
+
 ---
 
 ## 12. How this file was built

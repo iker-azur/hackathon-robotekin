@@ -310,6 +310,46 @@ def main() -> int:
         help="learning rate (default: ACT's own 1e-5, tuned for a pretrained ResNet; a policy "
              "with no camera has nothing pretrained to protect and learns far faster at 1e-4)",
     )
+    parser.add_argument("--backbone", choices=("resnet18", "resnet34"), default="resnet18")
+    parser.add_argument("--no-pretrained-backbone", action="store_true")
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--backbone-lr", type=float, default=1e-4)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--momentum", type=float, default=0.937,
+                        help="AdamW beta1 (not SGD momentum)")
+    parser.add_argument("--lr-final-fraction", type=float, default=0.01)
+    parser.add_argument("--warmup-epochs", type=float, default=3.0)
+    parser.add_argument("--dataset-fraction", type=float, default=1.0)
+    parser.add_argument("--cos-lr", action="store_true")
+    parser.add_argument("--save-freq", type=int, default=None,
+                        help="checkpoint interval (default: max(1000, steps/10))")
+    parser.add_argument("--log-freq", type=int, default=100)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument("--eval-split", type=float, default=0.0,
+                        help="percentage of selected episodes held out for LeRobot validation")
+    parser.add_argument("--eval-freq", type=int, default=500,
+                        help="training steps between offline validation runs")
+    parser.add_argument("--pretrained-policy", default=None,
+                        help="local pretrained ACT policy folder used for fine-tuning")
+    parser.add_argument("--dim-model", type=int, default=512)
+    parser.add_argument("--encoder-layers", type=int, default=4)
+    parser.add_argument("--decoder-layers", type=int, default=1)
+    parser.add_argument("--attention-heads", type=int, default=8)
+    parser.add_argument("--latent-dim", type=int, default=32)
+    parser.add_argument("--kl-weight", type=float, default=10.0)
+    parser.add_argument("--amp", action="store_true", help="enable mixed precision when supported")
+    parser.add_argument("--image-transforms-json", default=None,
+                        help="ImageTransformsConfig JSON for camera augmentation during training")
+    parser.add_argument("--split-mode", choices=("automatic", "manual"), default="automatic")
+    parser.add_argument("--train-percent", type=int, default=100)
+    parser.add_argument("--validation-percent", type=int, default=0)
+    parser.add_argument("--test-percent", type=int, default=0)
+    parser.add_argument("--validation-episodes", default=None)
+    parser.add_argument("--test-episodes", default=None)
+    parser.add_argument("--wandb", action="store_true", help="log the run with Weights & Biases")
+    parser.add_argument("--wandb-project", default="robotekin-so101")
+    parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--seed", type=int, default=1000, help="training seed (default 1000)")
     parser.add_argument(
         "--episodes", default=None,
@@ -317,13 +357,67 @@ def main() -> int:
              "tools/22_validate_offline.py (default: all)",
     )
     args = parser.parse_args()
+    if not 0 <= args.eval_split < 100:
+        parser.error("--eval-split must be between 0 and 100")
+    if args.eval_freq <= 0:
+        parser.error("--eval-freq must be greater than zero")
+    if args.dim_model % args.attention_heads:
+        parser.error("--dim-model must be divisible by --attention-heads")
+    if not 0 < args.dataset_fraction <= 1:
+        parser.error("--dataset-fraction must be greater than 0 and at most 1")
+    if not 0 < args.lr_final_fraction <= 1:
+        parser.error("--lr-final-fraction must be greater than 0 and at most 1")
 
     import il_dataset as data
 
     root = data.default_dataset_dir(args.dataset)
-    if not (root / "meta" / "info.json").exists():
+    info_path = root / "meta" / "info.json"
+    if not info_path.exists():
         print(f"ERROR: {root} does not hold a dataset. Collect one with demo 13 first.")
         return 1
+    dataset_info = json.loads(info_path.read_text(encoding="utf-8"))
+    available_episodes = int(dataset_info.get("total_episodes", 0))
+    episode_ids = parse_episodes(args.episodes) or list(range(available_episodes))
+    if args.dataset_fraction < 1.0 and episode_ids:
+        import random
+
+        random.Random(args.seed).shuffle(episode_ids)
+        keep = max(1, int(len(episode_ids) * args.dataset_fraction))
+        episode_ids = sorted(episode_ids[:keep])
+        print(f"dataset fraction: {len(episode_ids)}/{available_episodes} episodes selected")
+    validation_episode_ids = parse_episodes(args.validation_episodes)
+    test_episode_ids = parse_episodes(args.test_episodes)
+    if args.split_mode == "automatic":
+        if args.train_percent + args.validation_percent + args.test_percent != 100 or args.train_percent <= 0:
+            parser.error("automatic train/validation/test percentages must total 100 and train must be positive")
+        import random
+
+        random.Random(args.seed).shuffle(episode_ids)
+        train_count = max(1, int(len(episode_ids) * args.train_percent / 100))
+        validation_count = int(len(episode_ids) * args.validation_percent / 100)
+        # Reserve the test tail and let LeRobot hold out the validation fraction
+        # from the remaining selected episodes.
+        test_count = max(0, len(episode_ids) - train_count - validation_count)
+        held_test = episode_ids[-test_count:] if test_count else []
+        train_validation = episode_ids[:-test_count] if test_count else episode_ids
+        validation_fraction = validation_count / max(1, len(train_validation))
+        episode_ids = sorted(train_validation)
+        validation_episode_ids = []
+        test_episode_ids = held_test
+    else:
+        if not episode_ids:
+            parser.error("manual split requires --episodes with at least one training episode")
+        if validation_episode_ids is None:
+            validation_episode_ids = []
+        if test_episode_ids is None:
+            test_episode_ids = []
+        training_set = set(episode_ids)
+        validation_set = set(validation_episode_ids)
+        test_set = set(test_episode_ids)
+        if training_set & validation_set or training_set & test_set or validation_set & test_set:
+            parser.error("manual train, validation and test episode lists must not overlap")
+        validation_fraction = 0.0
+        print(f"manual episode split: train={len(episode_ids)}, validation={len(validation_episode_ids)}, test={len(test_episode_ids)}")
 
     if args.batch > BATCH_WARNING_THRESHOLD:
         print(f"note: batch {args.batch} is larger than {BATCH_WARNING_THRESHOLD}, "
@@ -369,35 +463,104 @@ def main() -> int:
             }
             print(f"inputs:  environment state only ({', '.join(data.ENV_KINDS[kind])})")
 
-    policy = ACTConfig(
-        input_features=input_features,
-        device=args.device,
-        chunk_size=args.chunk,
-        n_action_steps=args.action_steps,
-        n_obs_steps=args.obs_steps,
-        use_vae=not args.no_vae,
-        # ACT's default mapping leaves the environment state out, so it reaches the
-        # network unscaled. The cube's pixel position spans only ~0.24 x 0.13 of
-        # the [-1, 1] range it is stored in, which makes a millimetre ~0.002 of
-        # input - too small a signal to learn from at ACT's learning rate. Mean/std
-        # scaling with the dataset's own statistics fixes that, and the saved
-        # pre-processor applies the same scaling at evaluation time.
-        normalization_mapping={
+    import inspect
+
+    policy_options = {
+        "input_features": input_features,
+        "device": args.device,
+        "chunk_size": args.chunk,
+        "n_action_steps": args.action_steps,
+        "n_obs_steps": args.obs_steps,
+        "use_vae": not args.no_vae,
+        "normalization_mapping": {
             "VISUAL": NormalizationMode.MEAN_STD,
             "STATE": NormalizationMode.MEAN_STD,
             "ENV": NormalizationMode.MEAN_STD,
             "ACTION": NormalizationMode.MEAN_STD,
         },
-        # Dropout is what acts as regularisation on a dataset this small; 0.1 is
-        # ACT's default and is left alone.
-        push_to_hub=False,
-        **({"optimizer_lr": args.lr} if args.lr is not None else {}),
+        "push_to_hub": False,
+        "vision_backbone": args.backbone,
+        "pretrained_backbone_weights": (
+            None if args.no_pretrained_backbone
+            else {
+                "resnet18": "ResNet18_Weights.IMAGENET1K_V1",
+                "resnet34": "ResNet34_Weights.IMAGENET1K_V1",
+            }[args.backbone]
+        ),
+        "optimizer_lr": args.lr,
+        "optimizer_weight_decay": args.weight_decay,
+        "optimizer_lr_backbone": args.backbone_lr,
+        "dropout": args.dropout,
+        "pretrained_path": Path(args.pretrained_policy) if args.pretrained_policy else None,
+        "dim_model": args.dim_model,
+        "n_encoder_layers": args.encoder_layers,
+        "n_decoder_layers": args.decoder_layers,
+        "n_heads": args.attention_heads,
+        "latent_dim": args.latent_dim,
+        "kl_weight": args.kl_weight,
+        "use_amp": args.amp,
+    }
+    if args.pretrained_policy and "pretrained_path" not in inspect.signature(ACTConfig).parameters:
+        raise RuntimeError("This LeRobot version does not support fine-tuning from a pretrained policy.")
+    # LeRobot has moved config fields between releases. Keep this demo usable
+    # with its documented 0.4.4 environment and newer compatible installs.
+    policy_options = {
+        key: value for key, value in policy_options.items()
+        if key in inspect.signature(ACTConfig).parameters
+        and (value is not None or key == "pretrained_backbone_weights")
+    }
+    policy = ACTConfig(
+        **policy_options,
     )
 
+    dataset_options = {
+        "repo_id": args.dataset,
+        "root": str(root),
+        "episodes": episode_ids,
+        "eval_split": validation_fraction,
+    }
+    if args.image_transforms_json:
+        try:
+            from lerobot.transforms import ImageTransformConfig, ImageTransformsConfig
+        except ImportError as error:
+            raise RuntimeError(
+                "This LeRobot installation does not provide image transforms. "
+                "Update LeRobot or disable training-time augmentation."
+            ) from error
+        transform_data = json.loads(args.image_transforms_json)
+        transform_signature = inspect.signature(ImageTransformConfig).parameters
+        transform_configs = {
+            name: ImageTransformConfig(**{
+                key: value for key, value in values.items() if key in transform_signature
+            })
+            for name, values in transform_data.get("tfs", {}).items()
+        }
+        transforms_signature = inspect.signature(ImageTransformsConfig).parameters
+        transforms_options = {
+            key: value for key, value in transform_data.items()
+            if key in transforms_signature and key != "tfs"
+        }
+        if "tfs" in transforms_signature:
+            transforms_options["tfs"] = transform_configs
+        dataset_options["image_transforms"] = ImageTransformsConfig(**transforms_options)
+    dataset_signature = inspect.signature(DatasetConfig).parameters
+    if validation_fraction and "eval_split" not in dataset_signature:
+        raise RuntimeError("This LeRobot version does not support a dataset evaluation split.")
+    if args.image_transforms_json and "image_transforms" not in dataset_signature:
+        raise RuntimeError("This LeRobot version does not support training-time image transforms.")
+    dataset_options = {key: value for key, value in dataset_options.items() if key in dataset_signature}
+
+    pipeline_options = {
+        "num_workers": args.num_workers,
+        "cudnn_deterministic": args.deterministic,
+        "eval_steps": args.eval_freq if validation_fraction else 0,
+    }
+    pipeline_options = {
+        key: value for key, value in pipeline_options.items()
+        if key in inspect.signature(TrainPipelineConfig).parameters
+    }
     cfg = TrainPipelineConfig(
-        dataset=DatasetConfig(
-            repo_id=args.dataset, root=str(root), episodes=parse_episodes(args.episodes)
-        ),
+        dataset=DatasetConfig(**dataset_options),
         policy=policy,
         output_dir=output_dir,
         job_name=args.job_name,
@@ -407,9 +570,51 @@ def main() -> int:
         # Checkpoints are LARGE: an ACT policy with a ResNet-18 backbone is about
         # 80 MB in safetensors. Saving every 2000 steps keeps the directory under
         # a few hundred megabytes instead of the default 20,000.
-        save_freq=max(1000, args.steps // 10),
-        log_freq=100,
+        save_freq=args.save_freq or max(1000, args.steps // 10),
+        log_freq=args.log_freq,
+        **pipeline_options,
     )
+    if args.wandb:
+        wandb_config = getattr(cfg, "wandb", None)
+        if wandb_config is None or not hasattr(wandb_config, "enable"):
+            raise RuntimeError("This LeRobot version does not expose W&B configuration.")
+        wandb_config.enable = True
+        if hasattr(wandb_config, "project"):
+            wandb_config.project = args.wandb_project
+        if hasattr(wandb_config, "entity"):
+            wandb_config.entity = args.wandb_entity
+
+    if args.momentum != 0.9:
+        try:
+            from lerobot.optim.optimizers import AdamWConfig
+        except ImportError as error:
+            raise RuntimeError("This LeRobot version cannot configure AdamW beta1.") from error
+        train_fields = inspect.signature(TrainPipelineConfig).parameters
+        if "optimizer" not in train_fields:
+            raise RuntimeError("This LeRobot version does not expose an optimizer configuration.")
+        cfg.optimizer = AdamWConfig(
+            lr=args.lr or policy.optimizer_lr,
+            weight_decay=args.weight_decay,
+            betas=(args.momentum, 0.999),
+        )
+        if hasattr(cfg, "use_policy_training_preset"):
+            cfg.use_policy_training_preset = False
+
+    if args.cos_lr:
+        try:
+            from lerobot.optim.schedulers import CosineDecayWithWarmupSchedulerConfig
+        except ImportError as error:
+            raise RuntimeError("This LeRobot version does not expose the cosine decay scheduler.") from error
+        if not hasattr(cfg, "scheduler"):
+            raise RuntimeError("This LeRobot version does not expose scheduler configuration.")
+        warmup_steps = int(args.warmup_epochs * max(1, len(episode_ids)) * int(dataset_info.get("total_frames", 1))
+                           / max(1, available_episodes) / args.batch)
+        cfg.scheduler = CosineDecayWithWarmupSchedulerConfig(
+            num_warmup_steps=warmup_steps,
+            num_decay_steps=args.steps,
+            peak_lr=args.lr or policy.optimizer_lr,
+            decay_lr=(args.lr or policy.optimizer_lr) * args.lr_final_fraction,
+        )
 
     print("dataset:", root)
     print(f"policy:  ACT, chunk {args.chunk}, {args.action_steps} actions per step, "
