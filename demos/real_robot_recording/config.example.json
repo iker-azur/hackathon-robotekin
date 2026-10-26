@@ -1,0 +1,20 @@
+{
+  "repo_id": "TU_USUARIO/so101_pick_place",
+  "root": "../../data/real_robot/so101_pick_place",
+  "task": "Pick up the cube and place it in the tray",
+  "follower_port": "/dev/serial/by-id/REEMPLAZAR_FOLLOWER",
+  "leader_port": "/dev/serial/by-id/REEMPLAZAR_LEADER",
+  "follower_id": "robotekin_follower",
+  "leader_id": "robotekin_leader",
+  "follower_calibration_dir": null,
+  "leader_calibration_dir": null,
+  "wrist_camera": "/dev/v4l/by-id/REEMPLAZAR_WRIST-video-index0",
+  "overhead_camera": "/dev/v4l/by-id/REEMPLAZAR_OVERHEAD-video-index0",
+  "width": 640,
+  "height": 480,
+  "fps": 30,
+  "episode_time_s": 60,
+  "max_relative_target": 5.0,
+  "streaming_encoding": false,
+  "display_data": true
+}

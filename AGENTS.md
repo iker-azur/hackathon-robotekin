@@ -185,6 +185,8 @@ Prefer single-file or single-test runs during iteration. Full suites are for the
 
 ## 11. Project Learnings
 
+- Before proposing commit text, inspect git log and match the repository's existing subject and body format.
+
 **Accumulated corrections. This section is for the agent to maintain, not just the human.**
 
 When the user corrects your approach, append a one-line rule here before ending the session. Write it concretely ("Always use X for Y"), never abstractly ("be careful with Y"). If an existing line already covers the correction, tighten it instead of adding a new one. Remove lines when the underlying issue goes away (model upgrades, refactors, process changes).
@@ -206,6 +208,7 @@ When the user corrects your approach, append a one-line rule here before ending 
 - Stop a locally started HMI server after endpoint verification so port 8790 is free when the user starts it.
 - When a wrist camera is sideways in the HMI, fix the camera mount orientation in the model; do not invert the wrist joint telemetry sign.
 - Check a Hugging Face model's task before adding it to the app: act-pick checkpoints belong in the pickup selector, and Up-down checkpoints belong in the box-transfer selector.
+- With LeRobot 0.6.1, finalize an unsaved episode before clear_episode_buffer so pending image writes finish; LeRobotDataset has no stop_image_writer method.
 
 ---
 
